@@ -117,6 +117,11 @@ STATIC BOOLEAN CheckProbeRegion (CONST VOID *Fdt, CONST CHAR8 *Path, UINT64 Base
   }
   Canonical[I] = 0;
   INT32 Length, Node = FdtPathOffset (Fdt, Canonical);
+  if (Node < 0) {
+    AsciiSPrint (Message, sizeof Message, "DALI: FDT probe region missing: %a\n", Canonical);
+    Log (Message);
+    return FALSE;
+  }
   CONST UINT32 *Reg = FdtGetProp (Fdt, Node, "reg", &Length);
   if (Reg != NULL && Length >= 16 && Cells (Reg, 2) == Base && Cells (Reg + 2, 2) == 0x1000) { return TRUE; }
   AsciiSPrint (Message, sizeof Message, "DALI: FDT probe region rejected: %a\n", Canonical);
@@ -148,6 +153,120 @@ STATIC EFI_STATUS StopInheritedWatchdog (CONST VOID *Fdt) {
     Before, After, Length, (After & BIT0) == 0);
   Log (Message);
   return (After & BIT0) ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+
+STATIC BOOLEAN RestoreBootloaderMarker (UINT32 Original) {
+  UINT32 Current = MmioRead32 (DALI_WDT_BASE + 0x24);
+  if (Current == MAX_UINT32) { return FALSE; }
+  MmioWrite32 (DALI_WDT_BASE + 0x24, (Current & ~0x0FU) | (Original & 0x0FU));
+  MemoryFence ();
+  Current = MmioRead32 (DALI_WDT_BASE + 0x24);
+  return Current != MAX_UINT32 && (Current & 0x0FU) == (Original & 0x0FU);
+}
+
+EFI_STATUS Mt6991PrepareFastbootRecovery (
+  IN CONST VOID *Fdt,
+  IN UINT32 TimeoutSeconds,
+  IN CONST CHAR8 *RunToken
+  ) {
+  CHAR8 Message[224];
+  INT32 Watchdog, RebootMode, Length;
+  CONST UINT32 *Property;
+  UINT32 OriginalMarker, Marker, Mode, Readback, WatchdogLength;
+  if (Fdt == NULL || RunToken == NULL || TimeoutSeconds < 2 || TimeoutSeconds > 31) {
+    return EFI_INVALID_PARAMETER;
+  }
+  if (AsciiStrCmp (RunToken, "none") != 0) {
+    if (AsciiStrLen (RunToken) != 32) { return EFI_INVALID_PARAMETER; }
+    for (UINTN Index = 0; Index < 32; Index++) {
+      if (!((RunToken[Index] >= '0' && RunToken[Index] <= '9') ||
+            (RunToken[Index] >= 'a' && RunToken[Index] <= 'f'))) { return EFI_INVALID_PARAMETER; }
+    }
+  }
+  Watchdog = FdtPathOffset (Fdt, "/watchdog@1c010000");
+  RebootMode = FdtPathOffset (Fdt, "/watchdog@1c010000/reboot-mode");
+  if (Watchdog < 0 || RebootMode < 0 ||
+      !CheckProbeRegion (Fdt, "/watchdog@1c010000", DALI_WDT_BASE) ||
+      FdtStringListSearch (Fdt, Watchdog, "compatible", "mediatek,mt6991-wdt") < 0 ||
+      FdtStringListSearch (Fdt, Watchdog, "compatible", "mediatek,mt6589-wdt") < 0 ||
+      FdtStringListSearch (Fdt, RebootMode, "compatible", "syscon-reboot-mode") < 0) {
+    Log ("DALI: auto-fastboot FDT contract rejected\n");
+    return EFI_UNSUPPORTED;
+  }
+  Property = FdtGetProp (Fdt, RebootMode, "offset", &Length);
+  if (Property == NULL || Length != sizeof (UINT32) || Fdt32ToCpu (*Property) != 0x24) {
+    return EFI_UNSUPPORTED;
+  }
+  Property = FdtGetProp (Fdt, RebootMode, "mask", &Length);
+  if (Property == NULL || Length != sizeof (UINT32) || Fdt32ToCpu (*Property) != 0x0F) {
+    return EFI_UNSUPPORTED;
+  }
+  Property = FdtGetProp (Fdt, RebootMode, "mode-bootloader", &Length);
+  if (Property == NULL || Length != sizeof (UINT32) || Fdt32ToCpu (*Property) != 3) {
+    return EFI_UNSUPPORTED;
+  }
+
+  OriginalMarker = MmioRead32 (DALI_WDT_BASE + 0x24);
+  Mode = MmioRead32 (DALI_WDT_BASE);
+  Readback = MmioRead32 (DALI_WDT_BASE + 4);
+  if (OriginalMarker == MAX_UINT32 || Mode == MAX_UINT32 || Readback == MAX_UINT32 || (Mode & BIT0)) {
+    Log ("DALI: auto-fastboot RGU state rejected\n");
+    return EFI_DEVICE_ERROR;
+  }
+
+  Marker = (OriginalMarker & ~0x0FU) | 3;
+  MmioWrite32 (DALI_WDT_BASE + 0x24, Marker);
+  MemoryFence ();
+  if ((MmioRead32 (DALI_WDT_BASE + 0x24) & 0x0FU) != 3) {
+    BOOLEAN Restored = RestoreBootloaderMarker (OriginalMarker);
+    AsciiSPrint (Message, sizeof Message,
+      "DALI: auto-fastboot marker readback failed; rollback=%a\n", Restored ? "PASS" : "FAIL");
+    Log (Message);
+    return EFI_DEVICE_ERROR;
+  }
+
+  // MT6991 LENGTH uses a keyed 2 ms tick field. The documented Linux driver
+  // caps a single RGU interval at 31 seconds; longer timeouts are not guessed.
+  WatchdogLength = (TimeoutSeconds << 11) | 0x08;
+  MmioWrite32 (DALI_WDT_BASE + 4, WatchdogLength);
+  MmioWrite32 (DALI_WDT_BASE + 8, 0x1971);
+  MemoryFence ();
+  Readback = MmioRead32 (DALI_WDT_BASE + 4);
+  if (Readback == MAX_UINT32) {
+    BOOLEAN Restored = RestoreBootloaderMarker (OriginalMarker);
+    AsciiSPrint (Message, sizeof Message,
+      "DALI: auto-fastboot LENGTH register unreadable; marker rollback=%a\n", Restored ? "PASS" : "FAIL");
+    Log (Message);
+    return EFI_DEVICE_ERROR;
+  }
+  Mode = MmioRead32 (DALI_WDT_BASE);
+  if (Mode == MAX_UINT32) {
+    RestoreBootloaderMarker (OriginalMarker);
+    return EFI_DEVICE_ERROR;
+  }
+  MmioWrite32 (DALI_WDT_BASE, (Mode & ~(BIT3 | BIT6)) | BIT0 | 0x22000000);
+  MemoryFence ();
+  Readback = MmioRead32 (DALI_WDT_BASE);
+  if (Readback == MAX_UINT32 || !(Readback & BIT0) || (Readback & (BIT3 | BIT6))) {
+    BOOLEAN WatchdogDisabled = FALSE;
+    if (Readback != MAX_UINT32) {
+      MmioWrite32 (DALI_WDT_BASE, (Readback & ~BIT0) | 0x22000000);
+      MemoryFence ();
+      Mode = MmioRead32 (DALI_WDT_BASE);
+      WatchdogDisabled = Mode != MAX_UINT32 && (Mode & BIT0) == 0;
+    }
+    BOOLEAN MarkerRestored = RestoreBootloaderMarker (OriginalMarker);
+    AsciiSPrint (Message, sizeof Message,
+      "DALI: auto-fastboot watchdog readback failed; disabled=%a marker-rollback=%a\n",
+      WatchdogDisabled ? "PASS" : "FAIL", MarkerRestored ? "PASS" : "FAIL");
+    Log (Message);
+    return EFI_DEVICE_ERROR;
+  }
+  AsciiSPrint (Message, sizeof Message,
+      "DALI: auto-fastboot armed run=%a marker=%x timeout=%u seconds; waiting for XNU to stop\n",
+      RunToken, Marker, TimeoutSeconds);
+  Log (Message);
+  return EFI_SUCCESS;
 }
 
 EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {

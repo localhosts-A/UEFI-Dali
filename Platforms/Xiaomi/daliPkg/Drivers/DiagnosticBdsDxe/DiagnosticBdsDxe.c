@@ -24,6 +24,10 @@
 STATIC volatile UINTN mTicks;
 STATIC EFI_HANDLE mBdsImage;
 STATIC UINTN mHeartbeats;
+STATIC BOOLEAN mAutoFastboot = TRUE;
+STATIC BOOLEAN mRecoveryArmed;
+STATIC UINT32 mWatchdogTimeoutSeconds = 31;
+STATIC CHAR8 mRunToken[33] = "none";
 STATIC VOID EFIAPI Tick (IN EFI_EVENT Event, IN VOID *Context) { mTicks++; }
 STATIC VOID EFIAPI Heartbeat (IN EFI_EVENT Event, IN VOID *Context) {
   if (++mHeartbeats <= 30) {
@@ -49,6 +53,99 @@ STATIC VOID ConnectProtocol (EFI_GUID *Protocol) {
     DEBUG ((DEBUG_WARN, "DALI: connect controller %g status=%r\n", Protocol, Status));
   }
   FreePool (Handles);
+}
+
+STATIC EFI_STATUS ReadRecoverySettings (EFI_FILE_PROTOCOL *Root) {
+  EFI_FILE_PROTOCOL *File = NULL;
+  EFI_STATUS Status;
+  CHAR8 Data[160];
+  UINTN Size = sizeof Data - 1;
+  CHAR8 *Cursor, *Line, *Newline;
+  CONST CHAR8 *ValueText;
+  UINTN Value;
+  Status = Root->Open (Root, &File, L"\\EFI\\UniXNU\\dali-boot.conf", EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) {
+    // Older UEFI test volumes keep the verified default recovery policy.
+    mAutoFastboot = TRUE;
+    mWatchdogTimeoutSeconds = 31;
+    return EFI_SUCCESS;
+  }
+  ZeroMem (Data, sizeof Data);
+  Status = File->Read (File, &Size, Data);
+  File->Close (File);
+  if (EFI_ERROR (Status) || Size == 0 || Size >= sizeof Data - 1 || AsciiStrLen (Data) != Size) {
+    return EFI_COMPROMISED_DATA;
+  }
+
+  // Treat this tiny firmware policy file as a strict four-line schema. Do not
+  // accept duplicate keys, ignored trailing text, or partially parsed numbers.
+  Cursor = Data;
+  Line = Cursor;
+  Newline = AsciiStrStr (Cursor, "\n");
+  if (Newline == NULL) { return EFI_COMPROMISED_DATA; }
+  *Newline = 0;
+  if (AsciiStrCmp (Line, "version = 1") != 0) { return EFI_COMPROMISED_DATA; }
+
+  Cursor = Newline + 1;
+  Line = Cursor;
+  Newline = AsciiStrStr (Cursor, "\n");
+  if (Newline == NULL) { return EFI_COMPROMISED_DATA; }
+  *Newline = 0;
+  if (AsciiStrnCmp (Line, "auto_fastboot = ", AsciiStrLen ("auto_fastboot = ")) != 0) {
+    return EFI_COMPROMISED_DATA;
+  }
+  ValueText = Line + AsciiStrLen ("auto_fastboot = ");
+  if (AsciiStrCmp (ValueText, "true") == 0) {
+    mAutoFastboot = TRUE;
+  } else if (AsciiStrCmp (ValueText, "false") == 0) {
+    mAutoFastboot = FALSE;
+  } else {
+    return EFI_COMPROMISED_DATA;
+  }
+
+  Cursor = Newline + 1;
+  Line = Cursor;
+  Newline = AsciiStrStr (Cursor, "\n");
+  if (Newline == NULL) { return EFI_COMPROMISED_DATA; }
+  *Newline = 0;
+  if (AsciiStrnCmp (Line, "watchdog_timeout_seconds = ",
+                    AsciiStrLen ("watchdog_timeout_seconds = ")) != 0) {
+    return EFI_COMPROMISED_DATA;
+  }
+  ValueText = Line + AsciiStrLen ("watchdog_timeout_seconds = ");
+  if (*ValueText == 0) { return EFI_COMPROMISED_DATA; }
+  Value = 0;
+  for (CONST CHAR8 *Digit = ValueText; *Digit != 0; Digit++) {
+    if (*Digit < '0' || *Digit > '9' || Value > 31) { return EFI_COMPROMISED_DATA; }
+    Value = Value * 10 + (UINTN)(*Digit - '0');
+    if (Value > 31) { return EFI_UNSUPPORTED; }
+  }
+  if (Value < 2) { return EFI_UNSUPPORTED; }
+  mWatchdogTimeoutSeconds = (UINT32)Value;
+
+  Cursor = Newline + 1;
+  Line = Cursor;
+  Newline = AsciiStrStr (Cursor, "\n");
+  if (Newline == NULL || Newline + 1 != Data + Size) { return EFI_COMPROMISED_DATA; }
+  *Newline = 0;
+  if (AsciiStrnCmp (Line, "run_token = ", AsciiStrLen ("run_token = ")) != 0) {
+    return EFI_COMPROMISED_DATA;
+  }
+  ValueText = Line + AsciiStrLen ("run_token = ");
+  if (AsciiStrCmp (ValueText, "none") == 0) {
+    CopyMem (mRunToken, "none", sizeof "none");
+  } else {
+    if (AsciiStrLen (ValueText) != 32) { return EFI_COMPROMISED_DATA; }
+    for (UINTN Index = 0; Index < 32; Index++) {
+      if (!((*ValueText >= '0' && *ValueText <= '9') || (*ValueText >= 'a' && *ValueText <= 'f'))) {
+        return EFI_COMPROMISED_DATA;
+      }
+      ValueText++;
+    }
+    ValueText -= 32;
+    CopyMem (mRunToken, ValueText, sizeof mRunToken);
+  }
+  return EFI_SUCCESS;
 }
 
 STATIC BOOLEAN PrepareUniXNU (VOID) {
@@ -83,7 +180,10 @@ STATIC BOOLEAN PrepareUniXNU (VOID) {
       Status = File->Read (File, &Size, Header);
       File->Close (File);
       if (!EFI_ERROR (Status) && Size >= 11 && CompareMem (Header, "version = 1", 11) == 0) {
-        PayloadOk = TRUE;
+        EFI_STATUS ConfigStatus = ReadRecoverySettings (Root);
+        DEBUG ((DEBUG_WARN, "DALI: recovery config auto=%u timeout=%u status=%r\n",
+          mAutoFastboot, mWatchdogTimeoutSeconds, ConfigStatus));
+        PayloadOk = !EFI_ERROR (ConfigStatus);
       }
     }
     Root->Close (Root);
@@ -106,6 +206,16 @@ STATIC EFI_STATUS LaunchUniXNU (VOID) {
     if (Options[I].OptionalDataSize != sizeof Marker ||
         CompareMem (Options[I].OptionalData, Marker, sizeof Marker) != 0) { continue; }
     Found = TRUE;
+    if (mAutoFastboot && !mRecoveryArmed) {
+      EFI_STATUS RecoveryStatus = Mt6991PrepareFastbootRecovery (
+        (CONST VOID *)(UINTN)DALI_FDT_BASE, mWatchdogTimeoutSeconds, mRunToken);
+      DEBUG ((DEBUG_WARN, "DALI: one-shot fastboot recovery arm status=%r\n", RecoveryStatus));
+      if (EFI_ERROR (RecoveryStatus)) {
+        Result = RecoveryStatus;
+        break;
+      }
+      mRecoveryArmed = TRUE;
+    }
     EfiSignalEventReadyToBoot ();
     DEBUG ((DEBUG_WARN, "DALI: starting registered UniXNU Boot%04x\n", Options[I].OptionNumber));
     EFI_HANDLE App = NULL;

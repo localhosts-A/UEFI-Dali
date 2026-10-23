@@ -22,7 +22,7 @@
 [PcdsFixedAtBuild]
   gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
-  gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC1400000
+  gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC5000000
   gArmPlatformTokenSpaceGuid.PcdCPUCorePrimaryStackSize|0x40000
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemManufacturer|"Xiaomi"
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemModel|"REDMI K80 Ultra"
@@ -34,6 +34,7 @@
 
 [Components]
   daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
+  DarwinBootPkg/Driver/DarwinBoot.inf
   UniXNUPkg/Application/UniXNU/UniXNU.inf
   UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
   daliPkg/Drivers/DisplayDxe/DisplayDxe.inf

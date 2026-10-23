@@ -32,6 +32,7 @@ class CommonPlatform ():
     PackagesPath = (
         "Platforms/Xiaomi",
         os.environ.get("DALI_UNIXNU_PACKAGE", os.path.join(WorkspaceRoot, "../UniXNU/package")),
+        os.environ.get("DALI_DARWINBOOT_PACKAGE", os.path.join(WorkspaceRoot, "../UniXNU/drivers/DarwinBoot")),
         "Common/Mu",
         "Common/Mu_OEM_Sample",
         "Mu_Basecore",

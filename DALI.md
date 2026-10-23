@@ -16,15 +16,17 @@ Inherited GOP text/color bars and GPIO60 UP/ENTER input were also physically
 verified. The inherited panel requires command-mode frame submission; CPU
 framebuffer readback alone is not display proof.
 
-The UniXNU integration adds:
+The validated UEFI milestone above is the hardware baseline. A follow-on source
+integration is now under development; its firmware and XNU changes are not yet
+hardware qualified. The current integration code adds:
 
 - UniXNU and UniXNUDxe in the same firmware volume, with RAM-backed boot options.
 - A read-only 1 MiB FAT test volume embedded in the FV, published as BlockIo
   and connected through the generic DiskIo, FAT and Unicode collation drivers.
 - System-table consoles and a diagnostic BDS that starts the registered UniXNU
   option, then retains firmware control after its Exit action.
-- The device configuration's HelloPayload and SampleDriver EFI tests, with no
-  Apple inputs, physical disk access or XNU boot entry.
+- A source-built XNU entry, generated Apple DT, DarwinBoot FV driver and early
+  ramoops checkpoint. This path still requires build and hardware validation.
 - Persistent ramoops logging, with distinct core, filesystem, menu, payload and
   return-to-firmware milestones.
 
@@ -55,9 +57,10 @@ polling idle (YIELD), retaining the upstream EL1 TLB flush sequence, until WFI
 wakeup on this handoff is separately validated. This is a power-efficiency
 limitation of the bring-up firmware.
 
-Physical UFS, USB device transport, touch, panel cold initialization, DarwinBoot
-and XNU remain unimplemented. The RAM
-volume validates firmware file access; it does not provide physical storage.
+Physical UFS, USB device transport, touch and panel cold initialization remain
+unimplemented. The RAM volume validates firmware file access; it does not
+provide physical storage. DarwinBoot and XNU integration code is present but
+has not yet passed the Dali hardware checkpoint.
 
 ## Validated UEFI milestone (2026-10-24)
 
@@ -82,9 +85,11 @@ Private artifacts retain the raw FD, build manifest, exact staged source patch,
 pstore evidence and recovery hashes. The image embeds the test configuration
 from UniXNU-Dali `4880518` and generic UniXNU `1a01c2a`.
 
-Before a later XNU phase, choose and validate kernel payload delivery, review
-the kernel load windows against the live FDT and limited DXE heap, and implement
-the MT6991 DarwinBoot/kernel handoff. Those tasks are outside this milestone.
+The next milestone builds the source-only kernel on macOS, verifies DarwinBoot
+and its QEMU fixtures, then tests the single-core handoff on boot_b. The source
+kernel and local Apple DT are packed into a 48 MiB read-only FAT volume in the
+64 MiB firmware volume. Every image is checked against the live FDT arenas and
+the original boot_b partition size before a test flash.
 
 ## Build
 
@@ -106,7 +111,9 @@ MU_PYTHON=/path/to/mu-venv/bin/python bash build-dali.sh \
   /absolute/path/to/verified-dali-backup ../UniXNU ../UniXNU-Dali
 ```
 
-The reviewed UniXNU commit is
+The reviewed UEFI-only build uses the current pinned UniXNU commit. A five-argument
+build adds `SOURCE_XNU_MACHO APPLE_ADT`; generate the private Apple DT from the
+current runtime FDT. The reviewed UniXNU commit is
 `1a01c2afa197d975d04da892325c56b6b14aaecb`. The firmware fork baseline is
 `42fe563791e51bf5500c2e470ed294ca0c94b97c`; submodules are pinned by Git.
 The build uses the system `clang`, `lld`, `llvm-objcopy`, legacy-capable `lz4`,
@@ -123,8 +130,8 @@ rooted Android device; keep it outside Git.
 
 - Android boot header v4, legacy LZ4 and `BootShim/DaliShim.S`, preserving LK FDT
   in x0. The generic UniXNU gzip/BootShim.S packer is not used.
-- FD `0xc1000000 + 0x400000`, stack `0xc1400000 + 0x40000`, FDT copy
-  `0xc1480000 + 0x100000`, DXE heap `0xc1800000 + 0x4000000`.
+- FD `0xc1000000 + 0x4000000`, stack `0xc5000000 + 0x40000`, FDT copy
+  `0xc5080000 + 0x100000`, DXE heap `0xc5200000 + 0x8000000`.
 - The FDT preflight excludes reserved, protected, memreserve and initrd regions;
   SEC checks again. These addresses require review after firmware changes.
 - GICv3 distributor `0x0c400000`, redistributor `0x0c440000`, PSCI SMC and the
@@ -140,10 +147,16 @@ rooted Android device; keep it outside Git.
   FDT keycodes must match 114 and 116. The GPIO60 volume-up path stays separate.
 - RGU watchdog `0x1c010000` must advertise both MT6991 and MT6589 compatibility.
   Only inherited MODE.EN is cleared with key `0x22000000`, after reload `0x1971`.
+- XNU tests default to a one-shot bootloader reboot marker at RGU `+0x24` and a
+  31-second maximum single-shot watchdog; the configuration may select 2–31
+  seconds or disable auto-fastboot. The 120-second timeout is only the host
+  wait deadline. Linux's MT6991 driver documents the 2–31-second range; whether
+  LK consumes this marker after watchdog reset still requires hardware proof.
 - Logs use the inspected ramoops console at `0xaec0f000`, 2 MiB. The prompted
   Exit path uses an RGU warm reset with demonstrated retention in Run7.
-- The 64 MiB DXE heap is deliberately limited. DarwinBoot's later kernel window
-  will need a separate memory-layout review.
+- The 128 MiB DXE heap and firmware arenas are deliberately bounded. The Dali
+  ADT generator refuses a changed DRAM/GIC/PSCI/timer/watchdog contract; the
+  host FDT preflight rejects collisions before packaging.
 
 ## Verification and recovery
 
@@ -172,6 +185,16 @@ Verify Android boot completion, root and all backed-up boot/companion/LK hashes.
 Never restore misc blindly or alter LK/preloader/AVB on an image refusal. Empty
 pstore is inconclusive. Keep private images, runtime DTBs and device identifiers
 out of commits.
+
+The early-XNU cycle runner in `UniXNU-Dali/scripts/run-bootb-cycles.py` accepts
+only `boot_b`, confirms the ADB/fastboot identity, verifies a fresh fastboot
+enumeration, and restores the original `boot_b` after every attempt. Each cycle
+gets a unique token in both the recovery-arm and XNU checkpoint logs so stale
+ramoops data cannot satisfy either check; the collector also checks that the
+candidate's 2–31 second watchdog value matches the artifact. After restoration it
+verifies Android/root and every backed partition hash on success and failure paths.
+The 120-second bound is a host wait deadline, not the device watchdog. Its logs,
+kernel artifact, Apple DT and images belong in a private directory.
 
 ## Register-contract references
 

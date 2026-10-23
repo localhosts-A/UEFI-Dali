@@ -73,6 +73,63 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["io"]["frame_submissions"], [1])
         self.assertEqual(len(result["io"]["frame_completion_samples"]), 1)
 
+    def test_xnu_checkpoint_requires_forwarded_bootarg_single_cpu_gic_and_timer(self):
+        token = "0123456789abcdef0123456789abcdef"
+        result = parse_evidence(
+            ("DALI: SEC diagnostics v1\nDALI: UEFI_DIAGNOSTIC_PASS\n"
+             f"DALI: auto-fastboot armed run={token} marker=13 timeout=31 seconds; waiting for XNU to stop\n"
+             f"DALI-XNU: darwin=23.6.0 build=10063.141.1 run={token} bootarg=1 registered=1 "
+             "platform=1 gic=1 timer=5 mpidr=0x80000000 checkpoint=PASS\n").encode(),
+            expected_run_token=token,
+            expected_watchdog_timeout=31,
+        )
+        self.assertTrue(result["xnu"]["pass"])
+        self.assertEqual(result["xnu"]["darwin_version"], "23.6.0")
+        self.assertTrue(result["xnu"]["single_boot_cpu"])
+        self.assertTrue(result["new_boot_marker"])
+        self.assertTrue(result["recovery"]["timeout_matches_expected"])
+        self.assertTrue(result["recovery"]["run_token_matches_expected"])
+
+    def test_old_or_unmarked_xnu_evidence_cannot_satisfy_a_cycle(self):
+        old_token = "0123456789abcdef0123456789abcdef"
+        expected = "fedcba9876543210fedcba9876543210"
+        text = ("DALI-XNU: darwin=23.6.0 build=10063.141.1 run=" + old_token +
+                " bootarg=1 registered=1 platform=1 gic=1 timer=5 mpidr=0x80000000 checkpoint=PASS\n")
+        result = parse_evidence(text.encode(), expected_run_token=expected,
+                                expected_watchdog_timeout=31)
+        self.assertFalse(result["new_boot_marker"])
+        self.assertFalse(result["xnu"]["run_token_matches_expected"])
+        self.assertFalse(result["xnu"]["pass"])
+
+    def test_recovery_timeout_must_match_the_built_candidate(self):
+        result = parse_evidence(
+            b"DALI: SEC diagnostics v1\n"
+            b"DALI: auto-fastboot armed run=0123456789abcdef0123456789abcdef marker=13 timeout=30 seconds; waiting for XNU to stop\n",
+            expected_watchdog_timeout=31,
+        )
+        self.assertFalse(result["recovery"]["timeout_matches_expected"])
+
+    def test_stale_fastboot_marker_cannot_satisfy_another_cycle(self):
+        expected = "fedcba9876543210fedcba9876543210"
+        result = parse_evidence(
+            b"DALI: SEC diagnostics v1\n"
+            b"DALI: auto-fastboot armed run=0123456789abcdef0123456789abcdef marker=13 timeout=31 seconds; waiting for XNU to stop\n",
+            expected_run_token=expected,
+            expected_watchdog_timeout=31,
+        )
+        self.assertFalse(result["recovery"]["run_token_matches_expected"])
+
+    def test_xnu_failure_and_recovery_marker_are_distinct(self):
+        result = parse_evidence(
+            b"DALI: SEC diagnostics v1\n"
+            b"DALI: auto-fastboot armed run=0123456789abcdef0123456789abcdef marker=13 timeout=31 seconds; waiting for XNU to stop\n"
+            b"DALI-XNU: darwin=23.6.0 build=10063.141.1 run=0123456789abcdef0123456789abcdef bootarg=0 registered=1 "
+            b"platform=1 gic=1 timer=0 mpidr=0x80000000 checkpoint=FAIL\n")
+        self.assertTrue(result["recovery"]["auto_fastboot_armed"])
+        self.assertEqual(result["recovery"]["bootloader_marker"] & 0xF, 3)
+        self.assertFalse(result["xnu"]["pass"])
+        self.assertTrue(result["failures"])
+
 
 if __name__ == "__main__":
     unittest.main()

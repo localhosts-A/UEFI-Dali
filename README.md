@@ -17,7 +17,8 @@ capabilities and remaining work.
 
 The UEFI test milestone passed on hardware: UniXNU menu, HelloPayload,
 return to firmware, all three physical keys and original Android recovery.
-Physical storage, USB transport and XNU remain future work.
+The source-built XNU path is now in bring-up and still requires its own build,
+QEMU and hardware validation. Physical storage and USB transport remain future work.
 
 ## Upstream Project Silicium
 

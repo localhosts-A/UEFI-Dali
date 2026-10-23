@@ -8,7 +8,7 @@ import shlex
 import subprocess
 
 
-def parse_evidence(data):
+def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=None):
     """Describe logged milestones; framebuffer readback is not visible output."""
     text = data.decode("utf-8", errors="replace")
     # Do not let an older successful boot supply milestones for a newer failure.
@@ -17,11 +17,38 @@ def parse_evidence(data):
         text = text[start:]
     keys = [{"number": int(n), "scan": int(s, 16), "unicode": int(u, 16)}
             for n, s, u in re.findall(r"DALI: INPUT key=(\d+) scan=([\da-fA-F]+) unicode=([\da-fA-F]+)", text)]
+    xnu_match = re.search(
+        r"DALI-XNU: darwin=([\d.]+) build=([\d.]+) run=([0-9a-f]{32}) bootarg=(\d+) registered=(\d+) "
+        r"platform=(\d+) gic=(\d+) timer=(\d+) mpidr=0x([\da-fA-F]+) checkpoint=(PASS|FAIL)", text)
+    fastboot_match = re.search(
+        r"DALI: auto-fastboot armed run=(none|[0-9a-f]{32}) marker=([\da-fA-F]+) timeout=(\d+) seconds", text)
     failures = [line for line in text.splitlines()
                 if "ASSERT" in line or "UEFI_DIAGNOSTIC_FAIL" in line or
                 "UEFI_STAGE_FAIL" in line or "Exception at" in line or
+                "DALI-XNU:" in line and "checkpoint=FAIL" in line or
                 ("UNIXNU: driver " in line and ("load failed:" in line or "start failed:" in line))]
+    xnu = {
+        "checkpoint_present": xnu_match is not None,
+        "darwin_version": xnu_match.group(1) if xnu_match else None,
+        "build_version": xnu_match.group(2) if xnu_match else None,
+        "run_token": xnu_match.group(3) if xnu_match else None,
+        "run_token_matches_expected": expected_run_token is None or bool(
+            xnu_match and xnu_match.group(3) == expected_run_token),
+        "boot_argument_forwarded": bool(xnu_match and xnu_match.group(4) == "1"),
+        "cpu_registered": bool(xnu_match and xnu_match.group(5) == "1"),
+        "platform_configured": bool(xnu_match and xnu_match.group(6) == "1"),
+        "gic_ready": bool(xnu_match and xnu_match.group(7) == "1"),
+        "timer_interrupts": int(xnu_match.group(8)) if xnu_match else 0,
+        "mpidr": int(xnu_match.group(9), 16) if xnu_match else None,
+        "single_boot_cpu": bool(xnu_match and (int(xnu_match.group(9), 16) & 0xFF00FFFFFF) == 0),
+        "checkpoint_pass": bool(xnu_match and xnu_match.group(10) == "PASS"),
+    }
+    xnu["pass"] = all((xnu["checkpoint_present"], xnu["boot_argument_forwarded"], xnu["cpu_registered"],
+                       xnu["platform_configured"], xnu["gic_ready"], xnu["timer_interrupts"] > 0,
+                       xnu["single_boot_cpu"], xnu["checkpoint_pass"], xnu["run_token_matches_expected"]))
+    watchdog_seconds = int(fastboot_match.group(3)) if fastboot_match else None
     return {
+        "new_boot_marker": start >= 0,
         "diagnostic_pass": "DALI: UEFI_DIAGNOSTIC_PASS" in text,
         "stages": {stage: marker in text for stage, marker in {
             "shim": "DALI: UEFI relocation shim entered", "sec": "DALI: SEC diagnostics v1",
@@ -50,6 +77,17 @@ def parse_evidence(data):
             "display_visibility": "unverified",
         },
         "failures": failures,
+        "recovery": {
+            "auto_fastboot_armed": fastboot_match is not None,
+            "run_token": fastboot_match.group(1) if fastboot_match else None,
+            "run_token_matches_expected": expected_run_token is None or
+                bool(fastboot_match and fastboot_match.group(1) == expected_run_token),
+            "bootloader_marker": int(fastboot_match.group(2), 16) if fastboot_match else None,
+            "device_watchdog_seconds": watchdog_seconds,
+            "timeout_matches_expected": expected_watchdog_timeout is None or
+                watchdog_seconds == expected_watchdog_timeout,
+        },
+        "xnu": xnu,
         "unixnu": {
             "payload_filesystem_pass": "DALI: payload filesystem=PASS" in text,
             "firmware_ready": "DALI: UEFI_UNIXNU_READY" in text,
@@ -69,8 +107,18 @@ def main():
     p.add_argument("--serial", required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--require-unixnu", action="store_true")
+    p.add_argument("--require-xnu", action="store_true")
+    p.add_argument("--require-fastboot-arm", action="store_true")
+    p.add_argument("--expected-run-token")
+    p.add_argument("--expected-watchdog-timeout", type=int)
     p.add_argument("--require-pmic-keys", action="store_true")
     args = p.parse_args()
+    if args.require_xnu and not args.expected_run_token:
+        p.error("--require-xnu requires a per-cycle --expected-run-token")
+    if args.require_fastboot_arm and (args.expected_watchdog_timeout is None or not args.expected_run_token):
+        p.error("--require-fastboot-arm requires --expected-watchdog-timeout and --expected-run-token")
+    if args.expected_run_token and not re.fullmatch(r"[0-9a-f]{32}", args.expected_run_token):
+        p.error("--expected-run-token must be 32 lowercase hexadecimal characters")
 
     def read(command):
         return subprocess.check_output(["adb", "-s", args.serial, "exec-out",
@@ -91,7 +139,8 @@ def main():
         combined += data
     (args.output / "kernel-dmesg.txt").write_bytes(read("dmesg"))
     (args.output / "bootconfig.txt").write_bytes(read("cat /proc/bootconfig"))
-    result.update(parse_evidence(combined))
+    result.update(parse_evidence(combined, expected_run_token=args.expected_run_token,
+                                 expected_watchdog_timeout=args.expected_watchdog_timeout))
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     if not result["diagnostic_pass"]:
@@ -100,6 +149,13 @@ def main():
         raise SystemExit("Core PASS exists, but later failures require inspection")
     if args.require_unixnu and not all(result["unixnu"].values()):
         raise SystemExit("UniXNU UEFI stage is incomplete; inspect the separate milestones")
+    if args.require_xnu and (not result["new_boot_marker"] or not result["xnu"]["pass"]):
+        raise SystemExit("XNU early-boot checkpoint is incomplete; inspect boot args, Apple DT, GIC and timer evidence")
+    if args.require_fastboot_arm and (not result["recovery"]["auto_fastboot_armed"] or
+                                     result["recovery"]["bootloader_marker"] & 0xF != 3 or
+                                     not result["recovery"]["timeout_matches_expected"] or
+                                     not result["recovery"]["run_token_matches_expected"]):
+        raise SystemExit("UEFI did not arm the expected one-shot bootloader recovery marker")
     if args.require_pmic_keys and not all(result["io"]["pmic_key_events"].values()):
         raise SystemExit("Missing source-specific Volume down or Power key evidence")
 

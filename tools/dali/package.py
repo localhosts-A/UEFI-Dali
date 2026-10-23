@@ -7,6 +7,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import tomllib
 
 from fdt import Fdt
 
@@ -16,13 +17,23 @@ def main():
     p.add_argument("--backup", type=Path, required=True)
     p.add_argument("--mode", choices=["DEBUG"], default="DEBUG")
     p.add_argument("--mu", type=Path, required=True)
+    p.add_argument("--unixnu", type=Path, required=True, help="reviewed generic UniXNU checkout")
+    p.add_argument("--device-repo", type=Path, required=True, help="pinned UniXNU-Dali checkout")
     p.add_argument("--out", type=Path, required=True)
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
     mu = args.mu.resolve()
+    unixnu = args.unixnu.resolve()
+    device_repo = args.device_repo.resolve()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((args.backup / "manifest.json").read_text())
+    board = tomllib.loads((device_repo / "board.toml").read_text())
+    firmware = board.get("firmware", {})
+    uefi_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    unixnu_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=unixnu, text=True).strip()
+    if firmware.get("uefi_commit") != uefi_commit or firmware.get("unixnu_commit") != unixnu_commit:
+        raise SystemExit("UEFI/UniXNU checkout differs from the device board.toml commit pins")
     if not manifest.get("complete") or manifest.get("product") != "dali":
         raise SystemExit("A complete verified dali backup is required")
     expected_ramoops = {"mem_address": 0xAEC00000, "mem_size": 0x410000, "record_size": 4096,
@@ -41,12 +52,17 @@ def main():
         raise SystemExit("Expected boot header v4")
     if boot[4096:4100] != bytes.fromhex("02214c18"):
         raise SystemExit("Expected the observed legacy LZ4 kernel compression")
+    config = tomllib.loads((root / "Resources/Configs/dali.toml").read_text())
+    fd_base = config["uefi_fd"]["base"]
+    fd_size = config["uefi_fd"]["size"]
+    if (fd_base, fd_size) != (0xC1000000, 0x4000000):
+        raise SystemExit("Dali FD address/size differs from the reviewed 64 MiB arena layout")
     fd = mu / f"Build/daliPkg/{args.mode}_CLANGPDB/FV/SILICIUM_UEFI.fd"
-    if fd.stat().st_size != 0x400000:
+    if fd.stat().st_size != fd_size:
         raise SystemExit("Unexpected dali FD size")
     shim_obj, shim_elf, shim = out / "DaliShim.o", out / "DaliShim.elf", out / "DaliShim.bin"
     subprocess.run(["clang", "--target=aarch64-none-elf", "-c", str(mu / "BootShim/DaliShim.S"),
-                    "-o", str(shim_obj), "-DFD_BASE=0xC1000000", "-DFD_SIZE=0x400000"], check=True)
+                    "-o", str(shim_obj), f"-DFD_BASE={fd_base:#x}", f"-DFD_SIZE={fd_size:#x}"], check=True)
     subprocess.run(["ld.lld", "-m", "aarch64elf", "--image-base=0", "-Ttext=0", "-e", "_start",
                     str(shim_obj), "-o", str(shim_elf)], check=True)
     subprocess.run(["llvm-objcopy", "-O", "binary", str(shim_elf), str(shim)], check=True)
@@ -73,10 +89,14 @@ def main():
     target.write_bytes(image)
     record = {"experimental": True, "target": "dali", "mode": args.mode,
               "image": str(target), "bytes": len(image), "sha256": hashlib.sha256(image).hexdigest(),
+              "fd_base": fd_base, "fd_size": fd_size,
               "fd_sha256": hashlib.sha256(fd.read_bytes()).hexdigest(), "layout": layout, "io_layout": io_layout,
               "upstream_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
               "backup_manifest": str((args.backup / "manifest.json").resolve()),
-              "unixnu_commit": "1a01c2afa197d975d04da892325c56b6b14aaecb",
+              "unixnu_commit": unixnu_commit,
+              "device_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=device_repo, text=True).strip(),
+              "uefi_commit": uefi_commit,
+              "mu_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
               "payload": json.loads((out / "payload.json").read_text())}
     (out / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))

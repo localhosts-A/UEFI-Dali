@@ -2,8 +2,8 @@
 """Strict read-only FDT inspection and arena validation for dali UEFI artifacts."""
 import struct
 
-ARENAS = [("FD", 0xC1000000, 0x400000), ("stack", 0xC1400000, 0x40000),
-          ("FDT copy", 0xC1480000, 0x100000), ("heap", 0xC1800000, 0x4000000)]
+ARENAS = [("FD", 0xC1000000, 0x4000000), ("stack", 0xC5000000, 0x40000),
+          ("FDT copy", 0xC5080000, 0x100000), ("heap", 0xC5200000, 0x8000000)]
 
 
 class Fdt:

@@ -68,7 +68,7 @@ EFI_STATUS EFIAPI DaliPayloadInitialize (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Sys
   if (EFI_ERROR (Status)) { return Status; }
   // Host packaging hashes the entire volume. Recheck the FAT BPB and length
   // before publishing a provider so malformed lengths never escape the buffer.
-  if (mSize < 512 || mSize > 0x800000 || mSize % 512 != 0 ||
+  if (mSize < 512 || mSize > 0x4000000 || mSize % 512 != 0 ||
       mData[510] != 0x55 || mData[511] != 0xAA || ReadUnaligned16 ((UINT16 *)(mData + 11)) != 512) {
     FreePool (mData); mData = NULL; return EFI_COMPROMISED_DATA;
   }
