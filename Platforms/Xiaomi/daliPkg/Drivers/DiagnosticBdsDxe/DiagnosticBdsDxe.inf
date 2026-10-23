@@ -24,6 +24,7 @@
   Mt6991PlatformLib
   UefiBootManagerLib
   UefiLib
+  TimerLib
   DevicePathLib
 [Protocols]
   gEfiBdsArchProtocolGuid ## PRODUCES

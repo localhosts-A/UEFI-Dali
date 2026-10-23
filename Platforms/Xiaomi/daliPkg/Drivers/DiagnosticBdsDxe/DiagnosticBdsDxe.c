@@ -18,11 +18,19 @@
 #include <Library/Mt6991PlatformLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiLib.h>
+#include <Library/TimerLib.h>
 #include <Configuration/BootDevices.h>
 
 STATIC volatile UINTN mTicks;
 STATIC EFI_HANDLE mBdsImage;
+STATIC UINTN mHeartbeats;
 STATIC VOID EFIAPI Tick (IN EFI_EVENT Event, IN VOID *Context) { mTicks++; }
+STATIC VOID EFIAPI Heartbeat (IN EFI_EVENT Event, IN VOID *Context) {
+  if (++mHeartbeats <= 30) {
+    DEBUG ((DEBUG_WARN, "DALI: app heartbeat=%lu time-ms=%lu\n", mHeartbeats,
+      GetTimeInNanoSecond (GetPerformanceCounter ()) / 1000000));
+  }
+}
 
 STATIC VOID DiagnosticHalt (VOID) {
   // Run 2 lost its ramoops evidence after the automatic reset path. Keep the
@@ -110,7 +118,15 @@ STATIC VOID LaunchUniXNU (VOID) {
       if (!EFI_ERROR (Status)) {
         Loaded->LoadOptions = Options[I].OptionalData;
         Loaded->LoadOptionsSize = (UINT32)Options[I].OptionalDataSize;
+        EFI_EVENT Alive = NULL;
+        mHeartbeats = 0;
+        EFI_STATUS AliveStatus = gBS->CreateEvent (EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_CALLBACK, Heartbeat, NULL, &Alive);
+        if (!EFI_ERROR (AliveStatus)) {
+          AliveStatus = gBS->SetTimer (Alive, TimerPeriodic, 10000000);
+        }
+        DEBUG ((DEBUG_WARN, "DALI: app heartbeat setup=%r\n", AliveStatus));
         Status = gBS->StartImage (App, NULL, NULL);
+        if (Alive != NULL) { gBS->CloseEvent (Alive); }
       }
       gBS->UnloadImage (App);
     }

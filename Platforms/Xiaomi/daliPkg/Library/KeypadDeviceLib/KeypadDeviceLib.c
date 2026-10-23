@@ -5,12 +5,14 @@
 #include <Library/IoLib.h>
 #include <Library/KeypadDeviceLib.h>
 #include <Library/Mt6991PlatformLib.h>
+#include <Library/TimerLib.h>
+#include "KeypadTiming.h"
+#include "PmicKeys.h"
 
 // Official MT6991 pin ranges: GPIO60 DIN[28] at 0x210, DIR[28] at
 // 0x10, MODE[19:16] at 0x370. Never change pinmux, pulls or direction.
-STATIC BOOLEAN mSample, mStable, mLong, mReady;
-STATIC UINT64 mDebounce, mHeld;
-#define MS(Value) ((UINT64)(Value) * 1000000ULL)
+STATIC BOOLEAN mReady;
+STATIC DALI_KEY_STATE mKey;
 
 RETURN_STATUS EFIAPI KeypadDeviceConstructor (VOID) {
   CONST VOID *Fdt = (VOID *)(UINTN)DALI_FDT_BASE;
@@ -18,6 +20,7 @@ RETURN_STATUS EFIAPI KeypadDeviceConstructor (VOID) {
   INT32 Node, Controller, Length;
   UINT32 Mode, Direction;
   if (FdtCheckHeader (Fdt)) { return RETURN_SUCCESS; }
+  DaliPmicKeysInitialize (Fdt);
   Node = FdtPathOffset (Fdt, "/gpio-keys/volumedown");
   Controller = FdtPathOffset (Fdt, "/soc/pinctrl@1002d000");
   Pins = FdtGetProp (Fdt, Node, "gpios", &Length);
@@ -41,38 +44,27 @@ RETURN_STATUS EFIAPI KeypadDeviceConstructor (VOID) {
 }
 
 EFI_STATUS EFIAPI KeypadDeviceReset (KEYPAD_DEVICE_PROTOCOL *This) {
-  mSample = mStable = mLong = FALSE;
-  mDebounce = mHeld = 0;
+  mKey = (DALI_KEY_STATE){0};
   return EFI_SUCCESS;
 }
 
 EFI_STATUS KeypadDeviceGetKeys (KEYPAD_DEVICE_PROTOCOL *This, KEYPAD_RETURN_API *Api, UINT64 Delta) {
   BOOLEAN Pressed;
   EFI_KEY_DATA Key = {0};
+  UINTN Event;
+  UINT64 Now;
+  UINT8 PmicRaw;
+  Now = GetTimeInNanoSecond (GetPerformanceCounter ());
+  DaliPmicKeysPoll (Now, &PmicRaw);
   if (!mReady) { return EFI_NOT_READY; }
   Pressed = (MmioRead32 (DALI_GPIO_BASE + 0x210) & BIT28) == 0;
-  // The generic driver supplies nanoseconds. Cap a delayed callback to keep
-  // debounce/hold timing bounded rather than interpreting a long gap as input.
-  if (Delta > MS (100)) { Delta = MS (100); }
-  if (Pressed != mSample) { mSample = Pressed; mDebounce = 0; }
-  else { mDebounce += Delta; }
-  if (mDebounce >= MS (20) && mStable != mSample) {
-    mStable = mSample;
-    if (mStable) { mHeld = 0; mLong = FALSE; }
-    else if (!mLong) {
-      Key.Key.ScanCode = SCAN_UP;
-      Api->PushEfikeyBufTail (Api, &Key);
-      DEBUG ((DEBUG_WARN, "DALI: keypad event scan=%x unicode=%x\n", Key.Key.ScanCode, Key.Key.UnicodeChar));
-    }
-  }
-  if (mStable) {
-    mHeld += Delta;
-    if (!mLong && mHeld >= MS (700)) {
-      Key.Key.UnicodeChar = CHAR_CARRIAGE_RETURN;
-      Api->PushEfikeyBufTail (Api, &Key);
-      DEBUG ((DEBUG_WARN, "DALI: keypad event scan=%x unicode=%x\n", Key.Key.ScanCode, Key.Key.UnicodeChar));
-      mLong = TRUE;
-    }
+  Event = DaliKeySample (&mKey, Pressed, Now);
+  if (Event != 0) {
+    if (Event == DALI_KEY_UP) { Key.Key.ScanCode = SCAN_UP; }
+    else { Key.Key.UnicodeChar = CHAR_CARRIAGE_RETURN; }
+    Api->PushEfikeyBufTail (Api, &Key);
+    DEBUG ((DEBUG_WARN, "DALI: keypad event scan=%x unicode=%x time-ms=%lu\n",
+      Key.Key.ScanCode, Key.Key.UnicodeChar, Now / 1000000));
   }
   return EFI_SUCCESS;
 }

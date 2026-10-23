@@ -8,6 +8,9 @@
   CONSTRUCTOR = KeypadDeviceConstructor
 [Sources]
   KeypadDeviceLib.c
+  KeypadTiming.h
+  PmicKeys.c
+  PmicKeys.h
 [Packages]
   MdePkg/MdePkg.dec
   SiliciumPkg/SiliciumPkg.dec
@@ -16,3 +19,5 @@
   IoLib
   FdtLib
   DebugLib
+  TimerLib
+  BaseLib

@@ -85,7 +85,7 @@ class Fdt:
         return {"arenas": ARENAS, "reserved_ranges": len(blocked)}
 
     def validate_io(self):
-        """Verify the exact reserved framebuffer and read-only MMIO probe map."""
+        """Verify reserved framebuffer, MMIO map and watchdog handoff contract."""
         self.validate()
         framebuffer = (0xFC990000, 0x3660000)
         chosen = self.nodes.get('/chosen', {})
@@ -102,7 +102,7 @@ class Fdt:
             if b'pkvm,protected-region' in properties.get('compatible', b'').split(b'\0'):
                 if any(size and lo < base + size and base < lo + count for base, size in self.reg(path)):
                     raise ValueError('framebuffer overlaps protected region')
-        regions = [('/soc/pinctrl@1002d000', 0x1002D000)]
+        regions = [('/soc/pinctrl@1002d000', 0x1002D000), ('/watchdog@1c010000', 0x1C010000)]
         regions += [(f'/soc/dsi@{base:x}', base) for base in (0x32490000, 0x324A0000, 0x324B0000)]
         regions += [(f'/soc/disp-ovl{side}-exdma{unit}@{base:x}', base)
                     for side in range(2) for unit in (0, 2, 3, 4, 5, 6, 7, 8, 9)
@@ -111,6 +111,9 @@ class Fdt:
         for path, base in regions:
             if path not in self.nodes or self.reg(path)[0] != (base, 0x1000):
                 raise ValueError('MMIO probe map mismatch: ' + path)
+        watchdog = self.nodes['/watchdog@1c010000'].get('compatible', b'').split(b'\0')
+        if not all(c in watchdog for c in (b'mediatek,mt6991-wdt', b'mediatek,mt6589-wdt')):
+            raise ValueError('watchdog compatible mismatch')
         mutex_path = '/soc/disp1-mutex0@32020000'
         if mutex_path not in self.nodes or self.reg(mutex_path) != [(base, 0x1000) for base in
                 (0x32020000, 0x32420000, 0x32820000, 0x32c20000)]:
@@ -120,4 +123,22 @@ class Fdt:
         pins = controller.get('phandle', controller.get('linux,phandle'))
         if pins is None or key.get('gpios') != pins + struct.pack('>II', 60, 1) or key.get('linux,code') != struct.pack('>I', 115):
             raise ValueError('GPIO60 key binding mismatch')
-        return {'framebuffer': framebuffer, 'mmio_probe_nodes': len(regions) + 1, 'gpio_key': 60}
+        spmi = self.nodes.get('/spmi@1c01a000', {})
+        expected_spmi = [(0x1c01a000, 0x8ff), (0x1c01c000, 0x100),
+                         (0x1c018000, 0x8ff), (0x1c01c800, 0x100)]
+        if (b'mediatek,mt6991-spmi' not in spmi.get('compatible', b'').split(b'\0') or
+                self.reg('/spmi@1c01a000') != expected_spmi or
+                spmi.get('reg-names') != b'pmif\0spmimst\0pmif-p\0spmimst-p\0' or
+                len(spmi.get('spmi-dev-mask', b'')) != 4 or
+                int.from_bytes(spmi['spmi-dev-mask'], 'big') & (1 << 4)):
+            raise ValueError('PMIF map or SID4 routing mismatch')
+        pmic = self.nodes.get('/spmi@1c01a000/pmic@4', {})
+        keys_path = '/spmi@1c01a000/pmic@4/mt6363keys'
+        keys = self.nodes.get(keys_path, {})
+        if (pmic.get('reg') != struct.pack('>II', 4, 0) or
+                b'mediatek,mt6363' not in pmic.get('compatible', b'').split(b'\0') or
+                b'mediatek,mt6363-keys' not in keys.get('compatible', b'').split(b'\0') or
+                self.nodes.get(keys_path + '/power', {}).get('linux,keycodes') != struct.pack('>I', 116) or
+                self.nodes.get(keys_path + '/home', {}).get('linux,keycodes') != struct.pack('>I', 114)):
+            raise ValueError('MT6363 key binding mismatch')
+        return {'framebuffer': framebuffer, 'mmio_probe_nodes': len(regions) + 2, 'gpio_key': 60, 'pmic_key_sid': 4}

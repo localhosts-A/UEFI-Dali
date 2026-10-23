@@ -36,6 +36,11 @@ def parse_evidence(data):
             "keypad_events": [{"scan": int(s, 16), "unicode": int(u, 16)} for s, u in
                               re.findall(r"DALI: keypad event scan=([\da-fA-F]+) unicode=([\da-fA-F]+)", text)],
             "event_wait_pass": "DALI: WaitForEvent timer status=Success" in text,
+            "inherited_watchdog_disabled": bool(re.search(r"DALI: inherited RGU WDT [^\r\n]* disabled=1", text)),
+            "pmic_samples": [{"raw": int(raw, 16), "time_ms": int(ms)} for raw, ms in
+                             re.findall(r"DALI: MT6363 TOPSTATUS=([\da-fA-F]+) time-ms=(\d+)", text)],
+            "app_heartbeats": [{"number": int(n), "time_ms": int(ms)} for n, ms in
+                               re.findall(r"DALI: app heartbeat=(\d+) time-ms=(\d+)", text)],
             "frame_submission_enabled": "DALI: frame submission enabled;" in text,
             "frame_submissions": [int(n) for n in re.findall(r"DALI: frame submit=(\d+)", text)],
             "frame_completion_samples": re.findall(r"DALI: frame completion sample[^\r\n]*", text),

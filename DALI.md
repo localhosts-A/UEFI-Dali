@@ -24,10 +24,20 @@ The UniXNU integration adds:
 - Persistent ramoops logging, with distinct core, filesystem, menu, payload and
   return-to-firmware milestones.
 
-Real-device integration has reached the UniXNU menu and read the RAM FAT
-configuration. Full payload/Exit validation is still pending: the third run
-displayed the menu but did not advance its countdown or respond to keys.
-Android B/root and all 16 boot/companion/LK hashes were restored after that run.
+Real-device integration has reached the UniXNU menu, read the RAM FAT
+configuration and started SampleDriver. Full HelloPayload/Exit validation is
+still pending. In the fifth run the countdown stopped near two seconds and
+logged heartbeats ended at about 35 seconds of counter uptime. The owner
+clarified that the later key action reached a preloader USB port, not a return
+to firmware. Android B/root and all 16 boot/companion/LK hashes were restored.
+
+The next diagnostic revision validates the exact RGU device-tree node, stops
+an inherited enabled watchdog using its keyed MODE write, and records the
+readback. Watchdog reset is a hypothesis until that hardware run is examined.
+It also samples MT6363 TOPSTATUS via inherited PMIF SWINF2/SID4. Only PMIC
+reads are implemented; commands and valid acknowledgements write the PMIF
+controller, while PMIC configuration, clocks and reset policy remain untouched.
+Power/volume-down event mapping awaits physical raw-bit calibration.
 
 Bring-up fixes include waiting for HII dependencies before dispatching BDS,
 starting the registered FV application with LoadImage/StartImage, and signaling
@@ -38,7 +48,7 @@ polling idle (YIELD), retaining the upstream EL1 TLB flush sequence, until WFI
 wakeup on this handoff is separately validated. This is a power-efficiency
 limitation of the bring-up firmware.
 
-Physical UFS, USB device transport, PMIC power/volume-down UEFI input, touch,
+Physical UFS, USB device transport, complete PMIC power/volume-down UEFI input, touch,
 panel cold initialization, DarwinBoot and XNU remain unimplemented. The RAM
 volume validates firmware file access; it does not provide physical storage.
 
@@ -89,6 +99,11 @@ rooted Android device; keep it outside Git.
   `0xfc990000 + 0x3660000`. Only validated linear LK buffers are mirrored.
 - GPIO60 is physical volume-up: tap emits UP; hold 700 ms emits ENTER, without
   changing the inherited GPIO/KPCOL0 mux. The FDT node is named `volumedown`.
+- MT6363 is SID4 on SPMI-M (`spmi-dev-mask` bit4 clear), PMIF `0x1c01a000`.
+  Diagnostic reads use SWINF2 ACC `+0x880`, RDATA `+0x894`, VLD_CLR `+0x8a4`,
+  STA `+0x8a8`, with bounded polling. The PMIC state register is `0x1e`.
+- RGU watchdog `0x1c010000` must advertise both MT6991 and MT6589 compatibility.
+  Only inherited MODE.EN is cleared with key `0x22000000`, after reload `0x1971`.
 - Logs use the inspected ramoops console at `0xaec0f000`, 2 MiB. Automatic reset
   did not preserve logs in an earlier test; diagnostics retain control until
   manual fastboot recovery.
@@ -102,7 +117,9 @@ python3 -m unittest discover -s tools/dali -p 'test_*.py' -v
 python3 tools/dali/qemu_sec_smoke.py --dtb /private/runtime.dtb --exception-level 1
 ```
 
-QEMU only verifies shim/SEC/MMU entry into DXE; it does not emulate MT6991 MMIO.
+The earlier QEMU check verified shim/SEC/MMU entry into DXE. QEMU does not
+emulate MT6991 MMIO; the newer strict RGU readback currently rejects its
+all-ones register value before MMU entry. This run is unsupported, not a pass.
 The image and FAT tools check headers, sizes, hashes and per-file FAT readback.
 
 Hardware tests must first recheck the exact device, running FDT, active B slot
@@ -120,3 +137,13 @@ Verify Android boot completion, root and all backed-up boot/companion/LK hashes.
 Never restore misc blindly or alter LK/preloader/AVB on an image refusal. Empty
 pstore is inconclusive. Keep private images, runtime DTBs and device identifiers
 out of commits.
+
+## Register-contract references
+
+- [Official MT6991 watchdog driver](https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991/blob/oneplus/mt6991_v_15.0.2_ace5_ultra/drivers/watchdog/mtk_wdt.c)
+- [Official MT6991 PMIF core](https://github.com/oppo-source/android_kernel_modules_and_devicetree_oppo_mt6991/blob/oppo/mt6991_v_15.0.0_oppo_find_x8_pro/kernel/kernel_device_modules-6.6/drivers/spmi/spmi-mtk-pmif-core.c)
+- [MT6363 key driver](https://github.com/oppo-source/android_kernel_modules_and_devicetree_oppo_mt6991/blob/oppo/mt6991_v_15.0.0_oppo_find_x8_pro/kernel/kernel_device_modules-6.6/drivers/input/keyboard/mtk-pmic-keys.c)
+
+The MT6363 Linux driver uses separate press/release IRQs. Its old polling
+mask parameters alone are insufficient proof of the raw key-bit layout;
+diagnostics therefore collect state transitions before enabling that mapping.

@@ -33,6 +33,15 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["io"]["keypad_events"], [{"scan": 1, "unicode": 0}, {"scan": 0, "unicode": 13}])
         self.assertTrue(result["io"]["event_wait_pass"])
 
+    def test_watchdog_and_pmic_sampling_are_distinct_from_menu_success(self):
+        result = parse_evidence(b"DALI: inherited RGU WDT mode=23->22 length=F808 disabled=1\n"
+                                b"DALI: MT6363 TOPSTATUS=AB time-ms=12345\n"
+                                b"DALI: app heartbeat=3 time-ms=15000\n")
+        self.assertTrue(result["io"]["inherited_watchdog_disabled"])
+        self.assertEqual(result["io"]["pmic_samples"], [{"raw": 0xAB, "time_ms": 12345}])
+        self.assertEqual(result["io"]["app_heartbeats"], [{"number": 3, "time_ms": 15000}])
+        self.assertFalse(result["unixnu"]["hello_returned_success"])
+
     def test_readback_does_not_prove_visibility_or_submission(self):
         result = parse_evidence(b"DALI: SEC diagnostics v1\nDALI: UEFI_DIAGNOSTIC_PASS\n"
                                 b"DALI: GOP_BLT_PASS (CPU readback)\n")

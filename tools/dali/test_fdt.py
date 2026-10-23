@@ -29,6 +29,19 @@ def io_tree():
     extra = '''chosen { atag,videolfb-fb_base_l = <0xfc990000>; atag,videolfb-fb_base_h = <0>;
                        atag,videolfb-vramSize = <0x3660000>; };
                gpio-keys { volumedown { gpios = <42 60 1>; linux,code = <115>; }; };
+               watchdog@1c010000 { compatible = "mediatek,mt6991-wdt", "mediatek,mt6589-wdt";
+                                   reg = <0 0x1c010000 0 0x1000>; };
+               spmi@1c01a000 { compatible = "mediatek,mt6991-spmi";
+                 reg = <0 0x1c01a000 0 0x8ff>, <0 0x1c01c000 0 0x100>,
+                       <0 0x1c018000 0 0x8ff>, <0 0x1c01c800 0 0x100>;
+                 reg-names = "pmif", "spmimst", "pmif-p", "spmimst-p";
+                 spmi-dev-mask = <0x85c0>; #address-cells = <2>; #size-cells = <0>;
+                 pmic@4 { compatible = "mediatek,mt6363"; reg = <4 0>;
+                   mt6363keys { compatible = "mediatek,mt6363-keys";
+                     power { linux,keycodes = <116>; }; home { linux,keycodes = <114>; };
+                   };
+                 };
+               };
                soc { #address-cells = <2>; #size-cells = <2>; ''' + ''.join(nodes) + ' };'
     return Fdt(tree(extra=extra, reserved='mblock-15-framebuffer { reg = <0 0xfc990000 0 0x3660000>; };'))
 
@@ -62,7 +75,31 @@ class PreflightTests(unittest.TestCase):
             Fdt(tree()[:-16])
 
     def test_io_layout(self):
-        self.assertEqual(io_tree().validate_io()['mmio_probe_nodes'], 22)
+        self.assertEqual(io_tree().validate_io()['mmio_probe_nodes'], 24)
+
+    def test_changed_spmi_route_rejected(self):
+        f = io_tree()
+        f.nodes['/spmi@1c01a000']['spmi-dev-mask'] = bytes.fromhex('000085d0')
+        with self.assertRaisesRegex(ValueError, 'SID4 routing'):
+            f.validate_io()
+
+    def test_changed_pmic_key_binding_rejected(self):
+        f = io_tree()
+        f.nodes['/spmi@1c01a000/pmic@4/mt6363keys/home']['linux,keycodes'] = bytes.fromhex('00000073')
+        with self.assertRaisesRegex(ValueError, 'MT6363 key binding'):
+            f.validate_io()
+
+    def test_changed_watchdog_compatible_rejected(self):
+        f = io_tree()
+        f.nodes['/watchdog@1c010000']['compatible'] = b'unknown,wdt\0'
+        with self.assertRaisesRegex(ValueError, 'watchdog compatible'):
+            f.validate_io()
+
+    def test_changed_watchdog_address_rejected(self):
+        f = io_tree()
+        f.nodes['/watchdog@1c010000']['reg'] = bytes.fromhex('000000001c0200000000000000001000')
+        with self.assertRaisesRegex(ValueError, 'MMIO probe map'):
+            f.validate_io()
 
     def test_changed_framebuffer_tag_rejected(self):
         f = io_tree()

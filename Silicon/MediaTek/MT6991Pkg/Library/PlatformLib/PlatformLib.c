@@ -5,6 +5,7 @@
 #include <Library/PrintLib.h>
 #include <Library/SerialPortLib.h>
 #include <Library/ArmSmcLib.h>
+#include <Library/IoLib.h>
 #include <Library/Mt6991PlatformLib.h>
 
 // Deliberately expose only the validated diagnostic arena, not all 12 GiB.
@@ -18,6 +19,8 @@ STATIC EFI_MEMORY_REGION_DESCRIPTOR mMap[] = {
   {"GIC Redistributors", 0x0C440000, 0x200000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"Display Reserved", DALI_FB_BASE, DALI_FB_SIZE, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},
   {"GPIO input probe", DALI_GPIO_BASE, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
+  {"Inherited RGU watchdog", DALI_WDT_BASE, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
+  {"Inherited PMIF SPMI-M", DALI_PMIF_BASE, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"DSI state probe", 0x32490000, 0x30000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"OVL0 state probe", 0x32830000, 0xA0000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"OVL1 state probe", 0x32C50000, 0x80000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
@@ -109,6 +112,32 @@ STATIC BOOLEAN CheckProbeRegion (CONST VOID *Fdt, CONST CHAR8 *Path, UINT64 Base
   return FALSE;
 }
 
+STATIC EFI_STATUS StopInheritedWatchdog (CONST VOID *Fdt) {
+  CHAR8 Message[160];
+  INT32 Node = FdtPathOffset (Fdt, "/watchdog@1c010000");
+  UINT32 Before, After, Length;
+  if (!CheckProbeRegion (Fdt, "/watchdog@1c010000", DALI_WDT_BASE) ||
+      FdtStringListSearch (Fdt, Node, "compatible", "mediatek,mt6991-wdt") < 0 ||
+      FdtStringListSearch (Fdt, Node, "compatible", "mediatek,mt6589-wdt") < 0) {
+    return EFI_UNSUPPORTED;
+  }
+  // The mt6589-compatible RGU contract is documented by the official MT6991
+  // Linux mtk_wdt driver: reload +0x08 with 0x1971, clear only MODE.EN with
+  // the 0x22000000 write key. Do not touch reset requests or PMIC state.
+  Before = MmioRead32 (DALI_WDT_BASE);
+  Length = MmioRead32 (DALI_WDT_BASE + 4);
+  if (Before == MAX_UINT32 || Length == MAX_UINT32) { return EFI_DEVICE_ERROR; }
+  if (Before & BIT0) {
+    MmioWrite32 (DALI_WDT_BASE + 8, 0x1971);
+    MmioWrite32 (DALI_WDT_BASE, (Before & ~BIT0) | 0x22000000);
+  }
+  After = MmioRead32 (DALI_WDT_BASE);
+  AsciiSPrint (Message, sizeof Message, "DALI: inherited RGU WDT mode=%x->%x length=%x disabled=%u\n",
+    Before, After, Length, (After & BIT0) == 0);
+  Log (Message);
+  return (After & BIT0) ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+
 EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
   CONST VOID *Fdt = (VOID *)BootFdt;
   volatile UINT32 *Ring = (volatile UINT32 *)(UINTN)DALI_CONSOLE_BASE;
@@ -182,5 +211,5 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
     }
   }
   Log ("DALI: FDT copied; diagnostic RAM checked against carveouts\n");
-  return EFI_SUCCESS;
+  return StopInheritedWatchdog (Fdt);
 }

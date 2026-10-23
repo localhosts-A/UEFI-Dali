@@ -19,3 +19,4 @@
   SerialPortLib
   PrintLib
   ArmSmcLib
+  IoLib
