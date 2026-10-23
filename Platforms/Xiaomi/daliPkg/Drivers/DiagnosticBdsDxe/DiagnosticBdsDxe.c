@@ -95,11 +95,12 @@ STATIC BOOLEAN PrepareUniXNU (VOID) {
   return PayloadOk && !EFI_ERROR (Status);
 }
 
-STATIC VOID LaunchUniXNU (VOID) {
+STATIC EFI_STATUS LaunchUniXNU (VOID) {
   STATIC CONST CHAR16 Marker[] = L"unixnu:firmware";
   EFI_BOOT_MANAGER_LOAD_OPTION *Options;
   UINTN Count;
   BOOLEAN Found = FALSE;
+  EFI_STATUS Result = EFI_NOT_FOUND;
   Options = EfiBootManagerGetLoadOptions (&Count, LoadOptionTypeBoot);
   for (UINTN I = 0; I < Count; I++) {
     if (Options[I].OptionalDataSize != sizeof Marker ||
@@ -132,10 +133,23 @@ STATIC VOID LaunchUniXNU (VOID) {
     }
     // The application deliberately returns EFI_ABORTED for its Exit action.
     DEBUG ((DEBUG_WARN, "DALI: UniXNU returned status=%r\n", Status));
+    Result = Status;
     if (Status == EFI_ABORTED || !EFI_ERROR (Status)) { break; }
   }
   if (Options != NULL) { EfiBootManagerFreeLoadOptions (Options, Count); }
   if (!Found) { DEBUG ((DEBUG_ERROR, "DALI: UEFI_STAGE_FAIL UniXNU option not registered\n")); }
+  return Result;
+}
+
+STATIC VOID RecoverAfterExit (EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *Out) {
+  if (Out != NULL) {
+    Out->OutputString (Out, L"\r\nReturned to dali firmware.\r\n");
+    Out->OutputString (Out, L"Hold VOLUME DOWN now. Warm reboot to fastboot in 10 seconds.\r\n");
+    Out->OutputString (Out, L"Release VOLUME UP; do not hold POWER for this recovery.\r\n");
+  }
+  DEBUG ((DEBUG_WARN, "DALI: recovery window=10s; hold Volume down for fastboot\n"));
+  gBS->Stall (10000000);
+  Mt6991WarmReset ();
 }
 
 STATIC VOID DisplayAndInputProbe (VOID) {
@@ -185,7 +199,7 @@ STATIC VOID DisplayAndInputProbe (VOID) {
   DEBUG ((DEBUG_WARN, "DALI: text input status=%r\n", Status));
   if (PrepareUniXNU ()) {
     DEBUG ((DEBUG_WARN, "DALI: UEFI_UNIXNU_READY\n"));
-    LaunchUniXNU ();
+    if (LaunchUniXNU () == EFI_ABORTED) { RecoverAfterExit (Out); }
     if (Out != NULL) {
       Out->OutputString (Out, L"\r\nReturned to dali firmware. Hold Volume up to reopen UniXNU.\r\n");
       Out->OutputString (Out, L"Power + Volume down: enter fastboot for Android recovery.\r\n");
@@ -199,7 +213,9 @@ STATIC VOID DisplayAndInputProbe (VOID) {
     if (In != NULL && !EFI_ERROR (In->ReadKeyStroke (In, &Key))) {
       Keys++;
       DEBUG ((DEBUG_WARN, "DALI: INPUT key=%lu scan=%x unicode=%x\n", Keys, Key.ScanCode, Key.UnicodeChar));
-      if (Key.UnicodeChar == CHAR_CARRIAGE_RETURN) { LaunchUniXNU (); }
+      if (Key.UnicodeChar == CHAR_CARRIAGE_RETURN && LaunchUniXNU () == EFI_ABORTED) {
+        RecoverAfterExit (Out);
+      }
       if (Out != NULL) {
         UnicodeSPrint (Text, sizeof Text, L"Key %lu: scan=%x unicode=%x          \r\n", Keys, Key.ScanCode, Key.UnicodeChar);
         Out->OutputString (Out, Text);

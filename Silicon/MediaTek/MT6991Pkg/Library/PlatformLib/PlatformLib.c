@@ -68,6 +68,18 @@ VOID Mt6991Reset (VOID) {
   CpuDeadLoop ();
 }
 
+VOID Mt6991WarmReset (VOID) {
+  UINT32 Mode = MmioRead32 (DALI_WDT_BASE);
+  Log ("DALI: warm RGU software reset for manual fastboot recovery\n");
+  // Official mtk_wdt_restart sequence: select reset rather than IRQ and
+  // issue SWRST. Preserve all other inherited MODE bits, including DRAM policy.
+  MmioWrite32 (DALI_WDT_BASE, (Mode & ~BIT3) | 0x22000000);
+  MemoryFence ();
+  MmioWrite32 (DALI_WDT_BASE + 0x14, 0x1209);
+  MemoryFence ();
+  CpuDeadLoop ();
+}
+
 STATIC UINT64 Cells (CONST UINT32 *P, INT32 Count) {
   UINT64 Value = 0;
   for (INT32 I = 0; I < Count; I++) { Value = (Value << 32) | Fdt32ToCpu (P[I]); }

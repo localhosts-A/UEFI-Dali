@@ -39,6 +39,13 @@ reads are implemented; commands and valid acknowledgements write the PMIF
 controller, while PMIC configuration, clocks and reset policy remain untouched.
 Power/volume-down event mapping awaits physical raw-bit calibration.
 
+The sixth run displayed HelloPayload's PASS report on the phone after the
+watchdog handoff change. Its manual hardware-key reset left pstore empty, so
+that observation does not supply a persisted log. The next recovery path
+returns from UniXNU's Exit action, gives a ten-second volume-down-only window,
+then issues the standard keyed RGU software reset. Log retention through that
+path is still under test; the original boot_b has been restored after each run.
+
 Bring-up fixes include waiting for HII dependencies before dispatching BDS,
 starting the registered FV application with LoadImage/StartImage, and signaling
 EndOfDxe before filesystem EFI loads. The latter preserves SecurityStub's
@@ -106,7 +113,7 @@ rooted Android device; keep it outside Git.
   Only inherited MODE.EN is cleared with key `0x22000000`, after reload `0x1971`.
 - Logs use the inspected ramoops console at `0xaec0f000`, 2 MiB. Automatic reset
   did not preserve logs in an earlier test; diagnostics retain control until
-  manual fastboot recovery.
+  recovery. The new Exit path uses a prompted RGU warm reset to test retention.
 - The 64 MiB DXE heap is deliberately limited. DarwinBoot's later kernel window
   will need a separate memory-layout review.
 
