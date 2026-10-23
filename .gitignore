@@ -9,3 +9,5 @@ BootShim.elf
 
 Mu-*.*
 *:Zone.Identifier
+/out/
+/build-dali.log

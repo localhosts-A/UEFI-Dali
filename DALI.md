@@ -1,0 +1,122 @@
+# REDMI K80 Ultra (dali / MT6991)
+
+This repository is the UEFI firmware port. Device policy and UniXNU payload
+configuration belong in the sibling `UniXNU-Dali` device repository; generic
+UniXNU application sources stay in the sibling upstream `UniXNU` checkout.
+
+## Current state
+
+The earlier firmware baseline passed real-device SEC/MMU/DXE/BDS, memory-map
+and timer checks. Inherited GOP text/color bars and GPIO60 UP/ENTER input were
+also verified, followed by original Android restoration. The inherited panel
+requires command-mode frame submission; CPU framebuffer readback alone is not
+display proof.
+
+The UniXNU integration adds:
+
+- UniXNU and UniXNUDxe in the same firmware volume, with RAM-backed boot options.
+- A read-only 1 MiB FAT test volume embedded in the FV, published as BlockIo
+  and connected through the generic DiskIo, FAT and Unicode collation drivers.
+- System-table consoles and a diagnostic BDS that starts the registered UniXNU
+  option, then retains firmware control after its Exit action.
+- The device configuration's HelloPayload and SampleDriver EFI tests, with no
+  Apple inputs, physical disk access or XNU boot entry.
+- Persistent ramoops logging, with distinct core, filesystem, menu, payload and
+  return-to-firmware milestones.
+
+Real-device integration has reached the UniXNU menu and read the RAM FAT
+configuration. Full payload/Exit validation is still pending: the third run
+displayed the menu but did not advance its countdown or respond to keys.
+Android B/root and all 16 boot/companion/LK hashes were restored after that run.
+
+Bring-up fixes include waiting for HII dependencies before dispatching BDS,
+starting the registered FV application with LoadImage/StartImage, and signaling
+EndOfDxe before filesystem EFI loads. The latter preserves SecurityStub's
+normal deferred-image policy. The current diagnostic image also checks BDS
+application TPL and an actual WaitForEvent timer round trip. A dali CpuLib uses
+polling idle (YIELD), retaining the upstream EL1 TLB flush sequence, until WFI
+wakeup on this handoff is separately validated. This is a power-efficiency
+limitation of the bring-up firmware.
+
+Physical UFS, USB device transport, PMIC power/volume-down UEFI input, touch,
+panel cold initialization, DarwinBoot and XNU remain unimplemented. The RAM
+volume validates firmware file access; it does not provide physical storage.
+
+## Build
+
+Use this firmware checkout with its pinned dependencies:
+
+```sh
+git submodule update --init \
+  Common/Mu Common/Mu_OEM_Sample Mu_Basecore Silicium-ACPI \
+  Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl
+git -C Mu_Basecore submodule update --init \
+  MdePkg/Library/BaseFdtLib/libfdt MdePkg/Library/MipiSysTLib/mipisyst \
+  BaseTools/Source/C/BrotliCompress/brotli \
+  MdeModulePkg/Library/BrotliCustomDecompressLib/brotli
+python3 -m venv /path/to/mu-venv
+/path/to/mu-venv/bin/pip install -r pip-requirements.txt
+/path/to/mu-venv/bin/stuart_update -c Platforms/Xiaomi/daliPkg/DeviceBuild.py
+
+MU_PYTHON=/path/to/mu-venv/bin/python bash build-dali.sh \
+  /absolute/path/to/verified-dali-backup ../UniXNU ../UniXNU-Dali
+```
+
+The reviewed UniXNU commit is
+`1a01c2afa197d975d04da892325c56b6b14aaecb`. The firmware fork baseline is
+`42fe563791e51bf5500c2e470ed294ca0c94b97c`; submodules are pinned by Git.
+The build uses the system `clang`, `lld`, `llvm-objcopy`, legacy-capable `lz4`,
+`mtools` and the Mu build dependencies. Mu's nasm dependency may require the
+system-nasm workaround described by upstream on hosts without Mono.
+
+Outputs are local under `out/`: `UniXNU-dali-uefi-boot.img`, `manifest.json`,
+`payload.img`, `payload.json` and build logs. The raw FD is
+`Build/daliPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd`. A build never reboots or
+flashes the phone. `tools/dali/backup.py` creates a verified backup from a
+rooted Android device; keep it outside Git.
+
+## Device-specific contracts
+
+- Android boot header v4, legacy LZ4 and `BootShim/DaliShim.S`, preserving LK FDT
+  in x0. The generic UniXNU gzip/BootShim.S packer is not used.
+- FD `0xc1000000 + 0x400000`, stack `0xc1400000 + 0x40000`, FDT copy
+  `0xc1480000 + 0x100000`, DXE heap `0xc1800000 + 0x4000000`.
+- The FDT preflight excludes reserved, protected, memreserve and initrd regions;
+  SEC checks again. These addresses require review after firmware changes.
+- GICv3 distributor `0x0c400000`, redistributor `0x0c440000`, PSCI SMC and the
+  13 MHz architected timer. Only the boot CPU is enabled.
+- Inherited 1280×2772 BGRX scanout, pitch 5120, reserved framebuffer
+  `0xfc990000 + 0x3660000`. Only validated linear LK buffers are mirrored.
+- GPIO60 is physical volume-up: tap emits UP; hold 700 ms emits ENTER, without
+  changing the inherited GPIO/KPCOL0 mux. The FDT node is named `volumedown`.
+- Logs use the inspected ramoops console at `0xaec0f000`, 2 MiB. Automatic reset
+  did not preserve logs in an earlier test; diagnostics retain control until
+  manual fastboot recovery.
+- The 64 MiB DXE heap is deliberately limited. DarwinBoot's later kernel window
+  will need a separate memory-layout review.
+
+## Verification and recovery
+
+```sh
+python3 -m unittest discover -s tools/dali -p 'test_*.py' -v
+python3 tools/dali/qemu_sec_smoke.py --dtb /private/runtime.dtb --exception-level 1
+```
+
+QEMU only verifies shim/SEC/MMU entry into DXE; it does not emulate MT6991 MMIO.
+The image and FAT tools check headers, sizes, hashes and per-file FAT readback.
+
+Hardware tests must first recheck the exact device, running FDT, active B slot
+and original boot_b hash. Back up both slots and boot metadata. The owner has
+selected direct boot_b tests because fastboot boot is unsupported. Restore the
+verified original boot_b through the known hardware-key fastboot path, boot
+Android B, then collect immediately:
+
+```sh
+python3 tools/dali/collect.py --serial SERIAL --output /private/run \
+  --require-unixnu
+```
+
+Verify Android boot completion, root and all backed-up boot/companion/LK hashes.
+Never restore misc blindly or alter LK/preloader/AVB on an image refusal. Empty
+pstore is inconclusive. Keep private images, runtime DTBs and device identifiers
+out of commits.

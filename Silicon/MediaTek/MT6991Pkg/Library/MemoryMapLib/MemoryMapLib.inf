@@ -1,0 +1,16 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = Mt6991MemoryMapLib
+  FILE_GUID = 2CF35D0B-AF2B-4352-AF0D-29E26C7659D5
+  MODULE_TYPE = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = MemoryMapLib
+[Sources]
+  MemoryMapLib.c
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+[LibraryClasses]
+  Mt6991PlatformLib

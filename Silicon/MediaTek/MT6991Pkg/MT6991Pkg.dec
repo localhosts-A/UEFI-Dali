@@ -1,0 +1,9 @@
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = MT6991Pkg
+  PACKAGE_GUID      = E1EDC040-2B84-448C-90CA-25B046518829
+  PACKAGE_VERSION   = 0.1
+[Includes]
+  Include
+[LibraryClasses]
+  Mt6991PlatformLib|Include/Library/Mt6991PlatformLib.h

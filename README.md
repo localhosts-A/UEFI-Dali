@@ -1,4 +1,21 @@
-# Project Silicium UEFI for ARM64-Based Devices
+# UEFI-Dali — Mu-Silicium for REDMI K80 Ultra
+
+This repository owns the dali / MT6991 **UEFI firmware port**. See
+[dali build and bring-up notes](DALI.md) for the current state and build steps.
+
+The project follows UniXNU's repository separation:
+
+| Repository | Responsibility |
+| --- | --- |
+| [UEFI-Dali](https://github.com/localhosts-A/UEFI-Dali) | Firmware, BootShim, MT6991 platform drivers, diagnostics and boot-v4 packaging |
+| [UniXNU-Dali](https://github.com/localhosts-A/UniXNU-Dali) | `board.toml`, device payload configuration and device build entry points |
+| [UniXNU](https://github.com/localhosts-A/UniXNU) | Generic boot manager, build driver, DarwinBoot and shared modules; tracks [upstream](https://github.com/UniXNU/UniXNU) |
+
+Device backups, runtime DTBs, logs, built images and private firmware inputs are
+kept outside Git. This port is under active bring-up; see DALI.md for tested
+capabilities and remaining work.
+
+## Upstream Project Silicium
 
 <!-- ![Banner](https://github.com/Project-Silicium/Mu-Silicium/blob/main/Resources/Pictures/Banner.png) -->
 

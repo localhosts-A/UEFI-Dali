@@ -1,0 +1,28 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliPayloadDxe
+  FILE_GUID = 6A514BDA-EE98-4385-87A9-131CB0EEBA84
+  MODULE_TYPE = DXE_DRIVER
+  ENTRY_POINT = DaliPayloadInitialize
+[Sources]
+  PayloadDxe.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  daliPkg/dali.dec
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DxeServicesLib
+  MemoryAllocationLib
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+[Guids]
+  gDaliPayloadFileGuid
+[Protocols]
+  gEfiBlockIoProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiFirmwareVolume2ProtocolGuid
+[Depex]
+  gEfiFirmwareVolume2ProtocolGuid

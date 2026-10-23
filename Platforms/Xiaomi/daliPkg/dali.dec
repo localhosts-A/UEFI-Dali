@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME = daliPkg
+  PACKAGE_GUID = CB50FF18-DF69-4882-A194-4F9C7190EF6B
+  PACKAGE_VERSION = 0.1
+[Includes]
+  Include
+
+[Guids]
+  gDaliPayloadFileGuid = {0x073E16DA, 0x8776, 0x4FBA, {0x96, 0xC4, 0x35, 0xBB, 0xE0, 0x6A, 0x41, 0xDF}}

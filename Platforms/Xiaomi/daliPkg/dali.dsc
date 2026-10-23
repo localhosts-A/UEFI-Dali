@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+[Defines]
+  PLATFORM_NAME = dali
+  PLATFORM_GUID = 0C3B3BA4-DC12-4DEE-B999-362B64BFAFBA
+  PLATFORM_VERSION = 0.1
+  DSC_SPECIFICATION = 0x00010005
+  OUTPUT_DIRECTORY = Build/daliPkg
+  SUPPORTED_ARCHITECTURES = AARCH64
+  BUILD_TARGETS = RELEASE|DEBUG
+  SKUID_IDENTIFIER = DEFAULT
+  FLASH_DEFINITION = daliPkg/dali.fdf
+  USE_CUSTOM_DISPLAY_DRIVER = 1
+
+!include MT6991Pkg/MT6991Pkg.dsc.inc
+
+[LibraryClasses]
+  # Keep event waits polling until MT6991 WFI wakeup is validated separately.
+  CpuLib|daliPkg/Library/PollingCpuLib/PollingCpuLib.inf
+  KeypadDeviceLib|daliPkg/Library/KeypadDeviceLib/KeypadDeviceLib.inf
+  UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
+
+[PcdsFixedAtBuild]
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
+  gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
+  gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC1400000
+  gArmPlatformTokenSpaceGuid.PcdCPUCorePrimaryStackSize|0x40000
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemManufacturer|"Xiaomi"
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemModel|"REDMI K80 Ultra"
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemRetailModel|"dali"
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemRetailSku|"25060RK16C"
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemBoardModel|"dali"
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosProcessorModel|"MediaTek Dimensity 9400+"
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosProcessorPartNumber|"MT6991"
+
+[Components]
+  daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
+  UniXNUPkg/Application/UniXNU/UniXNU.inf
+  UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
+  daliPkg/Drivers/DisplayDxe/DisplayDxe.inf
+  SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
+  SiliciumPkg/Drivers/KeypadDxe/KeypadDxe.inf
+  daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe.inf
