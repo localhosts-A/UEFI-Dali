@@ -43,6 +43,9 @@ VOID DaliPmicKeysInitialize (CONST VOID *Fdt) {
   CONST UINT32 *Reg, *Mask;
   CONST UINT32 Expected[] = {0, 0x1C01A000, 0, 0x8FF, 0, 0x1C01C000, 0, 0x100,
                             0, 0x1C018000, 0, 0x8FF, 0, 0x1C01C800, 0, 0x100};
+  CONST CHAR8 *KeyPaths[] = {"/spmi@1c01a000/pmic@4/mt6363keys/power",
+                            "/spmi@1c01a000/pmic@4/mt6363keys/home"};
+  CONST UINT32 KeyCodes[] = {116, 114};
   Node = FdtPathOffset (Fdt, "/spmi@1c01a000");
   if (Node < 0 || FdtStringListSearch (Fdt, Node, "compatible", "mediatek,mt6991-spmi") < 0) { return; }
   Reg = FdtGetProp (Fdt, Node, "reg", &Length);
@@ -58,6 +61,11 @@ VOID DaliPmicKeysInitialize (CONST VOID *Fdt) {
       FdtStringListSearch (Fdt, Node, "compatible", "mediatek,mt6363") < 0) { return; }
   Node = FdtPathOffset (Fdt, "/spmi@1c01a000/pmic@4/mt6363keys");
   if (Node < 0 || FdtStringListSearch (Fdt, Node, "compatible", "mediatek,mt6363-keys") < 0) { return; }
+  for (UINTN I = 0; I < ARRAY_SIZE (KeyPaths); I++) {
+    Node = FdtPathOffset (Fdt, KeyPaths[I]);
+    Reg = FdtGetProp (Fdt, Node, "linux,keycodes", &Length);
+    if (Node < 0 || Reg == NULL || Length != 4 || Fdt32ToCpu (*Reg) != KeyCodes[I]) { return; }
+  }
   DEBUG ((DEBUG_WARN, "DALI: PMIF probe init=%x SWINF2=%x SID4 path=M\n",
     MmioRead32 (DALI_PMIF_BASE), MmioRead32 (DALI_PMIF_BASE + PMIF_STA)));
   if (!(MmioRead32 (DALI_PMIF_BASE) & BIT0)) { return; }

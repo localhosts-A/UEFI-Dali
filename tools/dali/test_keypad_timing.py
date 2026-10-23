@@ -29,12 +29,15 @@ typedef bool BOOLEAN;
 static DALI_KEY_STATE state;
 void reset(void) { state = (DALI_KEY_STATE){0}; }
 size_t sample(int pressed, uint64_t now) { return DaliKeySample(&state, pressed != 0, now); }
+size_t press_sample(int pressed, uint64_t now) { return DaliKeyPressSample(&state, pressed != 0, now); }
 ''')
         subprocess.run([compiler, "-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror",
                         "-I", str(header.parent), str(base / "policy.c"), "-o", str(base / "policy.so")], check=True)
         cls.policy = ctypes.CDLL(str(base / "policy.so"))
         cls.policy.sample.argtypes = [ctypes.c_int, ctypes.c_uint64]
         cls.policy.sample.restype = ctypes.c_size_t
+        cls.policy.press_sample.argtypes = [ctypes.c_int, ctypes.c_uint64]
+        cls.policy.press_sample.restype = ctypes.c_size_t
 
     @classmethod
     def tearDownClass(cls):
@@ -77,6 +80,27 @@ size_t sample(int pressed, uint64_t now) { return DaliKeySample(&state, pressed 
         self.sample(True, 0)
         self.sample(False, 10)
         self.assertEqual(self.sample(False, 40), 0)
+
+    def test_pmic_press_is_debounced_without_hold_repeat(self):
+        press = lambda down, ms: self.policy.press_sample(down, ms * 1000000)
+        self.assertEqual(press(True, 0), 0)
+        self.assertEqual(press(True, 20), 1)
+        self.assertEqual(press(True, 1000), 0)
+        self.assertEqual(press(False, 1100), 0)
+        self.assertEqual(press(False, 1120), 0)
+        self.assertEqual(press(True, 1200), 0)
+        self.assertEqual(press(True, 1220), 1)
+
+    def test_pmic_bounce_does_not_press_or_rearm(self):
+        press = lambda down, ms: self.policy.press_sample(down, ms * 1000000)
+        self.assertEqual(press(True, 0), 0)
+        self.assertEqual(press(False, 10), 0)
+        self.assertEqual(press(False, 30), 0)
+        self.assertEqual(press(True, 40), 0)
+        self.assertEqual(press(True, 60), 1)
+        self.assertEqual(press(False, 70), 0)
+        self.assertEqual(press(True, 80), 0)
+        self.assertEqual(press(True, 120), 0)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,9 @@ def parse_evidence(data):
             "input_events": keys,
             "keypad_events": [{"scan": int(s, 16), "unicode": int(u, 16)} for s, u in
                               re.findall(r"DALI: keypad event scan=([\da-fA-F]+) unicode=([\da-fA-F]+)", text)],
+            "pmic_key_events": {source: bool(re.search(
+                rf"DALI: keypad event scan={scan} unicode={unicode} time-ms=\d+ source={source}(?:\r?\n|$)", text))
+                for source, scan, unicode in [("volume-down", "2", "0"), ("power", "0", "D")]},
             "event_wait_pass": "DALI: WaitForEvent timer status=Success" in text,
             "inherited_watchdog_disabled": bool(re.search(r"DALI: inherited RGU WDT [^\r\n]* disabled=1", text)),
             "pmic_samples": [{"raw": int(raw, 16), "time_ms": int(ms)} for raw, ms in
@@ -66,6 +69,7 @@ def main():
     p.add_argument("--serial", required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--require-unixnu", action="store_true")
+    p.add_argument("--require-pmic-keys", action="store_true")
     args = p.parse_args()
 
     def read(command):
@@ -96,6 +100,8 @@ def main():
         raise SystemExit("Core PASS exists, but later failures require inspection")
     if args.require_unixnu and not all(result["unixnu"].values()):
         raise SystemExit("UniXNU UEFI stage is incomplete; inspect the separate milestones")
+    if args.require_pmic_keys and not all(result["io"]["pmic_key_events"].values()):
+        raise SystemExit("Missing source-specific Volume down or Power key evidence")
 
 
 if __name__ == "__main__":

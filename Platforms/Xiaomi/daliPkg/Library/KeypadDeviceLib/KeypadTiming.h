@@ -15,6 +15,19 @@ typedef struct {
   UINT64 HeldAt;
 } DALI_KEY_STATE;
 
+// Power and Volume down act once on a debounced press, with no hold repeat.
+STATIC BOOLEAN DaliKeyPressSample (DALI_KEY_STATE *State, BOOLEAN Pressed, UINT64 Now) {
+  if (Pressed != State->Sample) {
+    State->Sample = Pressed;
+    State->ChangedAt = Now;
+  }
+  if (Now - State->ChangedAt >= DALI_KEY_MS (20) && State->Stable != State->Sample) {
+    State->Stable = State->Sample;
+    return State->Stable;
+  }
+  return FALSE;
+}
+
 STATIC UINTN DaliKeySample (DALI_KEY_STATE *State, BOOLEAN Pressed, UINT64 Now) {
   if (Pressed != State->Sample) {
     State->Sample = Pressed;

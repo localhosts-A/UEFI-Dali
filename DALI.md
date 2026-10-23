@@ -6,11 +6,15 @@ UniXNU application sources stay in the sibling upstream `UniXNU` checkout.
 
 ## Current state
 
-The earlier firmware baseline passed real-device SEC/MMU/DXE/BDS, memory-map
-and timer checks. Inherited GOP text/color bars and GPIO60 UP/ENTER input were
-also verified, followed by original Android restoration. The inherited panel
-requires command-mode frame submission; CPU framebuffer readback alone is not
-display proof.
+The real-device UEFI stage has passed SEC/MMU/DXE/BDS, memory-map, timer and
+WaitForEvent checks, UniXNU menu/configuration, SampleDriver, HelloPayload's
+successful return, and Exit back to firmware. Runs7 and8 retained complete logs
+through a prompted RGU software reset. Original Android B, root and all 16
+backed-up boot/companion/LK partition hashes were verified after recovery.
+
+Inherited GOP text/color bars and GPIO60 UP/ENTER input were also physically
+verified. The inherited panel requires command-mode frame submission; CPU
+framebuffer readback alone is not display proof.
 
 The UniXNU integration adds:
 
@@ -24,27 +28,23 @@ The UniXNU integration adds:
 - Persistent ramoops logging, with distinct core, filesystem, menu, payload and
   return-to-firmware milestones.
 
-Real-device integration has reached the UniXNU menu, read the RAM FAT
-configuration and started SampleDriver. Full HelloPayload/Exit validation is
-still pending. In the fifth run the countdown stopped near two seconds and
-logged heartbeats ended at about 35 seconds of counter uptime. The owner
-clarified that the later key action reached a preloader USB port, not a return
-to firmware. Android B/root and all 16 boot/companion/LK hashes were restored.
+The countdown freeze near 35 seconds was traced to the inherited enabled RGU
+watchdog. Run7 recorded MODE `0x17d -> 0x17c` and continued through Hello and
+Exit, with heartbeats beyond the previous cutoff. SEC validates the exact RGU
+device-tree node before stopping it with the keyed MODE write.
 
-The next diagnostic revision validates the exact RGU device-tree node, stops
-an inherited enabled watchdog using its keyed MODE write, and records the
-readback. Watchdog reset is a hypothesis until that hardware run is examined.
-It also samples MT6363 TOPSTATUS via inherited PMIF SWINF2/SID4. Only PMIC
-reads are implemented; commands and valid acknowledgements write the PMIF
-controller, while PMIC configuration, clocks and reset policy remain untouched.
-Power/volume-down event mapping awaits physical raw-bit calibration.
+MT6363 TOPSTATUS reads use inherited PMIF SWINF2/SID4. Run7 calibrated three
+physical presses each: idle `0x1e`, volume-down `0x16` (active-low bit3), power
+`0x1c` (active-low bit1). The new mapping emits DOWN and ENTER respectively,
+with 20 ms debounce and no hold repeat. Run8 verified all three physical keys:
+volume-down/up changed selection, and power started Hello and selected Exit.
+Only PMIC reads are implemented; commands and valid acknowledgements write
+the PMIF controller, while PMIC configuration and clocks remain untouched.
 
-The sixth run displayed HelloPayload's PASS report on the phone after the
-watchdog handoff change. Its manual hardware-key reset left pstore empty, so
-that observation does not supply a persisted log. The next recovery path
-returns from UniXNU's Exit action, gives a ten-second volume-down-only window,
-then issues the standard keyed RGU software reset. Log retention through that
-path is still under test; the original boot_b has been restored after each run.
+After UniXNU's Exit action, firmware provides a ten-second window to hold only
+volume-down, then issues the keyed RGU software reset. This retained ramoops
+and reached fastboot in Run7. A manual power-key reset left pstore empty in
+Run6; use the prompted path when collecting evidence.
 
 Bring-up fixes include waiting for HII dependencies before dispatching BDS,
 starting the registered FV application with LoadImage/StartImage, and signaling
@@ -55,9 +55,36 @@ polling idle (YIELD), retaining the upstream EL1 TLB flush sequence, until WFI
 wakeup on this handoff is separately validated. This is a power-efficiency
 limitation of the bring-up firmware.
 
-Physical UFS, USB device transport, complete PMIC power/volume-down UEFI input, touch,
-panel cold initialization, DarwinBoot and XNU remain unimplemented. The RAM
+Physical UFS, USB device transport, touch, panel cold initialization, DarwinBoot
+and XNU remain unimplemented. The RAM
 volume validates firmware file access; it does not provide physical storage.
+
+## Validated UEFI milestone (2026-10-24)
+
+Run8 passed the strict collector with both `--require-unixnu` and
+`--require-pmic-keys`, with no assertions or reported stage failures. The owner
+confirmed visible menu interaction for all three keys. This completes the
+current UEFI bring-up milestone; no Darwin kernel has been started.
+
+| Check | Result |
+| --- | --- |
+| Host FDT, evidence and actual C input timing tests | 33 passed |
+| Firmware and UniXNU package build | Passed; PE checks and FAT file readback passed |
+| SEC/MMU/DXE/BDS, memory map, GIC timer and event wait | Real-device PASS |
+| GOP, system consoles, RAM FAT and registered FV application | Real-device PASS |
+| SampleDriver, Hello return, menu Exit to firmware | Complete persisted log |
+| Volume up / volume down / power | UP / DOWN / ENTER, physical and log confirmation |
+| RGU software reset, fastboot and Android recovery | Original B/root/16 partition hashes verified |
+
+The tested boot image is 315392 bytes, SHA256
+`71dcbf41691bce26be8228c01d79f5702faf2b27f629b8b038d702220e6721f3`.
+Private artifacts retain the raw FD, build manifest, exact staged source patch,
+pstore evidence and recovery hashes. The image embeds the test configuration
+from UniXNU-Dali `4880518` and generic UniXNU `1a01c2a`.
+
+Before a later XNU phase, choose and validate kernel payload delivery, review
+the kernel load windows against the live FDT and limited DXE heap, and implement
+the MT6991 DarwinBoot/kernel handoff. Those tasks are outside this milestone.
 
 ## Build
 
@@ -109,11 +136,12 @@ rooted Android device; keep it outside Git.
 - MT6363 is SID4 on SPMI-M (`spmi-dev-mask` bit4 clear), PMIF `0x1c01a000`.
   Diagnostic reads use SWINF2 ACC `+0x880`, RDATA `+0x894`, VLD_CLR `+0x8a4`,
   STA `+0x8a8`, with bounded polling. The PMIC state register is `0x1e`.
+  Bit3 is volume-down (DOWN), bit1 is power (ENTER), both active-low. Live
+  FDT keycodes must match 114 and 116. The GPIO60 volume-up path stays separate.
 - RGU watchdog `0x1c010000` must advertise both MT6991 and MT6589 compatibility.
   Only inherited MODE.EN is cleared with key `0x22000000`, after reload `0x1971`.
-- Logs use the inspected ramoops console at `0xaec0f000`, 2 MiB. Automatic reset
-  did not preserve logs in an earlier test; diagnostics retain control until
-  recovery. The new Exit path uses a prompted RGU warm reset to test retention.
+- Logs use the inspected ramoops console at `0xaec0f000`, 2 MiB. The prompted
+  Exit path uses an RGU warm reset with demonstrated retention in Run7.
 - The 64 MiB DXE heap is deliberately limited. DarwinBoot's later kernel window
   will need a separate memory-layout review.
 
@@ -137,7 +165,7 @@ Android B, then collect immediately:
 
 ```sh
 python3 tools/dali/collect.py --serial SERIAL --output /private/run \
-  --require-unixnu
+  --require-unixnu --require-pmic-keys
 ```
 
 Verify Android boot completion, root and all backed-up boot/companion/LK hashes.
@@ -153,4 +181,4 @@ out of commits.
 
 The MT6363 Linux driver uses separate press/release IRQs. Its old polling
 mask parameters alone are insufficient proof of the raw key-bit layout;
-diagnostics therefore collect state transitions before enabling that mapping.
+the mapping above was calibrated from physical state transitions on dali.

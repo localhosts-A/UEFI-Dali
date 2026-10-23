@@ -174,7 +174,8 @@ STATIC VOID DisplayAndInputProbe (VOID) {
     Out->EnableCursor (Out, FALSE);
     Out->OutputString (Out, L"\r\nMu-Silicium UEFI / REDMI K80 Ultra\r\n\r\n");
     Out->OutputString (Out, L"Core, memory map and timer diagnostics complete.\r\n");
-    Out->OutputString (Out, L"UniXNU: tap Volume up for UP, hold 0.7 seconds for ENTER.\r\n");
+    Out->OutputString (Out, L"UniXNU: Volume up/down to select, tap Power to confirm.\r\n");
+    Out->OutputString (Out, L"Holding Volume up for 0.7 seconds also confirms.\r\n");
     Out->OutputString (Out, L"Color bars below: RED / GREEN / BLUE / WHITE.\r\n");
     Out->OutputString (Out, L"Power + Volume down: return to fastboot.\r\n\r\n");
   }
@@ -201,7 +202,7 @@ STATIC VOID DisplayAndInputProbe (VOID) {
     DEBUG ((DEBUG_WARN, "DALI: UEFI_UNIXNU_READY\n"));
     if (LaunchUniXNU () == EFI_ABORTED) { RecoverAfterExit (Out); }
     if (Out != NULL) {
-      Out->OutputString (Out, L"\r\nReturned to dali firmware. Hold Volume up to reopen UniXNU.\r\n");
+      Out->OutputString (Out, L"\r\nReturned to dali firmware. Tap Power to reopen UniXNU.\r\n");
       Out->OutputString (Out, L"Power + Volume down: enter fastboot for Android recovery.\r\n");
     }
   } else {

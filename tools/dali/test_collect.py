@@ -42,6 +42,14 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["io"]["app_heartbeats"], [{"number": 3, "time_ms": 15000}])
         self.assertFalse(result["unixnu"]["hello_returned_success"])
 
+    def test_pmic_key_proof_requires_each_correct_source_and_code(self):
+        result = parse_evidence(b"DALI: keypad event scan=0 unicode=D time-ms=1 source=volume-up\n"
+                                b"DALI: keypad event scan=1 unicode=0 time-ms=2 source=volume-down\n")
+        self.assertFalse(any(result["io"]["pmic_key_events"].values()))
+        result = parse_evidence(b"DALI: keypad event scan=2 unicode=0 time-ms=3 source=volume-down\n"
+                                b"DALI: keypad event scan=0 unicode=D time-ms=4 source=power\n")
+        self.assertTrue(all(result["io"]["pmic_key_events"].values()))
+
     def test_readback_does_not_prove_visibility_or_submission(self):
         result = parse_evidence(b"DALI: SEC diagnostics v1\nDALI: UEFI_DIAGNOSTIC_PASS\n"
                                 b"DALI: GOP_BLT_PASS (CPU readback)\n")

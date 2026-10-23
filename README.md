@@ -15,6 +15,10 @@ Device backups, runtime DTBs, logs, built images and private firmware inputs are
 kept outside Git. This port is under active bring-up; see DALI.md for tested
 capabilities and remaining work.
 
+The UEFI test milestone passed on hardware: UniXNU menu, HelloPayload,
+return to firmware, all three physical keys and original Android recovery.
+Physical storage, USB transport and XNU remain future work.
+
 ## Upstream Project Silicium
 
 <!-- ![Banner](https://github.com/Project-Silicium/Mu-Silicium/blob/main/Resources/Pictures/Banner.png) -->

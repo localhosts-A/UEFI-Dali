@@ -12,7 +12,7 @@
 // Official MT6991 pin ranges: GPIO60 DIN[28] at 0x210, DIR[28] at
 // 0x10, MODE[19:16] at 0x370. Never change pinmux, pulls or direction.
 STATIC BOOLEAN mReady;
-STATIC DALI_KEY_STATE mKey;
+STATIC DALI_KEY_STATE mKey, mPower, mDown;
 
 RETURN_STATUS EFIAPI KeypadDeviceConstructor (VOID) {
   CONST VOID *Fdt = (VOID *)(UINTN)DALI_FDT_BASE;
@@ -45,26 +45,42 @@ RETURN_STATUS EFIAPI KeypadDeviceConstructor (VOID) {
 
 EFI_STATUS EFIAPI KeypadDeviceReset (KEYPAD_DEVICE_PROTOCOL *This) {
   mKey = (DALI_KEY_STATE){0};
+  mPower = (DALI_KEY_STATE){0};
+  mDown = (DALI_KEY_STATE){0};
   return EFI_SUCCESS;
+}
+
+STATIC VOID PushKey (KEYPAD_RETURN_API *Api, UINT16 Scan, CHAR16 Unicode, UINT64 Now, CONST CHAR8 *Source) {
+  EFI_KEY_DATA Key = {0};
+  Key.Key.ScanCode = Scan;
+  Key.Key.UnicodeChar = Unicode;
+  Api->PushEfikeyBufTail (Api, &Key);
+  DEBUG ((DEBUG_WARN, "DALI: keypad event scan=%x unicode=%x time-ms=%lu source=%a\n",
+    Scan, Unicode, Now / 1000000, Source));
 }
 
 EFI_STATUS KeypadDeviceGetKeys (KEYPAD_DEVICE_PROTOCOL *This, KEYPAD_RETURN_API *Api, UINT64 Delta) {
   BOOLEAN Pressed;
-  EFI_KEY_DATA Key = {0};
   UINTN Event;
   UINT64 Now;
   UINT8 PmicRaw;
   Now = GetTimeInNanoSecond (GetPerformanceCounter ());
-  DaliPmicKeysPoll (Now, &PmicRaw);
-  if (!mReady) { return EFI_NOT_READY; }
+  if (!EFI_ERROR (DaliPmicKeysPoll (Now, &PmicRaw))) {
+    // Run7 physical calibration: idle 0x1e, Volume down 0x16, Power 0x1c.
+    // Keep Volume up on GPIO60 rather than emitting its PMIC bit twice.
+    if (DaliKeyPressSample (&mDown, (PmicRaw & BIT3) == 0, Now)) {
+      PushKey (Api, SCAN_DOWN, 0, Now, "volume-down");
+    }
+    if (DaliKeyPressSample (&mPower, (PmicRaw & BIT1) == 0, Now)) {
+      PushKey (Api, SCAN_NULL, CHAR_CARRIAGE_RETURN, Now, "power");
+    }
+  }
+  if (!mReady) { return EFI_SUCCESS; }
   Pressed = (MmioRead32 (DALI_GPIO_BASE + 0x210) & BIT28) == 0;
   Event = DaliKeySample (&mKey, Pressed, Now);
   if (Event != 0) {
-    if (Event == DALI_KEY_UP) { Key.Key.ScanCode = SCAN_UP; }
-    else { Key.Key.UnicodeChar = CHAR_CARRIAGE_RETURN; }
-    Api->PushEfikeyBufTail (Api, &Key);
-    DEBUG ((DEBUG_WARN, "DALI: keypad event scan=%x unicode=%x time-ms=%lu\n",
-      Key.Key.ScanCode, Key.Key.UnicodeChar, Now / 1000000));
+    PushKey (Api, Event == DALI_KEY_UP ? SCAN_UP : SCAN_NULL,
+      Event == DALI_KEY_ENTER ? CHAR_CARRIAGE_RETURN : 0, Now, "volume-up");
   }
   return EFI_SUCCESS;
 }
