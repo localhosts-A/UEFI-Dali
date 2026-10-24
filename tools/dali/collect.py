@@ -8,7 +8,61 @@ import shlex
 import subprocess
 
 
-def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=None):
+RESET_LOG_METHODS = {"psci-cold": "psci-system-reset", "psci-warm": "psci-system-reset2", "aee": "psci-aee-reset2"}
+
+
+def parse_reset_qualification(text, xnu_match, expected_run_token, expected_method):
+    """A saved, timed SMC request is evidence of a request, not a reset cause."""
+    result = {"pass": False, "method": expected_method, "watchdog_disabled": False,
+              "delay_verified": False, "smc_recorded": False}
+    if not xnu_match or expected_method not in RESET_LOG_METHODS or not expected_run_token or \
+            xnu_match.group(3) != expected_run_token or xnu_match.group(10) != "PASS":
+        return result
+    token = re.escape(expected_run_token)
+    setup = re.search(rf"DALI: reset qualification run={token} marker=([0-9a-fA-F]+) mode=([0-9a-fA-F]+) watchdog=off", text)
+    policy = re.search(rf"DALI: reset policy run={token} method={re.escape(expected_method)} delay=5 firmware-watchdogs=off status=Success", text)
+    records = []
+    for match in re.finditer(rf"(?m)^DALI-RESET: run={token} ([^\r\n]+)\r?$", text):
+        fields = {}
+        for word in match.group(1).split():
+            if word.count("=") != 1:
+                return result
+            key, value = word.split("=", 1)
+            if key in fields:
+                return result
+            fields[key] = value
+        records.append((match.start(), fields))
+    if not setup or not policy or setup.end() > xnu_match.start() or policy.end() > xnu_match.start():
+        return result
+    result["watchdog_disabled"] = int(setup.group(1), 16) & 15 == 3 and int(setup.group(2), 16) & 1 == 0
+    try:
+        expected_type = 0x80000201 if expected_method == "aee" else 0
+        required = []
+        for stage in ("wait", "issue", "smc"):
+            found = [(position, fields) for position, fields in records if fields.get("stage") == stage]
+            if len(found) != 1:
+                return result
+            position, fields = found[0]
+            if fields.get("method") != RESET_LOG_METHODS[expected_method] or fields.get("qualification") != "1" or \
+                    fields.get("delay_ms") != "5000" or fields.get("freq") != "13000000" or \
+                    int(fields.get("type", "-1"), 16) != expected_type or \
+                    int(fields.get("marker", "-1"), 16) & 15 != 3 or \
+                    int(fields.get("mode", "-1"), 16) & 1 != 0:
+                return result
+            if stage != "wait" and int(fields.get("elapsed_ticks", "-1")) < 65000000:
+                return result
+            required.append(position)
+        if any(fields.get("stage") not in ("wait", "issue", "smc") for _, fields in records):
+            return result
+        result["delay_verified"] = xnu_match.end() < required[0] < required[1] < required[2]
+        result["smc_recorded"] = result["delay_verified"]
+        result["pass"] = result["watchdog_disabled"] and result["delay_verified"]
+    except ValueError:
+        return result
+    return result
+
+
+def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=None, expected_reset_method=None):
     """Describe logged milestones; framebuffer readback is not visible output."""
     text = data.decode("utf-8", errors="replace")
     # Do not let an older successful boot supply milestones for a newer failure.
@@ -30,7 +84,7 @@ def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=N
                 if "ASSERT" in line or "UEFI_DIAGNOSTIC_FAIL" in line or
                 "UEFI_STAGE_FAIL" in line or "Exception at" in line or
                 "DALI-XNU:" in line and "checkpoint=FAIL" in line or
-                ("DALI-RESET:" in line and any(stage in line for stage in ("stage=returned ", "stage=state-refused ", "stage=mode-refused "))) or
+                ("DALI-RESET:" in line and any(stage in line for stage in ("stage=returned ", "stage=state-refused ", "stage=mode-refused ", "stage=features-refused ", "stage=delay-refused "))) or
                 ("UNIXNU: driver " in line and ("load failed:" in line or "start failed:" in line))]
     xnu = {
         "checkpoint_present": xnu_match is not None,
@@ -52,6 +106,8 @@ def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=N
                        xnu["platform_configured"], xnu["gic_ready"], xnu["timer_interrupts"] > 0,
                        xnu["single_boot_cpu"], xnu["checkpoint_pass"], xnu["run_token_matches_expected"]))
     watchdog_seconds = int(fastboot_match.group(3)) if fastboot_match else None
+    qualification = parse_reset_qualification(text, xnu_match, expected_run_token, expected_reset_method)
+    qualification["pass"] = qualification["pass"] and xnu["pass"]
     return {
         "new_boot_marker": start >= 0,
         "diagnostic_pass": "DALI: UEFI_DIAGNOSTIC_PASS" in text,
@@ -91,13 +147,14 @@ def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=N
             "device_watchdog_seconds": watchdog_seconds,
             "timeout_matches_expected": expected_watchdog_timeout is None or
                 watchdog_seconds == expected_watchdog_timeout,
-            "software_reset_requested": bool(reset_match and xnu["pass"] and fastboot_match and
+            "software_reset_requested": bool(expected_reset_method is None and reset_match and xnu["pass"] and fastboot_match and
                 fastboot_match.start() < xnu_match.start() and
                 reset_match.start() > xnu_match.end() and
                 reset_match.group(1) == xnu_match.group(3) == fastboot_match.group(1) and
                 (expected_run_token is None or reset_match.group(1) == expected_run_token) and
                 int(reset_match.group(2), 16) & 0xF == 3 and
-                int(reset_match.group(3), 16) & 9 == 1 and not reset_returned),
+                int(reset_match.group(3), 16) & 9 == 1 and not reset_returned) or bool(xnu["pass"] and qualification["pass"]),
+            "qualification": qualification,
             "software_reset_returned": reset_returned,
             "automatic_fastboot": "unverified; requires host enumeration and unattended observation",
         },
@@ -126,6 +183,7 @@ def main():
     p.add_argument("--require-software-reset", action="store_true")
     p.add_argument("--expected-run-token")
     p.add_argument("--expected-watchdog-timeout", type=int)
+    p.add_argument("--expected-reset-method", choices=tuple(RESET_LOG_METHODS))
     p.add_argument("--require-pmic-keys", action="store_true")
     args = p.parse_args()
     if args.require_xnu and not args.expected_run_token:
@@ -156,8 +214,13 @@ def main():
         combined += data
     (args.output / "kernel-dmesg.txt").write_bytes(read("dmesg"))
     (args.output / "bootconfig.txt").write_bytes(read("cat /proc/bootconfig"))
+    result["boot_reasons"] = {}
+    for property_name in ("ro.boot.bootreason", "sys.boot.reason", "sys.boot.reason.last"):
+        result["boot_reasons"][property_name] = read("getprop " + property_name).decode(errors="replace").strip()
+    (args.output / "boot-reasons.json").write_text(json.dumps(result["boot_reasons"], indent=2) + "\n")
     result.update(parse_evidence(combined, expected_run_token=args.expected_run_token,
-                                 expected_watchdog_timeout=args.expected_watchdog_timeout))
+                                 expected_watchdog_timeout=args.expected_watchdog_timeout,
+                                 expected_reset_method=args.expected_reset_method))
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     if not result["diagnostic_pass"]:

@@ -5,32 +5,14 @@
 #include <Library/ArmLib.h>
 #include <Library/SerialPortLib.h>
 #include <Library/Mt6991PlatformLib.h>
-
-typedef struct {
-  volatile UINT32 Signature;
-  volatile UINT32 Start;
-  volatile UINT32 Size;
-  volatile UINT8 Data[];
-} RAM_CONSOLE;
+#include <Library/DaliConsole.h>
 
 UINTN EFIAPI SerialPortWrite (IN UINT8 *Buffer, IN UINTN NumberOfBytes) {
-  RAM_CONSOLE *Ring = (RAM_CONSOLE *)(UINTN)DALI_CONSOLE_BASE;
+  DALI_RAM_CONSOLE *Ring = (DALI_RAM_CONSOLE *)(UINTN)DALI_CONSOLE_BASE;
   UINT32 Capacity = DALI_CONSOLE_SIZE - 12;
   BOOLEAN Interrupts = ArmGetInterruptState ();
   ArmDisableInterrupts ();
-  if (Ring->Signature != 0x43474244 || Ring->Start >= Capacity || Ring->Size > Capacity) {
-    Ring->Start = 0;
-    Ring->Size = 0;
-    MemoryFence ();
-    Ring->Signature = 0x43474244;
-  }
-  for (UINTN I = 0; I < NumberOfBytes; I++) {
-    UINT32 At = Ring->Start;
-    Ring->Data[At] = Buffer[I];
-    Ring->Start = At + 1 == Capacity ? 0 : At + 1;
-    if (Ring->Size < Capacity) { Ring->Size++; }
-  }
-  MemoryFence ();
+  DaliConsoleAppend (Ring, Capacity, Buffer, NumberOfBytes);
   if (Interrupts) { ArmEnableInterrupts (); }
   return NumberOfBytes;
 }

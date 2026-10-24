@@ -30,6 +30,7 @@ VOID Mt6991GetMemoryMap (OUT EFI_MEMORY_REGION_DESCRIPTOR **Map, OUT UINT8 *Coun
 VOID Mt6991LogRegisters (VOID);
 VOID Mt6991Reset (VOID);
 VOID Mt6991WarmReset (VOID);
+EFI_STATUS Mt6991PrepareResetQualification (IN CONST VOID *Fdt, IN CONST CHAR8 *RunToken);
 EFI_STATUS Mt6991PrepareFastbootRecovery (
   IN CONST VOID *Fdt,
   IN UINT32 TimeoutSeconds,

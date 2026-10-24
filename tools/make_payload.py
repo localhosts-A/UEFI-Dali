@@ -14,6 +14,15 @@ import tomllib
 
 MAX_XNU_PAYLOAD_MIB = 24
 MAX_FV_PAYLOAD_MIB = 48
+RESET_METHODS = ("off", "psci-cold", "psci-warm", "aee")
+
+
+def qualification_config(config_text, method, token, auto_fastboot, has_ram_root=False):
+    if method not in RESET_METHODS or auto_fastboot or has_ram_root or not token or \
+            not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise ValueError("reset qualification needs a valid method, fresh token, no RAM root and disabled legacy recovery")
+    config_text = config_with_xnu_argument(config_text, "dali-reset-method", method)
+    return config_with_xnu_argument(config_text, "dali-reset-delay", "5")
 
 
 def payload_volume_size_mib(requested, has_xnu):
@@ -111,6 +120,8 @@ def main():
     parser.add_argument("--run-token", help="unique 32-hex token for one XNU hardware cycle")
     parser.add_argument("--size-mib", type=int)
     parser.add_argument("--auto-fastboot", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--reset-method", choices=RESET_METHODS,
+                        help="opt-in reset qualification: no competing firmware watchdogs, 5-second post-checkpoint delay")
     parser.add_argument("--watchdog-timeout-seconds", type=int, default=31,
                         help="MT6991 RGU single-shot timeout (2..31 seconds)")
     args = parser.parse_args()
@@ -124,6 +135,8 @@ def main():
         parser.error("--run-token must be 32 lowercase hexadecimal characters")
     if args.run_token and not args.xnu_kernel:
         parser.error("--run-token requires --xnu-kernel")
+    if args.reset_method is not None and (not args.xnu_kernel or not args.run_token):
+        parser.error("--reset-method requires a source kernel/ADT and fresh token")
     if not 2 <= args.watchdog_timeout_seconds <= 31:
         parser.error("the MT6991 RGU supports a verified single-shot timeout of 2..31 seconds")
     config = tomllib.loads(args.config.read_text())
@@ -135,6 +148,9 @@ def main():
     if has_xnu_entry:
         try:
             config_text = config_with_xnu_argument(config_text, "dali-auto-fastboot", "1" if args.auto_fastboot else "0")
+            if args.reset_method is not None:
+                config_text = qualification_config(config_text, args.reset_method, args.run_token,
+                                                   args.auto_fastboot, args.xnu_ramdisk is not None)
         except (ValueError, tomllib.TOMLDecodeError) as error:
             parser.error(str(error))
     if args.run_token:
@@ -188,10 +204,12 @@ def main():
         for name, folder in (("HelloPayload", "Payloads"), ("SampleDriver", "Drivers")):
             (base / folder).mkdir(exist_ok=True)
             shutil.copy2(args.efi_dir / (name + ".efi"), base / folder / (name + ".efi"))
-        recovery = ("version = 1\n"
+        recovery = (f"version = {2 if args.reset_method is not None else 1}\n"
                     f"auto_fastboot = {str(args.auto_fastboot).lower()}\n"
                     f"watchdog_timeout_seconds = {args.watchdog_timeout_seconds}\n"
                     f"run_token = {args.run_token or 'none'}\n")
+        if args.reset_method is not None:
+            recovery += f"reset_method = {args.reset_method}\nreset_delay_seconds = 5\n"
         (base / "dali-boot.conf").write_text(recovery)
         if kernel_bytes is not None:
             (base / "Payloads/kernel.macho").write_bytes(kernel_bytes)
@@ -229,6 +247,9 @@ def main():
               "xnu_trust_cache_sha256": hashlib.sha256(trust_bytes).hexdigest() if trust_bytes is not None else None,
               "runtime_trust_cache_provider": False,
               "xnu_run_token": args.run_token}
+    if args.reset_method is not None:
+        record["recovery"].update(reset_method=args.reset_method, reset_delay_seconds=5,
+                                  watchdog_enabled=False, firmware_reset_deadline_enabled=False)
     args.output.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))
 

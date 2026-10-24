@@ -7,6 +7,7 @@
 #include <Library/ArmSmcLib.h>
 #include <Library/IoLib.h>
 #include <Library/Mt6991PlatformLib.h>
+#include <Library/DaliConsole.h>
 STATIC VOID Log (CONST CHAR8 *Text);
 STATIC VOID LogTimed (CONST CHAR8 *Text);
 STATIC VOID LogMemoryNode (INT32 Node, UINTN Count);
@@ -217,16 +218,18 @@ STATIC BOOLEAN RestoreBootloaderMarker (UINT32 Original) {
   return Current != MAX_UINT32 && (Current & 0x0FU) == (Original & 0x0FU);
 }
 
-EFI_STATUS Mt6991PrepareFastbootRecovery (
+STATIC EFI_STATUS PrepareFastboot (
   IN CONST VOID *Fdt,
   IN UINT32 TimeoutSeconds,
-  IN CONST CHAR8 *RunToken
+  IN CONST CHAR8 *RunToken,
+  IN BOOLEAN ArmWatchdog
   ) {
   CHAR8 Message[224];
   INT32 Watchdog, RebootMode, Length;
   CONST UINT32 *Property;
   UINT32 OriginalMarker, Marker, Mode, Readback, WatchdogLength;
-  if (Fdt == NULL || RunToken == NULL || TimeoutSeconds < 2 || TimeoutSeconds > 31) {
+  if (Fdt == NULL || RunToken == NULL ||
+      (ArmWatchdog && (TimeoutSeconds < 2 || TimeoutSeconds > 31))) {
     return EFI_INVALID_PARAMETER;
   }
   if (AsciiStrCmp (RunToken, "none") != 0) {
@@ -278,6 +281,23 @@ EFI_STATUS Mt6991PrepareFastbootRecovery (
     return EFI_DEVICE_ERROR;
   }
 
+  if (!ArmWatchdog) {
+    Mode = MmioRead32 (DALI_WDT_BASE);
+    if (Mode == MAX_UINT32 || (Mode & BIT0)) {
+      BOOLEAN Restored = RestoreBootloaderMarker (OriginalMarker);
+      AsciiSPrint (Message, sizeof Message,
+        "DALI: reset qualification WDT state rejected mode=%x marker-rollback=%a\n",
+        Mode, Restored ? "PASS" : "FAIL");
+      Log (Message);
+      return EFI_DEVICE_ERROR;
+    }
+    AsciiSPrint (Message, sizeof Message,
+      "DALI: reset qualification run=%a marker=%x mode=%x watchdog=off\n",
+      RunToken, Marker, Mode);
+    Log (Message);
+    return EFI_SUCCESS;
+  }
+
   // Match Linux's seconds * 64 count units, shifted by five, with the key.
   // The driver caps a single interval at 31 seconds.
   WatchdogLength = (TimeoutSeconds << 11) | 0x08;
@@ -326,16 +346,27 @@ EFI_STATUS Mt6991PrepareFastbootRecovery (
   return EFI_SUCCESS;
 }
 
+EFI_STATUS Mt6991PrepareFastbootRecovery (
+  IN CONST VOID *Fdt, IN UINT32 TimeoutSeconds, IN CONST CHAR8 *RunToken
+  ) {
+  return PrepareFastboot (Fdt, TimeoutSeconds, RunToken, TRUE);
+}
+
+EFI_STATUS Mt6991PrepareResetQualification (IN CONST VOID *Fdt, IN CONST CHAR8 *RunToken) {
+  if (RunToken == NULL || AsciiStrLen (RunToken) != 32) { return EFI_INVALID_PARAMETER; }
+  return PrepareFastboot (Fdt, 0, RunToken, FALSE);
+}
+
 EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
   CONST VOID *Fdt = (VOID *)BootFdt;
-  volatile UINT32 *Ring = (volatile UINT32 *)(UINTN)DALI_CONSOLE_BASE;
+  DALI_RAM_CONSOLE *Ring = (DALI_RAM_CONSOLE *)(UINTN)DALI_CONSOLE_BASE;
   INT32 Node, Depth, Length, Memory;
   CONST UINT32 *Reg;
   UINT64 Base, Size;
   UINT64 Sp, Sctlr, Cpacr, Vbar;
   CHAR8 Message[192];
-  // Start a fresh console for this UEFI boot. All other ramoops zones stay intact.
-  Ring[0] = 0x43474244; Ring[1] = 0; Ring[2] = 0;
+  // Preserve a valid previous console. Fresh run tokens distinguish this boot.
+  DaliConsoleInitialize (Ring, DALI_CONSOLE_SIZE - 12);
   Log ("\nDALI: SEC diagnostics v1\n");
   Mt6991LogRegisters ();
   Log ("DALI: SEC trace version=4\n");

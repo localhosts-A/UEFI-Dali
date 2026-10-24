@@ -16,23 +16,44 @@ _start:
 _entry:
   msr daifset, #15
   mov x19, x0
-  // Write an independently recoverable marker even if SEC cannot be reached.
+  // Append an independently recoverable marker, retaining a valid prior ring.
   ldr x7, =0xAEC0F000
   movz w8, #0x4244
   movk w8, #0x4347, lsl #16
+  ldr w9, [x7]
+  mov w12, #0x200000
+  sub w12, w12, #12
+  cmp w9, w8
+  b.ne 4f
+  ldr w10, [x7, #4]
+  ldr w11, [x7, #8]
+  cmp w10, w12
+  b.hs 4f
+  cmp w11, w12
+  b.ls 5f
+4:
+  mov w10, wzr
+  mov w11, wzr
+  str wzr, [x7, #4]
+  str wzr, [x7, #8]
+  dsb sy
   str w8, [x7]
+5:
   adr x8, _marker
   add x9, x7, #12
-  mov x10, #0
 1:
-  ldrb w11, [x8], #1
-  cbz w11, 2f
-  strb w11, [x9], #1
-  add x10, x10, #1
+  ldrb w13, [x8], #1
+  cbz w13, 2f
+  strb w13, [x9, x10]
+  add w10, w10, #1
+  cmp w10, w12
+  csel w10, wzr, w10, eq
+  cmp w11, w12
+  cinc w11, w11, lo
   b 1b
 2:
   str w10, [x7, #4]
-  str w10, [x7, #8]
+  str w11, [x7, #8]
   dsb sy
   adr x1, _payload
   ldr x2, =FD_BASE

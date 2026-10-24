@@ -94,6 +94,12 @@ if [[ -n "$PORT_XNU_KERNEL" ]]; then
   fi
 fi
 FASTBOOT_ARGS=(--watchdog-timeout-seconds "${DALI_WATCHDOG_TIMEOUT_SECONDS:-31}")
+if [[ -n "${DALI_RESET_METHOD:-}" ]]; then
+  [[ $# == 5 && "${DALI_AUTO_FASTBOOT:-true}" == false && -n "${DALI_RUN_TOKEN:-}" ]] || {
+    echo "DALI_RESET_METHOD needs a kernel/ADT, fresh token, no PID1 root and DALI_AUTO_FASTBOOT=false" >&2; exit 2;
+  }
+  FASTBOOT_ARGS+=(--reset-method "$DALI_RESET_METHOD")
+fi
 if [[ "${DALI_AUTO_FASTBOOT:-true}" == "true" ]]; then
   FASTBOOT_ARGS+=(--auto-fastboot)
 elif [[ "${DALI_AUTO_FASTBOOT}" == "false" ]]; then

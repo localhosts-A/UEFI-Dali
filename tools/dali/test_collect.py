@@ -4,6 +4,39 @@ from collect import parse_evidence
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_qualification_requires_selected_timed_smc_without_watchdogs(self):
+        token = '0123456789abcdef0123456789abcdef'
+        prefix = ('DALI: SEC diagnostics v1\nDALI: UEFI_DIAGNOSTIC_PASS\n'
+                  f'DALI: reset qualification run={token} marker=40002003 mode=17c watchdog=off\n'
+                  f'DALI: reset policy run={token} method=psci-cold delay=5 firmware-watchdogs=off status=Success\n'
+                  f'DALI-XNU: darwin=23.6.0 build=10063.141.1 run={token} bootarg=1 registered=1 '
+                  'platform=1 gic=1 timer=1 mpidr=0x81000000 checkpoint=PASS\n')
+        def line(stage, ticks):
+            return (f'DALI-RESET: run={token} method=psci-system-reset stage={stage} '
+                    f'marker=0x40002003 mode=0x17c qualification=1 delay_ms=5000 elapsed_ticks={ticks} freq=13000000 type=0x0\n')
+        good = prefix + line('wait', 0) + line('issue', 65000000) + line('smc', 65000000)
+        def parse(text, method='psci-cold'):
+            return parse_evidence(text.encode(), expected_run_token=token, expected_reset_method=method)
+        self.assertTrue(parse(good)['recovery']['software_reset_requested'])
+        self.assertIn('unverified', parse(good)['recovery']['automatic_fastboot'])
+        for text in (good.replace('elapsed_ticks=65000000', 'elapsed_ticks=64999999'),
+                     good.replace('mode=0x17c', 'mode=0x17d'), good.replace('mode=17c', 'mode=17d'),
+                     good.replace('type=0x0', 'type=0x80000201'), good.replace('firmware-watchdogs=off', 'firmware-watchdogs=on'),
+                     good.replace(line('smc', 65000000), ''), good + line('returned', 65000000),
+                     good + line('features-refused', 65000000), good + line('issue', 65000000),
+                     line('wait', 0) + prefix + line('issue', 65000000) + line('smc', 65000000)):
+            with self.subTest(text=text):
+                self.assertFalse(parse(text)['recovery']['software_reset_requested'])
+        self.assertFalse(parse(good, 'psci-warm')['recovery']['software_reset_requested'])
+        self.assertFalse(parse_evidence(good.encode(), expected_run_token='f' * 32,
+                                      expected_reset_method='psci-cold')['recovery']['software_reset_requested'])
+        for bad in (good.replace(f'run={token} bootarg', f'run={"f" * 32} bootarg'),
+                    good.replace('checkpoint=PASS', 'checkpoint=FAIL'), good.replace('gic=1', 'gic=0')):
+            self.assertFalse(parse(bad)['recovery']['qualification']['pass'])
+        legacy = (prefix + f'DALI: auto-fastboot armed run={token} marker=40002003 timeout=31 seconds\n' +
+                  f'DALI-RESET: run={token} method=psci-aee-reset2 stage=issue marker=0x40002003 mode=0x135\n')
+        self.assertFalse(parse(legacy)['recovery']['software_reset_requested'])
+
     def test_reset_requires_matching_post_checkpoint_request_and_does_not_prove_no_keys(self):
         token = '0123456789abcdef0123456789abcdef'
         prefix = (f'DALI: SEC diagnostics v1\nDALI: UEFI_DIAGNOSTIC_PASS\n'

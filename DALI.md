@@ -6,6 +6,19 @@ UniXNU application sources stay in the sibling upstream `UniXNU` checkout.
 
 ## Current state
 
+The current reset/ramoops qualification preserves valid BootShim/SEC console
+heads and selects `off`, `psci-cold`, `psci-warm` or fixed stock `aee` explicitly.
+Set `DALI_AUTO_FASTBOOT=false`, `DALI_RESET_METHOD=psci-cold` (or another method)
+and a per-run `DALI_RUN_TOKEN` when packaging a kernel/ADT. This emits strict
+version-2 boot policy: the marker is set independently of hardware WDT, UEFI
+watchdog/application reset deadlines are disabled, and XNU waits five physical
+seconds after its checkpoint before the selected request. `off` is a halt-only
+baseline with no fastboot marker. Legacy version-1 behavior remains available.
+These changes pass host instruction/state/collector checks; new full firmware,
+source-kernel and hardware qualification is still required. The device repository's
+reset runner owns token freshness, 120-second observation and original boot_b
+restoration. A pre-SMC record alone does not prove an unattended reset.
+
 The real-device UEFI stage has passed SEC/MMU/DXE/BDS, memory-map, timer and
 WaitForEvent checks, UniXNU menu/configuration, SampleDriver, HelloPayload's
 successful return, and Exit back to firmware. Runs7 and8 retained complete logs

@@ -6,7 +6,7 @@ import struct
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
-from make_payload import config_with_run_token, config_with_xnu_argument, payload_volume_size_mib, validate_ram_root
+from make_payload import config_with_run_token, config_with_xnu_argument, payload_volume_size_mib, validate_ram_root, qualification_config
 
 
 class PayloadVolumeSizingTests(unittest.TestCase):
@@ -48,6 +48,20 @@ class RamRootTests(unittest.TestCase):
 
 
 class RunTokenTests(unittest.TestCase):
+    def test_qualification_forwards_only_one_method_and_rejects_competing_policy(self):
+        config = ('[[entry]]\nid = "xnu"\ntype = "xnu"\npath = "Payloads/kernel.macho"\n'
+                  'args = "-v dali-earlyboot=1"\n')
+        token = 'a' * 32
+        for method in ('off', 'psci-cold', 'psci-warm', 'aee'):
+            result = qualification_config(config, method, token, False)
+            self.assertIn('dali-reset-method=' + method + ' dali-reset-delay=5', result)
+        for arguments in (('unknown', token, False, False), ('psci-cold', None, False, False),
+                          ('psci-cold', token, True, False), ('psci-cold', token, False, True)):
+            with self.assertRaises(ValueError):
+                qualification_config(config, *arguments)
+        with self.assertRaises(ValueError):
+            qualification_config(result, 'psci-cold', token, False)
+
     def test_auto_recovery_switch_is_forwarded_without_changing_allocator_or_token(self):
         config = ('[[entry]]\nid = "xnu"\ntype = "xnu"\npath = "Payloads/kernel.macho"\n'
                   'args = "-v dali-earlyboot=1 kt_fixed_zones=120"\n')
