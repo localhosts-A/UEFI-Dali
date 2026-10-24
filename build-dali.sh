@@ -107,5 +107,12 @@ export SOURCE_DATE_EPOCH=$(git -C "$PORT_ROOT" show -s --format=%ct HEAD)
   cd "$PORT_MU"
   "$PORT_PYTHON" build_uefi.py -d dali -r DEBUG
 ) > "$PORT_ROOT/out/logs/firmware.log" 2>&1
+PORT_FV_INF="$PORT_MU/Build/daliPkg/DEBUG_CLANGPDB/FV/FVMAIN.inf"
+PORT_DARWINBOOT_FFS=$(awk 'index($0, "DarwinBoot/") { sub(/^.* = /, ""); print; exit }' "$PORT_FV_INF")
+if [[ -z "$PORT_DARWINBOOT_FFS" || ! -f "$PORT_DARWINBOOT_FFS" ]]; then
+  echo "DarwinBoot driver is missing from the built Dali firmware volume: $PORT_FV_INF" >&2
+  exit 1
+fi
+echo "PASS: Dali firmware volume contains DarwinBoot FFS: $PORT_DARWINBOOT_FFS"
 python3 "$PORT_ROOT/tools/dali/package.py" --backup "$PORT_BACKUP" --mu "$PORT_MU" \
   --unixnu "$PORT_UNIXNU" --device-repo "$PORT_DEVICE" --out "$PORT_ROOT/out"

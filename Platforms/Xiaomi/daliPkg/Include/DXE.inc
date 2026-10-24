@@ -23,6 +23,7 @@
   INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
   INF daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe.inf
   INF daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
+  INF DarwinBootPkg/Driver/DarwinBoot.inf
   INF MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF FatPkg/EnhancedFatDxe/Fat.inf
   INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
