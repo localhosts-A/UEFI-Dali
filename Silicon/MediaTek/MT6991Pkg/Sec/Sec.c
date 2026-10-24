@@ -10,6 +10,7 @@
 #include <Library/DebugAgentLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/SerialPortLib.h>
+#include <Library/PrintLib.h>
 #include <Library/PlatformSecLib.h>
 #include <Library/PrePiHobListPointerLib.h>
 #include <Library/CacheMaintenanceLib.h>
@@ -67,7 +68,9 @@ SecMain (IN UINTN BootFdt)
 
   Status = Mt6991PlatformInitialize (BootFdt);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "DALI: FDT/layout rejected: %r\n", Status));
+    CHAR8 Failure[96];
+    UINTN Bytes = AsciiSPrint (Failure, sizeof Failure, "DALI: FDT/layout rejected: %r\n", Status);
+    SerialPortWrite ((UINT8 *)Failure, Bytes);
     CpuDeadLoop ();
   }
   PlatformInitialize ();

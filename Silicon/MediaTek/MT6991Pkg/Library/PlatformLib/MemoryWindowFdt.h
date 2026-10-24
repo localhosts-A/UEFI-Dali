@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 #include "MemoryWindow.h"
+#ifndef DALI_MEMORY_TRACE
+#define DALI_MEMORY_TRACE(Message) do { } while (0)
+#endif
 
 STATIC UINT64 DaliFdtCells (CONST UINT32 *P, INT32 Count) {
   UINT64 Value = 0;
@@ -88,6 +91,7 @@ STATIC BOOLEAN DaliWindowFromFdt (
   CONST UINT32 *Property;
   if (FdtCheckHeader (Fdt) || !DaliAddNodeRanges (Fdt, FdtPathOffset (Fdt, "/memory"),
       Banks, &BankCount, ARRAY_SIZE (Banks)) || BankCount == 0) { return FALSE; }
+  DALI_MEMORY_TRACE ("banks");
   for (UINTN I = 0; I < FixedCount; I++) {
     if (Fixed[I].End < Fixed[I].Base || !DaliAddRange (Blocked, &BlockedCount,
         ARRAY_SIZE (Blocked), Fixed[I].Base, Fixed[I].End - Fixed[I].Base)) { return FALSE; }
@@ -99,12 +103,14 @@ STATIC BOOLEAN DaliWindowFromFdt (
     if (FdtGetReserveMapEntry (Fdt, I, &Lo, &Bytes) ||
         !DaliAddRange (Blocked, &BlockedCount, ARRAY_SIZE (Blocked), Lo, Bytes)) { return FALSE; }
   }
+  DALI_MEMORY_TRACE ("static-reservations");
   Reserved = FdtPathOffset (Fdt, "/reserved-memory");
   if (Reserved < 0) { return FALSE; }
   Depth = 0;
   for (Node = FdtNextNode (Fdt, Reserved, &Depth); Node >= 0 && Depth > 0; Node = FdtNextNode (Fdt, Node, &Depth)) {
     if (!DaliAddNodeRanges (Fdt, Node, Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
   }
+  DALI_MEMORY_TRACE ("protected-regions");
   Depth = 0;
   for (Node = FdtNextNode (Fdt, -1, &Depth); Node >= 0; Node = FdtNextNode (Fdt, Node, &Depth)) {
     if (FdtStringListSearch (Fdt, Node, "compatible", "pkvm,protected-region") >= 0) {
@@ -127,9 +133,11 @@ STATIC BOOLEAN DaliWindowFromFdt (
   // Honor size-only Linux pool requests without starting their consumers.
   // The chosen placements stay excluded for this entire firmware/XNU boot.
   Depth = 0;
+  DALI_MEMORY_TRACE ("dynamic-pools");
   for (Node = FdtNextNode (Fdt, Reserved, &Depth); Node >= 0 && Depth > 0; Node = FdtNextNode (Fdt, Node, &Depth)) {
     if (!DaliReserveDynamicPool (Fdt, Node, Banks, BankCount, Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
   }
+  DALI_MEMORY_TRACE ("choose-gap");
   *Exclusions = BlockedCount;
   return DaliChooseWindow (Banks, BankCount, Blocked, BlockedCount, Base, Size);
 }

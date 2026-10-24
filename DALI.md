@@ -108,6 +108,14 @@ as additional conventional memory; XNU owns only DarwinBoot's allocated window.
 The selection and loader allocation/failure stage are persisted in ramoops.
 This extension still requires hardware qualification.
 
+The next hardware attempt retained only the SEC entry and normal register
+snapshot, with no MMU/DXE/menu evidence. Its exact stop is unresolved. Early
+`SEC trace` and `RAM trace` records now use the direct ramoops writer, including
+the incoming FDT address, SP and EL1 control registers; platform rejection also
+uses that path. These records are diagnostics, not evidence that the hang is
+fixed. The compiled SEC and real FDT traverse the selector under QEMU, including
+strict alignment, then refuse the unimplemented RGU register readback.
+
 ## Build
 
 Use this firmware checkout with its pinned dependencies:
@@ -186,6 +194,8 @@ rooted Android device; keep it outside Git.
 ```sh
 python3 -m unittest discover -s tools/dali -p 'test_*.py' -v
 python3 tools/dali/qemu_sec_smoke.py --dtb /private/runtime.dtb --exception-level 1
+python3 tools/dali/qemu_sec_smoke.py --dtb /private/runtime.dtb --exception-level 1 \
+  --fdt-address 0x87c80000 --strict-alignment
 ```
 
 The earlier QEMU check verified shim/SEC/MMU entry into DXE. QEMU does not

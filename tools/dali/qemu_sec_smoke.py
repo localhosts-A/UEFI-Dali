@@ -18,17 +18,25 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dtb", type=Path, required=True)
     p.add_argument("--exception-level", type=int, choices=[1, 2], default=2)
+    p.add_argument("--fdt-address", type=lambda value: int(value, 0), default=0x88000000)
+    p.add_argument("--strict-alignment", action="store_true", help="Model SCTLR_EL1.A=1 at EL1 entry")
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
     out = root / "out"
+    if args.strict_alignment and args.exception_level != 1:
+        p.error("--strict-alignment requires --exception-level 1")
+    if not 0x80000000 <= args.fdt_address < 0x100000000 or args.fdt_address & 7:
+        p.error("FDT address must be 8-byte aligned in 2–4 GiB")
     with tempfile.TemporaryDirectory(prefix="dali-qemu-") as tmp:
         tmp = Path(tmp)
         entry = ".text\n.global _start\n_start:\n"
         if args.exception_level == 1:
             entry += ("mov x2, #0x80000000\nmsr hcr_el2, x2\nmov x2, #3\nmsr cnthctl_el2, x2\n"
-                      "msr cntvoff_el2, xzr\nmsr cptr_el2, xzr\nmsr sctlr_el1, xzr\n"
+                      "msr cntvoff_el2, xzr\nmsr cptr_el2, xzr\n")
+            entry += "mov x2, #2\nmsr sctlr_el1, x2\n" if args.strict_alignment else "msr sctlr_el1, xzr\n"
+            entry += (
                       "mov x2, #0x3c5\nmsr spsr_el2, x2\nadr x2, 1f\nmsr elr_el2, x2\neret\n1:\n")
-        entry += "ldr x0, =0x88000000\nldr x1, =0x80080000\nbr x1\n.ltorg\n"
+        entry += f"ldr x0, ={args.fdt_address:#x}\nldr x1, =0x80080000\nbr x1\n.ltorg\n"
         (tmp / "entry.S").write_text(entry)
         subprocess.run(["clang", "--target=aarch64-none-elf", "-c", str(tmp / "entry.S"), "-o", str(tmp / "entry.o")], check=True)
         subprocess.run(["ld.lld", "-m", "aarch64elf", "--image-base=0", "-Ttext=0", "-e", "_start", str(tmp / "entry.o"), "-o", str(tmp / "entry.elf")], check=True)
@@ -39,7 +47,7 @@ def main():
                    "-qmp", f"unix:{qmp_path},server=on,wait=off", "-S",
                    "-device", f"loader,file={tmp / 'entry.bin'},addr=0x80000000,cpu-num=0,force-raw=on",
                    "-device", f"loader,file={out / 'Image'},addr=0x80080000,force-raw=on",
-                   "-device", f"loader,file={args.dtb.resolve()},addr=0x88000000,force-raw=on"]
+                   "-device", f"loader,file={args.dtb.resolve()},addr={args.fdt_address:#x},force-raw=on"]
         with (out / "qemu-stderr.log").open("wb") as errors:
             process = subprocess.Popen(command, stdout=errors, stderr=errors)
             try:
@@ -70,6 +78,8 @@ def main():
                     time.sleep(3)
                     qmp("stop")
                     prefix = f"qemu-el{args.exception_level}"
+                    if args.strict_alignment:
+                        prefix += "-strict"
                     (out / (prefix + "-registers.txt")).write_text(qmp("human-monitor-command", **{"command-line": "info registers"}))
                     memory = out / (prefix + "-console.bin")
                     response = qmp("human-monitor-command", **{"command-line": f'pmemsave 0xaec0f000 0x200000 "{memory}"'})
