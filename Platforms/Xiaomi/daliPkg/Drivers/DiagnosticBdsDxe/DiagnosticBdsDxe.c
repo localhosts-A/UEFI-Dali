@@ -30,7 +30,12 @@ STATIC UINT32 mWatchdogTimeoutSeconds = 31;
 STATIC CHAR8 mRunToken[33] = "none";
 STATIC VOID EFIAPI Tick (IN EFI_EVENT Event, IN VOID *Context) { mTicks++; }
 STATIC VOID EFIAPI Heartbeat (IN EFI_EVENT Event, IN VOID *Context) {
-  if (++mHeartbeats <= 30) {
+  ++mHeartbeats;
+  if (mRecoveryArmed && mHeartbeats == 60) {
+    DEBUG ((DEBUG_WARN, "DALI: UEFI recovery deadline run=%a elapsed=60 seconds; warm reset\n", mRunToken));
+    Mt6991WarmReset ();
+  }
+  if (mHeartbeats <= 30) {
     DEBUG ((DEBUG_WARN, "DALI: app heartbeat=%lu time-ms=%lu\n", mHeartbeats,
       GetTimeInNanoSecond (GetPerformanceCounter ()) / 1000000));
   }

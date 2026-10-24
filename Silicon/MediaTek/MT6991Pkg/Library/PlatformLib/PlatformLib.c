@@ -7,8 +7,9 @@
 #include <Library/ArmSmcLib.h>
 #include <Library/IoLib.h>
 #include <Library/Mt6991PlatformLib.h>
+#include "MemoryWindowFdt.h"
 
-// Deliberately expose only the validated diagnostic arena, not all 12 GiB.
+// Expose the validated diagnostic arena plus one FDT-derived XNU window.
 STATIC EFI_MEMORY_REGION_DESCRIPTOR mMap[] = {
   {"UEFI FD", DALI_FD_BASE, DALI_FD_SIZE, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
   {"UEFI Stack", DALI_STACK_BASE, DALI_STACK_SIZE, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
@@ -28,6 +29,7 @@ STATIC EFI_MEMORY_REGION_DESCRIPTOR mMap[] = {
   {"DISP1 mutex", 0x32420000, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"OVL0 mutex", 0x32820000, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"OVL1 mutex", 0x32C20000, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
+  {"XNU RAM", 0, 0, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK},
 };
 
 VOID Mt6991GetMemoryMap (OUT EFI_MEMORY_REGION_DESCRIPTOR **Map, OUT UINT8 *Count) {
@@ -105,6 +107,30 @@ STATIC BOOLEAN CheckReservedNode (CONST VOID *Fdt, INT32 Node) {
     if (OverlapsArena (Cells (Reg + I, Ac), Cells (Reg + I + Ac, Sc))) { return FALSE; }
   }
   return TRUE;
+}
+
+STATIC EFI_STATUS SelectXnuMemory (CONST VOID *Fdt, UINTN BootFdt) {
+  DALI_RAM_RANGE Fixed[ARRAY_SIZE (mMap)];
+  UINTN FixedCount = 0, Exclusions = 0;
+  UINT64 Base, Size;
+  CHAR8 Message[160];
+  // Everything currently loaded or accessed by UEFI remains outside the window.
+  for (UINTN I = 0; I < ARRAY_SIZE (mMap) - 1; I++) {
+    if (mMap[I].HobOption == AddMem &&
+        !DaliAddRange (Fixed, &FixedCount, ARRAY_SIZE (Fixed), mMap[I].Address, mMap[I].Length)) {
+      return EFI_COMPROMISED_DATA;
+    }
+  }
+  if (!DaliWindowFromFdt (Fdt, BootFdt, Fixed, FixedCount, &Base, &Size, &Exclusions)) {
+    Log ("DALI: no FDT-safe XNU memory window below 4 GiB\n");
+    return EFI_OUT_OF_RESOURCES;
+  }
+  mMap[ARRAY_SIZE (mMap) - 1].Address = Base;
+  mMap[ARRAY_SIZE (mMap) - 1].Length = Size;
+  AsciiSPrint (Message, sizeof Message, "DALI: XNU RAM base=%lx size=%lx exclusions=%lu below-4G=1\n",
+    Base, Size, (UINT64)Exclusions);
+  Log (Message);
+  return EFI_SUCCESS;
 }
 
 STATIC BOOLEAN CheckProbeRegion (CONST VOID *Fdt, CONST CHAR8 *Path, UINT64 Base) {
@@ -225,17 +251,18 @@ EFI_STATUS Mt6991PrepareFastbootRecovery (
     return EFI_DEVICE_ERROR;
   }
 
-  // MT6991 LENGTH uses a keyed 2 ms tick field. The documented Linux driver
-  // caps a single RGU interval at 31 seconds; longer timeouts are not guessed.
+  // Match Linux's seconds * 64 count units, shifted by five, with the key.
+  // The driver caps a single interval at 31 seconds.
   WatchdogLength = (TimeoutSeconds << 11) | 0x08;
   MmioWrite32 (DALI_WDT_BASE + 4, WatchdogLength);
   MmioWrite32 (DALI_WDT_BASE + 8, 0x1971);
   MemoryFence ();
   Readback = MmioRead32 (DALI_WDT_BASE + 4);
-  if (Readback == MAX_UINT32) {
+  if (Readback == MAX_UINT32 || (Readback & 0xFFE0U) != (WatchdogLength & 0xFFE0U)) {
     BOOLEAN Restored = RestoreBootloaderMarker (OriginalMarker);
     AsciiSPrint (Message, sizeof Message,
-      "DALI: auto-fastboot LENGTH register unreadable; marker rollback=%a\n", Restored ? "PASS" : "FAIL");
+      "DALI: auto-fastboot LENGTH rejected got=%x expected=%x marker-rollback=%a\n",
+      Readback, WatchdogLength, Restored ? "PASS" : "FAIL");
     Log (Message);
     return EFI_DEVICE_ERROR;
   }
@@ -265,6 +292,9 @@ EFI_STATUS Mt6991PrepareFastbootRecovery (
   AsciiSPrint (Message, sizeof Message,
       "DALI: auto-fastboot armed run=%a marker=%x timeout=%u seconds; waiting for XNU to stop\n",
       RunToken, Marker, TimeoutSeconds);
+  Log (Message);
+  AsciiSPrint (Message, sizeof Message, "DALI: RGU arm readback mode=%x length=%x\n",
+    Readback, MmioRead32 (DALI_WDT_BASE + 4));
   Log (Message);
   return EFI_SUCCESS;
 }
@@ -307,7 +337,8 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
   }
   Node = FdtPathOffset (Fdt, "/reserved-memory");
   if (Node < 0) { return EFI_UNSUPPORTED; }
-  for (INT32 Child = FdtFirstSubnode (Fdt, Node); Child >= 0; Child = FdtNextSubnode (Fdt, Child)) {
+  Depth = 0;
+  for (INT32 Child = FdtNextNode (Fdt, Node, &Depth); Child >= 0 && Depth > 0; Child = FdtNextNode (Fdt, Child, &Depth)) {
     if (!CheckReservedNode (Fdt, Child)) { Log ("DALI: reserved-memory collision\n"); return EFI_ACCESS_DENIED; }
   }
   Depth = 0;
@@ -324,6 +355,8 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
     Size = Cells (Reg, Length / 4);
     if (Size < Base || OverlapsArena (Base, Size - Base)) { return EFI_ACCESS_DENIED; }
   }
+  EFI_STATUS Status = SelectXnuMemory (Fdt, BootFdt);
+  if (EFI_ERROR (Status)) { return Status; }
   CopyMem ((VOID *)(UINTN)DALI_FDT_BASE, Fdt, FdtTotalSize (Fdt));
   // Validate every MMIO address used by the optional display/key probes before
   // DXE can touch it. A changed firmware needs a new layout review.

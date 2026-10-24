@@ -95,6 +95,19 @@ the remaining arena; FAT construction still fails closed if the payload files
 do not fit. Every image is checked against the live FDT arenas and the original
 boot_b partition size before a test flash.
 
+A later hardware cycle installed DarwinBoot successfully but returned
+`Out of Resources` before XNU entry. Its default contiguous window is 256 MiB,
+larger than the original 128 MiB diagnostic heap. SEC now selects one additional
+2 MiB-aligned gap from the incoming FDT between 2 and 4 GiB. It excludes all
+reserve-map entries, nested reserved-memory nodes, pKVM protected regions,
+initrd, the incoming FDT and every existing firmware/log/framebuffer allocation.
+Size-only pool requests are assigned excluded space within their declared
+allocation ranges, respecting size and alignment; unsatisfied requests fail
+closed. Their Linux consumers are not initialized. Only the remaining gap is exposed
+as additional conventional memory; XNU owns only DarwinBoot's allocated window.
+The selection and loader allocation/failure stage are persisted in ramoops.
+This extension still requires hardware qualification.
+
 ## Build
 
 Use this firmware checkout with its pinned dependencies:
@@ -123,6 +136,7 @@ current runtime FDT. The reviewed UniXNU commit is
 The build uses the system `clang`, `lld`, `llvm-objcopy`, legacy-capable `lz4`,
 `mtools` and the Mu build dependencies. Mu's nasm dependency may require the
 system-nasm workaround described by upstream on hosts without Mono.
+Host memory-window tests also require `dtc` and libfdt development headers/library.
 
 Outputs are local under `out/`: `UniXNU-dali-uefi-boot.img`, `manifest.json`,
 `payload.img`, `payload.json` and build logs. The raw FD is
@@ -156,9 +170,14 @@ rooted Android device; keep it outside Git.
   seconds or disable auto-fastboot. The 120-second timeout is only the host
   wait deadline. Linux's MT6991 driver documents the 2–31-second range; whether
   LK consumes this marker after watchdog reset still requires hardware proof.
+  LENGTH's timeout field is checked on readback. While UEFI Boot Services remain
+  active, a separate 60-second application timer performs a marked warm reset if
+  the menu or loader remains running. This timer cannot recover an XNU freeze
+  after ExitBootServices; the hardware watchdog must cover that phase.
 - Logs use the inspected ramoops console at `0xaec0f000`, 2 MiB. The prompted
   Exit path uses an RGU warm reset with demonstrated retention in Run7.
-- The 128 MiB DXE heap and firmware arenas are deliberately bounded. The Dali
+- The initial 128 MiB DXE heap and firmware arenas remain bounded. The additional
+  XNU region is selected and validated from each incoming FDT. The Dali
   ADT generator refuses a changed DRAM/GIC/PSCI/timer/watchdog contract; the
   host FDT preflight rejects collisions before packaging.
 
