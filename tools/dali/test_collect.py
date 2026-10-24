@@ -22,6 +22,9 @@ class EvidenceTests(unittest.TestCase):
         for control in controls:
             with self.subTest(control=control):
                 self.assertFalse(parse_evidence(control.encode(), expected_run_token=token)['recovery']['software_reset_requested'])
+        psci = issue.replace('method=rgu-swrst', 'method=psci-system-reset')
+        self.assertTrue(parse_evidence((prefix + psci).encode(), expected_run_token=token)['recovery']['software_reset_requested'])
+        self.assertFalse(parse_evidence((prefix + psci + psci.replace('stage=issue', 'stage=returned')).encode(), expected_run_token=token)['recovery']['software_reset_requested'])
 
     def test_core_pass_does_not_prove_unixnu(self):
         result = parse_evidence(b"DALI: UEFI_DIAGNOSTIC_PASS\nDALI: UEFI_STAGE_FAIL consoles\n")
