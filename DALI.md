@@ -131,7 +131,13 @@ Hardware v4 reached the menu, completed its timeout, allocated DarwinBoot's
 record is a CapsuleRuntimeDxe exit-event log. There is no evidence yet that EBS
 returned or that XNU executed. The reviewed Mu patch set now logs EBS core stages;
 DarwinBoot separately logs the actual EBS return before entering its trampoline.
-These markers do not establish XNU entry. Recovery still required owner keys.
+The next hardware cycle recorded all EBS core stages, an actual successful EBS
+return, and entry into the loader trampoline. XNU execution is still unproven;
+recovery required owner keys. Further loader markers cover framebuffer writes,
+cache maintenance and MMU disable. The Dali kernel adds a guarded `DALI:X0`
+ramoops breadcrumb before its first cold-entry register access. It preserves
+boot_args and skips an invalid, wrapped or nearly full console ring. This marker
+proves cold-entry execution only, not the required platform/GIC/timer checkpoint.
 
 ## Build
 
