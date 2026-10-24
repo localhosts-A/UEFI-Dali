@@ -12,6 +12,7 @@ PATCH_NAMES = (
     "AsmMacroLib.patch",
     "Auth-Service.patch",
     "Boot-Manager.patch",
+    "ExitBootServices-Trace.patch",
     "Timer.patch",
     "Usb-Bus.patch",
 )

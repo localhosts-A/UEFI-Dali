@@ -1,0 +1,78 @@
+diff --git a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+index 3c20568655..791aee120d 100644
+--- a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
++++ b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+@@ -782,6 +782,8 @@ CoreExitBootServices (
+ {
+   EFI_STATUS  Status;
+ 
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: core enter\n"));
++
+   //
+   // Notify other drivers of their last chance to use boot services
+   // before the memory map is terminated.
+@@ -790,16 +792,19 @@ CoreExitBootServices (
+     CoreNotifySignalList (&gEfiEventBeforeExitBootServicesGuid);
+     mExitBootServicesCalled = TRUE;
+   }
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: before-exit events complete\n"));
+ 
+   //
+   // Disable Timer
+   //
+   gTimer->SetTimerPeriod (gTimer, 0);
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: timer disabled\n"));
+ 
+   //
+   // Terminate memory services if the MapKey matches
+   //
+   Status = CoreTerminateMemoryMap (MapKey);
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: terminate memory map status=%r\n", Status));
+   if (EFI_ERROR (Status)) {
+     //
+     // Notify other drivers that ExitBootServices fail
+@@ -814,6 +819,7 @@ CoreExitBootServices (
+   // Notify other drivers that we are exiting boot services.
+   //
+   CoreNotifySignalList (&gEfiEventExitBootServicesGuid);
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: exit events complete\n"));
+ 
+   //
+   // Report that ExitBootServices() has been called
+@@ -824,16 +830,19 @@ CoreExitBootServices (
+     );
+ 
+   MemoryProtectionExitBootServicesCallback ();
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: memory protection complete\n"));
+ 
+   //
+   // Disable interrupt of Debug timer.
+   //
+   SaveAndSetDebugTimerInterrupt (FALSE);
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: debug timer disabled\n"));
+ 
+   //
+   // Disable CPU Interrupts
+   //
+   gCpu->DisableInterrupt (gCpu);
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: CPU interrupts disabled\n"));
+ 
+   //
+   // Clear the non-runtime values of the EFI System Table
+@@ -850,6 +859,7 @@ CoreExitBootServices (
+   // Recompute the 32-bit CRC of the EFI System Table
+   //
+   CalculateEfiHdrCrc (&gDxeCoreST->Hdr);
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: system table cleared\n"));
+ 
+   //
+   // Zero out the Boot Service Table
+@@ -862,6 +872,8 @@ CoreExitBootServices (
+   //
+   gRuntime->AtRuntime = TRUE;
+ 
++  DEBUG ((DEBUG_WARN, "EBS-TRACE: returning success\n"));
++
+   return Status;
+ }
+ 

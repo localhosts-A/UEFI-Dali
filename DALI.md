@@ -126,6 +126,12 @@ Trace v4 timestamps every stage and MMIO probe. It stops the inherited LK
 watchdog immediately after validating that watchdog's own FDT/MMIO contract,
 before the uncached memory scans. BDS still arms opt-in recovery separately.
 Watchdog expiry as the cause of either early stop remains unproven.
+Hardware v4 reached the menu, completed its timeout, allocated DarwinBoot's
+256 MiB window and printed the pre-ExitBootServices handoff diagnostics. The last
+record is a CapsuleRuntimeDxe exit-event log. There is no evidence yet that EBS
+returned or that XNU executed. The reviewed Mu patch set now logs EBS core stages;
+DarwinBoot separately logs the actual EBS return before entering its trampoline.
+These markers do not establish XNU entry. Recovery still required owner keys.
 
 ## Build
 
