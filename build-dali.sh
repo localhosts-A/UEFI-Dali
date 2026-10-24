@@ -2,8 +2,8 @@
 # Build and package only; never reboot or write a connected device.
 set -euo pipefail
 PORT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if [[ $# != 3 && $# != 5 ]]; then
-  echo "usage: bash build-dali.sh VERIFIED_BACKUP UNIXNU_CHECKOUT DEVICE_REPOSITORY [SOURCE_XNU_MACHO APPLE_ADT]" >&2
+if [[ $# != 3 && $# != 5 && $# != 7 ]]; then
+  echo "usage: bash build-dali.sh VERIFIED_BACKUP UNIXNU_CHECKOUT DEVICE_REPOSITORY [SOURCE_XNU_MACHO APPLE_ADT [OWN_PID1_MACHO OWN_TRUST_CACHE]]" >&2
   exit 2
 fi
 PORT_BACKUP=$(realpath "$1")
@@ -13,7 +13,7 @@ PORT_DEVICE=$(realpath "$3")
 PORT_PYTHON=${MU_PYTHON:-python3}
 PORT_XNU_KERNEL=
 PORT_XNU_ADT=
-if [[ $# == 5 ]]; then
+if [[ $# -ge 5 ]]; then
   PORT_XNU_KERNEL=$(realpath "$4")
   PORT_XNU_ADT=$(realpath "$5")
 fi
@@ -84,6 +84,13 @@ if [[ -n "$PORT_XNU_KERNEL" ]]; then
   PAYLOAD_ARGS+=(--xnu-kernel "$PORT_XNU_KERNEL" --xnu-adt "$PORT_XNU_ADT" --size-mib 24)
   if [[ -n "${DALI_RUN_TOKEN:-}" ]]; then
     PAYLOAD_ARGS+=(--run-token "$DALI_RUN_TOKEN")
+  fi
+  if [[ $# == 7 ]]; then
+    [[ "${DALI_AUTO_FASTBOOT:-true}" == false ]] || {
+      echo "PID1 requires DALI_AUTO_FASTBOOT=false to disable the short firmware watchdog" >&2; exit 2;
+    }
+    PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu-pid1.toml"
+    PAYLOAD_ARGS+=(--xnu-ramdisk "$(realpath "$6")" --xnu-trust-cache "$(realpath "$7")")
   fi
 fi
 FASTBOOT_ARGS=(--watchdog-timeout-seconds "${DALI_WATCHDOG_TIMEOUT_SECONDS:-31}")

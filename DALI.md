@@ -285,3 +285,19 @@ extension and zero cookie/remaining arguments. Packaging validates AEE mini and
 MRDUMP11 in the private live FDT. No mrdump control block or DDR-reserve register
 is changed. RAM retention, LK dump behavior and automatic recovery still require
 hardware validation of this exact method.
+
+## Owned RAM-root packaging (2026-10-25, hardware qualification pending)
+
+The seven-argument `build-dali.sh` form adds `OWN_PID1_MACHO OWN_TRUST_CACHE`
+after `SOURCE_XNU_MACHO APPLE_ADT`. It selects the device repository's
+`package/unixnu-pid1.toml` and requires `DALI_AUTO_FASTBOOT=false` plus a fresh
+`DALI_RUN_TOKEN`. The ordinary UEFI and early-checkpoint forms keep their
+existing behavior. The PID1 profile must not use the short recovery watchdog.
+
+The FAT tool verifies `rd=md0`, the owned PID1 argument, both zero 16-byte
+RAMDisk/TrustCache DT handoff slots, the bounded ARM64 RAM-root image and the
+one-entry test bundle, then reads back every staged file. The 24 MiB XNU FAT
+limit remains enforced. These are packaging checks, not proof of root mount,
+EL0 execution, trust membership, retained logs or automatic fastboot. The source
+development kernel currently has no Image4/AMFI runtime provider; the supplied
+test trust cache is not an authenticated Apple trust chain.

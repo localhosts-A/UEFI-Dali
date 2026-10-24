@@ -54,6 +54,51 @@ def config_with_xnu_argument(config_text, name, value):
     return "[[entry]]".join(blocks)
 
 
+def validate_ram_root(config, ramdisk, trust, adt, auto_fastboot):
+    """Require the explicit RAM-root handoff, without claiming runtime trust."""
+    entries = [entry for entry in config.get("entry", []) if entry.get("type") == "xnu"]
+    if len(entries) != 1 or entries[0].get("initrd") != "Payloads/root.img":
+        raise ValueError("RAM-root config must have one XNU entry with initrd Payloads/root.img")
+    words = entries[0].get("args", "").split()
+    if words.count("rd=md0") != 1 or words.count("dali-pid1=1") != 1 or auto_fastboot:
+        raise ValueError("PID1 requires rd=md0, dali-pid1=1 and a disabled firmware recovery watchdog")
+    if len(ramdisk) < 32 or len(ramdisk) > 32 * 1024 * 1024 or \
+            struct.unpack_from("<4I", ramdisk)[::3] != (0xFEEDFACF, 2) or \
+            struct.unpack_from("<I", ramdisk, 4)[0] != 0x0100000C:
+        raise ValueError("the minimal RAM root must be a bounded own arm64 MH_EXECUTE")
+    # This profile stages exactly one own v2 module; DarwinBoot validates it again.
+    if len(trust) != 56 or struct.unpack_from("<3I", trust) != (1, 8, 2) or \
+            struct.unpack_from("<I", trust, 28)[0] != 1 or trust[52:] != bytes((2, 0, 0, 0)):
+        raise ValueError("PID1 needs one complete SHA256 v2 test trust-cache entry")
+    found = {}
+    def node(cursor, parent):
+        if cursor + 8 > len(adt):
+            raise ValueError("truncated Apple DT node")
+        properties, children = struct.unpack_from("<II", adt, cursor)
+        cursor += 8
+        if properties > 256 or children > 256:
+            raise ValueError("unbounded Apple DT node")
+        values = {}
+        for _ in range(properties):
+            if cursor + 36 > len(adt):
+                raise ValueError("truncated Apple DT property")
+            key, length = struct.unpack_from("<32sI", adt, cursor)
+            cursor += 36
+            if length > len(adt) - cursor:
+                raise ValueError("Apple DT property outside input")
+            values[key.rstrip(b"\0")] = adt[cursor:cursor + length]
+            cursor += (length + 3) & ~3
+        name = values.get(b"name", b"").rstrip(b"\0").decode("ascii")
+        path = parent + "/" + name
+        if path == "/device-tree/chosen/memory-map":
+            found.update(values)
+        for _ in range(children):
+            cursor = node(cursor, path)
+        return cursor
+    if node(0, "") != len(adt) or any(found.get(name) != bytes(16) for name in (b"RAMDisk", b"TrustCache")):
+        raise ValueError("RAM-root Apple DT must contain zero 16-byte RAMDisk and TrustCache handoff slots")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--efi-dir", type=Path, required=True)
@@ -61,6 +106,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--xnu-kernel", type=Path)
     parser.add_argument("--xnu-adt", type=Path)
+    parser.add_argument("--xnu-ramdisk", type=Path, help="owned minimal Mach-O RAM root")
+    parser.add_argument("--xnu-trust-cache", type=Path, help="explicit own one-entry test bundle")
     parser.add_argument("--run-token", help="unique 32-hex token for one XNU hardware cycle")
     parser.add_argument("--size-mib", type=int)
     parser.add_argument("--auto-fastboot", action=argparse.BooleanOptionalAction, default=True)
@@ -69,6 +116,10 @@ def main():
     args = parser.parse_args()
     if bool(args.xnu_kernel) != bool(args.xnu_adt):
         parser.error("--xnu-kernel and --xnu-adt must be supplied together")
+    if bool(args.xnu_ramdisk) != bool(args.xnu_trust_cache) or (args.xnu_ramdisk and not args.xnu_kernel):
+        parser.error("RAM root and test trust cache must be supplied together with a kernel and ADT")
+    if args.xnu_ramdisk and not args.run_token:
+        parser.error("a RAM-root hardware image requires a fresh run token")
     if args.run_token and not re.fullmatch(r"[0-9a-f]{32}", args.run_token):
         parser.error("--run-token must be 32 lowercase hexadecimal characters")
     if args.run_token and not args.xnu_kernel:
@@ -97,6 +148,8 @@ def main():
         parser.error(str(error))
     kernel_bytes = None
     adt_bytes = None
+    ramdisk_bytes = None
+    trust_bytes = None
     if args.xnu_kernel:
         kernel_bytes = args.xnu_kernel.read_bytes()
         if len(kernel_bytes) < 32:
@@ -117,6 +170,15 @@ def main():
         adt_bytes = args.xnu_adt.read_bytes()
         if not adt_bytes:
             parser.error("Apple device tree is empty")
+    if args.xnu_ramdisk:
+        ramdisk_bytes = args.xnu_ramdisk.read_bytes()
+        trust_bytes = args.xnu_trust_cache.read_bytes()
+        try:
+            validate_ram_root(config, ramdisk_bytes, trust_bytes, adt_bytes, args.auto_fastboot)
+        except (ValueError, UnicodeError, struct.error) as error:
+            parser.error(str(error))
+    elif any(entry.get("initrd") for entry in config.get("entry", [])):
+        parser.error("the payload config requests an initrd but no RAM root was supplied")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="dali-fat-") as temp:
         stage = Path(temp) / "stage"
@@ -134,6 +196,9 @@ def main():
         if kernel_bytes is not None:
             (base / "Payloads/kernel.macho").write_bytes(kernel_bytes)
             (base / "Payloads/kernel.macho.adt").write_bytes(adt_bytes)
+        if ramdisk_bytes is not None:
+            (base / "Payloads/root.img").write_bytes(ramdisk_bytes)
+            (base / "Payloads/kernel.macho.trustcache").write_bytes(trust_bytes)
         image = args.output.resolve()
         image.write_bytes(bytes(size_mib * 1024 * 1024))
         subprocess.run(["mformat", "-i", str(image), "-v", "DALIUEFI", "-N", "0x44414c49",
@@ -160,6 +225,9 @@ def main():
                            "run_token": args.run_token or "none"},
               "xnu_kernel_sha256": hashlib.sha256(kernel_bytes).hexdigest() if kernel_bytes is not None else None,
               "xnu_adt_sha256": hashlib.sha256(adt_bytes).hexdigest() if adt_bytes is not None else None,
+              "xnu_ramdisk_sha256": hashlib.sha256(ramdisk_bytes).hexdigest() if ramdisk_bytes is not None else None,
+              "xnu_trust_cache_sha256": hashlib.sha256(trust_bytes).hexdigest() if trust_bytes is not None else None,
+              "runtime_trust_cache_provider": False,
               "xnu_run_token": args.run_token}
     args.output.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))

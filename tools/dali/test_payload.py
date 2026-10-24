@@ -1,11 +1,12 @@
 import sys
 from pathlib import Path
 import unittest
+import struct
 
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
-from make_payload import config_with_run_token, config_with_xnu_argument, payload_volume_size_mib
+from make_payload import config_with_run_token, config_with_xnu_argument, payload_volume_size_mib, validate_ram_root
 
 
 class PayloadVolumeSizingTests(unittest.TestCase):
@@ -22,6 +23,28 @@ class PayloadVolumeSizingTests(unittest.TestCase):
         self.assertEqual(payload_volume_size_mib(48, False), 48)
         with self.assertRaisesRegex(ValueError, "64 MiB Dali firmware volume"):
             payload_volume_size_mib(49, False)
+
+
+class RamRootTests(unittest.TestCase):
+    def test_ram_root_needs_disabled_watchdog_and_both_zero_handoff_slots(self):
+        def node(name, extra=(), children=()):
+            values = [(b'name', name.encode() + b'\0'), *extra]
+            return struct.pack('<II', len(values), len(children)) + b''.join(
+                struct.pack('<32sI', key, len(value)) + value + bytes(-len(value) % 4)
+                for key, value in values) + b''.join(children)
+        adt = node('device-tree', children=[node('chosen', children=[node('memory-map',
+                   [(b'RAMDisk', bytes(16)), (b'TrustCache', bytes(16))])])])
+        root = struct.pack('<8I', 0xfeedfacf, 0x100000c, 0, 2, 1, 8, 0, 0)
+        trust = struct.pack('<3I', 1, 8, 2) + bytes(16) + struct.pack('<I', 1) + bytes(20) + bytes((2, 0, 0, 0))
+        config = {'entry': [{'type': 'xnu', 'initrd': 'Payloads/root.img', 'args': 'rd=md0 dali-pid1=1'}]}
+        validate_ram_root(config, root, trust, adt, False)
+        for inputs in [(config, root, trust, adt, True),
+                       (config, root, trust[:-1], adt, False),
+                       (config, root, trust, adt[:-1], False),
+                       (config, root, trust, adt.replace(b'TrustCache', b'WrongCache'), False),
+                       ({'entry': []}, root, trust, adt, False)]:
+            with self.subTest(inputs=inputs[-1]), self.assertRaises(ValueError):
+                validate_ram_root(*inputs)
 
 
 class RunTokenTests(unittest.TestCase):
