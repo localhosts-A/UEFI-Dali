@@ -22,10 +22,15 @@ def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=N
         r"platform=(\d+) gic=(\d+) timer=(\d+) mpidr=0x([\da-fA-F]+) checkpoint=(PASS|FAIL)", text)
     fastboot_match = re.search(
         r"DALI: auto-fastboot armed run=(none|[0-9a-f]{32}) marker=([\da-fA-F]+) timeout=(\d+) seconds", text)
+    reset_match = re.search(
+        r"(?m)^DALI-RESET: run=([0-9a-f]{32}) method=rgu-swrst stage=issue "
+        r"marker=0x([\da-fA-F]+) mode=0x([\da-fA-F]+)\r?$", text)
+    reset_returned = bool(re.search(r"DALI-RESET: run=[0-9a-f]{32} method=rgu-swrst stage=returned ", text))
     failures = [line for line in text.splitlines()
                 if "ASSERT" in line or "UEFI_DIAGNOSTIC_FAIL" in line or
                 "UEFI_STAGE_FAIL" in line or "Exception at" in line or
                 "DALI-XNU:" in line and "checkpoint=FAIL" in line or
+                ("DALI-RESET:" in line and any(stage in line for stage in ("stage=returned ", "stage=state-refused ", "stage=mode-refused "))) or
                 ("UNIXNU: driver " in line and ("load failed:" in line or "start failed:" in line))]
     xnu = {
         "checkpoint_present": xnu_match is not None,
@@ -86,6 +91,15 @@ def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=N
             "device_watchdog_seconds": watchdog_seconds,
             "timeout_matches_expected": expected_watchdog_timeout is None or
                 watchdog_seconds == expected_watchdog_timeout,
+            "software_reset_requested": bool(reset_match and xnu["pass"] and fastboot_match and
+                fastboot_match.start() < xnu_match.start() and
+                reset_match.start() > xnu_match.end() and
+                reset_match.group(1) == xnu_match.group(3) == fastboot_match.group(1) and
+                (expected_run_token is None or reset_match.group(1) == expected_run_token) and
+                int(reset_match.group(2), 16) & 0xF == 3 and
+                int(reset_match.group(3), 16) & 9 == 1 and not reset_returned),
+            "software_reset_returned": reset_returned,
+            "automatic_fastboot": "unverified; requires host enumeration and unattended observation",
         },
         "xnu": xnu,
         "unixnu": {
@@ -109,6 +123,7 @@ def main():
     p.add_argument("--require-unixnu", action="store_true")
     p.add_argument("--require-xnu", action="store_true")
     p.add_argument("--require-fastboot-arm", action="store_true")
+    p.add_argument("--require-software-reset", action="store_true")
     p.add_argument("--expected-run-token")
     p.add_argument("--expected-watchdog-timeout", type=int)
     p.add_argument("--require-pmic-keys", action="store_true")
@@ -117,6 +132,8 @@ def main():
         p.error("--require-xnu requires a per-cycle --expected-run-token")
     if args.require_fastboot_arm and (args.expected_watchdog_timeout is None or not args.expected_run_token):
         p.error("--require-fastboot-arm requires --expected-watchdog-timeout and --expected-run-token")
+    if args.require_software_reset and not args.expected_run_token:
+        p.error("--require-software-reset requires --expected-run-token")
     if args.expected_run_token and not re.fullmatch(r"[0-9a-f]{32}", args.expected_run_token):
         p.error("--expected-run-token must be 32 lowercase hexadecimal characters")
 
@@ -158,6 +175,8 @@ def main():
         raise SystemExit("UEFI did not arm the expected one-shot bootloader recovery marker")
     if args.require_pmic_keys and not all(result["io"]["pmic_key_events"].values()):
         raise SystemExit("Missing source-specific Volume down or Power key evidence")
+    if args.require_software_reset and not result['recovery']['software_reset_requested']:
+        raise SystemExit("No matching post-checkpoint RGU software-reset request; USB enumeration alone is insufficient")
 
 
 if __name__ == "__main__":

@@ -28,6 +28,10 @@ def payload_volume_size_mib(requested, has_xnu):
 def config_with_run_token(config_text, token):
     if not re.fullmatch(r"[0-9a-f]{32}", token):
         raise ValueError("run token must be 32 lowercase hexadecimal characters")
+    return config_with_xnu_argument(config_text, "dali-run", token)
+
+
+def config_with_xnu_argument(config_text, name, value):
     blocks = config_text.split("[[entry]]")
     matches = []
     for index, block in enumerate(blocks[1:], start=1):
@@ -40,12 +44,12 @@ def config_with_run_token(config_text, token):
     block = blocks[index]
     pattern = re.compile(r'(?m)^(args\s*=\s*")([^"]*)("\s*)$')
     replaced, count = pattern.subn(
-        lambda match: match.group(1) + match.group(2) + " dali-run=" + token + match.group(3),
+        lambda match: match.group(1) + match.group(2) + " " + name + "=" + value + match.group(3),
         block,
         count=1,
     )
-    if count != 1 or "dali-run=" in block:
-        raise ValueError("could not safely add a fresh run token to the XNU boot arguments")
+    if count != 1 or name + "=" in block:
+        raise ValueError("could not safely add a fresh run token/recovery policy to the XNU boot arguments")
     blocks[index] = replaced
     return "[[entry]]".join(blocks)
 
@@ -77,6 +81,11 @@ def main():
     if bool(args.xnu_kernel) != has_xnu_entry:
         parser.error("the payload config must contain exactly the XNU entry matching the supplied kernel")
     config_text = args.config.read_text()
+    if has_xnu_entry:
+        try:
+            config_text = config_with_xnu_argument(config_text, "dali-auto-fastboot", "1" if args.auto_fastboot else "0")
+        except (ValueError, tomllib.TOMLDecodeError) as error:
+            parser.error(str(error))
     if args.run_token:
         try:
             config_text = config_with_run_token(config_text, args.run_token)

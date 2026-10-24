@@ -4,6 +4,25 @@ from collect import parse_evidence
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_reset_requires_matching_post_checkpoint_request_and_does_not_prove_no_keys(self):
+        token = '0123456789abcdef0123456789abcdef'
+        prefix = (f'DALI: SEC diagnostics v1\nDALI: UEFI_DIAGNOSTIC_PASS\n'
+                  f'DALI: auto-fastboot armed run={token} marker=40002003 timeout=31 seconds\n'
+                  f'DALI-XNU: darwin=23.6.0 build=10063.141.1 run={token} bootarg=1 registered=1 '
+                  'platform=1 gic=1 timer=1 mpidr=0x81000000 checkpoint=PASS\n')
+        issue = f'DALI-RESET: run={token} method=rgu-swrst stage=issue marker=0x40002003 mode=0x135\n'
+        result = parse_evidence((prefix + issue).encode(), expected_run_token=token)
+        self.assertTrue(result['recovery']['software_reset_requested'])
+        self.assertIn('unverified', result['recovery']['automatic_fastboot'])
+        controls = [prefix, issue + prefix,
+                    prefix + issue.replace(token, 'f' * 32),
+                    prefix + issue.replace('mode=0x135', 'mode=0x13d'),
+                    prefix + issue.replace('marker=0x40002003', 'marker=0x40002002'),
+                    prefix + issue + issue.replace('stage=issue', 'stage=returned')]
+        for control in controls:
+            with self.subTest(control=control):
+                self.assertFalse(parse_evidence(control.encode(), expected_run_token=token)['recovery']['software_reset_requested'])
+
     def test_core_pass_does_not_prove_unixnu(self):
         result = parse_evidence(b"DALI: UEFI_DIAGNOSTIC_PASS\nDALI: UEFI_STAGE_FAIL consoles\n")
         self.assertTrue(result["diagnostic_pass"])

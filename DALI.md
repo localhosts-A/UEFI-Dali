@@ -263,3 +263,11 @@ kernel artifact, Apple DT and images belong in a private directory.
 The MT6363 Linux driver uses separate press/release IRQs. Its old polling
 mask parameters alone are insufficient proof of the raw key-bit layout;
 the mapping above was calibrated from physical state transitions on dali.
+
+## XNU checkpoint software-reset handoff
+
+The source-XNU hardware checkpoint has now passed with the corrected typed-zone budget. Its first passing cycle still required owner keys and does not establish unattended fastboot recovery.
+
+`make_payload.py` derives `dali-auto-fastboot=1|0` from the existing recovery switch, independently of the run token. DaliBootLog only attempts software reset after CPU/platform/GIC/timer PASS, with a matching token and the live-FDT-derived RGU resource. It verifies the already armed marker and watchdog, preserves MODE except IRQ enable, and writes SWRST +0x14 with0x1209, following the existing firmware warm-reset sequence. The official [Dali Linux watchdog driver](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/blob/bsp-dali-v-oss/drivers/watchdog/mtk_wdt.c) documents this SWRST register/key. It does not establish how LK consumes the bootloader marker. No BCB, misc or other storage write is added.
+
+The collector requires a matching post-checkpoint `DALI-RESET` issue record and rejects returned/refused requests. The host records USB re-enumeration separately from unattended fastboot evidence; owner keys invalidate an unattended cycle. Register-only software reset on this device remains to be verified.

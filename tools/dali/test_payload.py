@@ -5,7 +5,7 @@ import unittest
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
-from make_payload import config_with_run_token, payload_volume_size_mib
+from make_payload import config_with_run_token, config_with_xnu_argument, payload_volume_size_mib
 
 
 class PayloadVolumeSizingTests(unittest.TestCase):
@@ -25,6 +25,17 @@ class PayloadVolumeSizingTests(unittest.TestCase):
 
 
 class RunTokenTests(unittest.TestCase):
+    def test_auto_recovery_switch_is_forwarded_without_changing_allocator_or_token(self):
+        config = ('[[entry]]\nid = "xnu"\ntype = "xnu"\npath = "Payloads/kernel.macho"\n'
+                  'args = "-v dali-earlyboot=1 kt_fixed_zones=120"\n')
+        for enabled in ('0', '1'):
+            with self.subTest(enabled=enabled):
+                result = config_with_xnu_argument(config, 'dali-auto-fastboot', enabled)
+                result = config_with_run_token(result, '0123456789abcdef0123456789abcdef')
+                self.assertIn('kt_fixed_zones=120 dali-auto-fastboot=' + enabled + ' dali-run=', result)
+                with self.assertRaises(ValueError):
+                    config_with_xnu_argument(result, 'dali-auto-fastboot', enabled)
+
     def test_token_is_injected_only_into_the_xnu_entry(self):
         token = "0123456789abcdef0123456789abcdef"
         config = ('version = 1\n\n[[entry]]\nid = "hello"\ntype = "efi"\n'
