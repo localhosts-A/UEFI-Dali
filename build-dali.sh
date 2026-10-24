@@ -79,7 +79,9 @@ PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu-uefi-test.toml"
 PAYLOAD_ARGS=()
 if [[ -n "$PORT_XNU_KERNEL" ]]; then
   PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu.toml"
-  PAYLOAD_ARGS+=(--xnu-kernel "$PORT_XNU_KERNEL" --xnu-adt "$PORT_XNU_ADT" --size-mib 48)
+  # GetSectionFromAnyFv needs one contiguous copy of this volume. Cycle 1
+  # proved the 48 MiB volume cannot fit after the Dali FVs consume the DXE arena.
+  PAYLOAD_ARGS+=(--xnu-kernel "$PORT_XNU_KERNEL" --xnu-adt "$PORT_XNU_ADT" --size-mib 24)
   if [[ -n "${DALI_RUN_TOKEN:-}" ]]; then
     PAYLOAD_ARGS+=(--run-token "$DALI_RUN_TOKEN")
   fi

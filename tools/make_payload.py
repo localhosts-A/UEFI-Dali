@@ -12,6 +12,19 @@ import tempfile
 import tomllib
 
 
+MAX_XNU_PAYLOAD_MIB = 24
+MAX_FV_PAYLOAD_MIB = 48
+
+
+def payload_volume_size_mib(requested, has_xnu):
+    size_mib = requested if requested is not None else (MAX_XNU_PAYLOAD_MIB if has_xnu else 1)
+    if not 1 <= size_mib <= MAX_FV_PAYLOAD_MIB:
+        raise ValueError("the embedded FAT volume must fit within the 64 MiB Dali firmware volume")
+    if has_xnu and size_mib > MAX_XNU_PAYLOAD_MIB:
+        raise ValueError("a Dali XNU payload FAT volume must be at most 24 MiB; 48 MiB failed the DXE contiguous allocation")
+    return size_mib
+
+
 def config_with_run_token(config_text, token):
     if not re.fullmatch(r"[0-9a-f]{32}", token):
         raise ValueError("run token must be 32 lowercase hexadecimal characters")
@@ -69,9 +82,10 @@ def main():
             config_text = config_with_run_token(config_text, args.run_token)
         except (ValueError, tomllib.TOMLDecodeError) as error:
             parser.error(str(error))
-    size_mib = args.size_mib if args.size_mib is not None else (48 if args.xnu_kernel else 1)
-    if not 1 <= size_mib <= 48:
-        parser.error("the embedded FAT volume must fit within the 64 MiB Dali firmware volume")
+    try:
+        size_mib = payload_volume_size_mib(args.size_mib, args.xnu_kernel is not None)
+    except ValueError as error:
+        parser.error(str(error))
     kernel_bytes = None
     adt_bytes = None
     if args.xnu_kernel:

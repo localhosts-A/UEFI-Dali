@@ -87,9 +87,13 @@ from UniXNU-Dali `4880518` and generic UniXNU `1a01c2a`.
 
 The next milestone builds the source-only kernel on macOS, verifies DarwinBoot
 and its QEMU fixtures, then tests the single-core handoff on boot_b. The source
-kernel and local Apple DT are packed into a 48 MiB read-only FAT volume in the
-64 MiB firmware volume. Every image is checked against the live FDT arenas and
-the original boot_b partition size before a test flash.
+kernel and local Apple DT are packed into a 24 MiB read-only FAT volume in the
+64 MiB firmware volume. Cycle 1 showed that extracting the 48 MiB block device
+failed a 12,289-page contiguous DXE allocation, leaving UniXNU without its
+configuration and XNU entry. The smaller volume keeps that allocation within
+the remaining arena; FAT construction still fails closed if the payload files
+do not fit. Every image is checked against the live FDT arenas and the original
+boot_b partition size before a test flash.
 
 ## Build
 

@@ -5,7 +5,23 @@ import unittest
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
-from make_payload import config_with_run_token
+from make_payload import config_with_run_token, payload_volume_size_mib
+
+
+class PayloadVolumeSizingTests(unittest.TestCase):
+    def test_xnu_volume_defaults_to_memory_safe_size(self):
+        self.assertEqual(payload_volume_size_mib(None, True), 24)
+        self.assertEqual(payload_volume_size_mib(24, True), 24)
+
+    def test_xnu_volume_rejects_size_that_caused_hardware_allocation_failure(self):
+        with self.assertRaisesRegex(ValueError, "at most 24 MiB"):
+            payload_volume_size_mib(48, True)
+
+    def test_uefi_only_volume_keeps_small_default_and_fv_limit(self):
+        self.assertEqual(payload_volume_size_mib(None, False), 1)
+        self.assertEqual(payload_volume_size_mib(48, False), 48)
+        with self.assertRaisesRegex(ValueError, "64 MiB Dali firmware volume"):
+            payload_volume_size_mib(49, False)
 
 
 class RunTokenTests(unittest.TestCase):
