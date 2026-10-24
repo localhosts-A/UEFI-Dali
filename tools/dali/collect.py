@@ -23,9 +23,9 @@ def parse_evidence(data, *, expected_run_token=None, expected_watchdog_timeout=N
     fastboot_match = re.search(
         r"DALI: auto-fastboot armed run=(none|[0-9a-f]{32}) marker=([\da-fA-F]+) timeout=(\d+) seconds", text)
     reset_match = re.search(
-        r"(?m)^DALI-RESET: run=([0-9a-f]{32}) method=(?:rgu-swrst|psci-system-reset2?) stage=issue "
+        r"(?m)^DALI-RESET: run=([0-9a-f]{32}) method=(?:rgu-swrst|psci-system-reset2?|psci-aee-reset2) stage=issue "
         r"marker=0x([\da-fA-F]+) mode=0x([\da-fA-F]+)\r?$", text)
-    reset_returned = bool(re.search(r"DALI-RESET: run=[0-9a-f]{32} method=(?:rgu-swrst|psci-system-reset2?) stage=returned ", text))
+    reset_returned = bool(re.search(r"DALI-RESET: run=[0-9a-f]{32} method=(?:rgu-swrst|psci-system-reset2?|psci-aee-reset2) stage=returned ", text))
     failures = [line for line in text.splitlines()
                 if "ASSERT" in line or "UEFI_DIAGNOSTIC_FAIL" in line or
                 "UEFI_STAGE_FAIL" in line or "Exception at" in line or

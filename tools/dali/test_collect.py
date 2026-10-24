@@ -22,7 +22,7 @@ class EvidenceTests(unittest.TestCase):
         for control in controls:
             with self.subTest(control=control):
                 self.assertFalse(parse_evidence(control.encode(), expected_run_token=token)['recovery']['software_reset_requested'])
-        for method in ('psci-system-reset', 'psci-system-reset2'):
+        for method in ('psci-system-reset', 'psci-system-reset2', 'psci-aee-reset2'):
             psci = issue.replace('method=rgu-swrst', 'method=' + method)
             returned = psci.replace('stage=issue', 'stage=returned').replace('\n', ' features=0xffffffff result=0xffffffff\n')
             self.assertTrue(parse_evidence((prefix + psci).encode(), expected_run_token=token)['recovery']['software_reset_requested'])

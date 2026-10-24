@@ -275,3 +275,13 @@ The current diagnostic requests PSCI SYSTEM_RESET through the live FDT's verifie
 The SYSTEM_RESET trial reached fastboot automatically, confirmed by the owner, and restored Android/root/all 18 original hashes. However, no ramoops records survived, so it does not satisfy complete XNU/log/recovery acceptance. Android reported PSCI 1.1. The current diagnostic queries PSCI_FEATURES for 64-bit SYSTEM_RESET2, calls it with architectural warm-reset type 0 and cookie 0 only if supported, and records feature/return status if it returns. It does not fall back to the log-losing cold-reset trial. Warm-reset retention remains unverified.
 
 The collector recognizes all recorded reset methods, requires a matching post-checkpoint `DALI-RESET` issue record and rejects returned/refused requests. The host records USB re-enumeration separately from unattended fastboot evidence; owner keys invalidate an unattended cycle. Recovery from a deliberate hang remains unqualified.
+
+Architectural RESET2 also reached fastboot unattended and restored Android/all
+18 hashes, but retained no pstore files. A reset-off trial stopped spontaneous
+reboots; its subsequent power-key recovery also lost the console. The next
+controlled diagnostic follows the original Dali mrdump module's vendor AEE
+RESET2 argument `0x80000201` (KE reason in AEE domain), preserving its sign
+extension and zero cookie/remaining arguments. Packaging validates AEE mini and
+MRDUMP11 in the private live FDT. No mrdump control block or DDR-reserve register
+is changed. RAM retention, LK dump behavior and automatic recovery still require
+hardware validation of this exact method.
