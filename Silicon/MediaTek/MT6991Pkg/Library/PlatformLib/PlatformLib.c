@@ -8,7 +8,9 @@
 #include <Library/IoLib.h>
 #include <Library/Mt6991PlatformLib.h>
 STATIC VOID Log (CONST CHAR8 *Text);
+STATIC VOID LogMemoryNode (INT32 Node, UINTN Count);
 #define DALI_MEMORY_TRACE(Message) Log ("DALI: RAM trace=" Message "\n")
+#define DALI_MEMORY_NODE_TRACE(Node, Count) LogMemoryNode (Node, Count)
 #include "MemoryWindowFdt.h"
 
 // Expose the validated diagnostic arena plus one FDT-derived XNU window.
@@ -41,6 +43,15 @@ VOID Mt6991GetMemoryMap (OUT EFI_MEMORY_REGION_DESCRIPTOR **Map, OUT UINT8 *Coun
 
 STATIC VOID Log (CONST CHAR8 *Text) {
   SerialPortWrite ((UINT8 *)Text, AsciiStrLen (Text));
+}
+
+STATIC VOID LogMemoryNode (INT32 Node, UINTN Count) {
+  UINT64 Ticks;
+  CHAR8 Message[128];
+  __asm__ volatile ("mrs %0, cntpct_el0" : "=r" (Ticks));
+  AsciiSPrint (Message, sizeof Message, "DALI: RAM static node=%d count=%lu ticks=%lx\n",
+    Node, (UINT64)Count, Ticks);
+  Log (Message);
 }
 
 VOID Mt6991LogRegisters (VOID) {
@@ -313,7 +324,7 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
   Ring[0] = 0x43474244; Ring[1] = 0; Ring[2] = 0;
   Log ("\nDALI: SEC diagnostics v1\n");
   Mt6991LogRegisters ();
-  Log ("DALI: SEC trace version=2\n");
+  Log ("DALI: SEC trace version=3\n");
   __asm__ volatile ("mov %0, sp" : "=r" (Sp));
   __asm__ volatile ("mrs %0, sctlr_el1" : "=r" (Sctlr));
   __asm__ volatile ("mrs %0, cpacr_el1" : "=r" (Cpacr));

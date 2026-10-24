@@ -4,6 +4,24 @@
 #ifndef DALI_MEMORY_TRACE
 #define DALI_MEMORY_TRACE(Message) do { } while (0)
 #endif
+#ifndef DALI_MEMORY_NODE_TRACE
+#define DALI_MEMORY_NODE_TRACE(Node, Count) do { } while (0)
+#endif
+
+// FdtParentOffset rescans the structure block from its root. Keep known
+// parents during subtree walks: SEC has not enabled its data cache yet.
+#define DALI_FDT_MAX_DEPTH 64
+STATIC BOOLEAN DaliIdentityBus (CONST VOID *Fdt, INT32 Node) {
+  INT32 Length;
+  return FdtGetProp (Fdt, Node, "ranges", &Length) == NULL || Length == 0;
+}
+
+STATIC BOOLEAN DaliIdentityAncestors (CONST VOID *Fdt, INT32 Node) {
+  for (; Node >= 0; Node = FdtParentOffset (Fdt, Node)) {
+    if (!DaliIdentityBus (Fdt, Node)) { return FALSE; }
+  }
+  return TRUE;
+}
 
 STATIC UINT64 DaliFdtCells (CONST UINT32 *P, INT32 Count) {
   UINT64 Value = 0;
@@ -12,15 +30,12 @@ STATIC UINT64 DaliFdtCells (CONST UINT32 *P, INT32 Count) {
 }
 
 STATIC BOOLEAN DaliAddNodeRanges (
-  CONST VOID *Fdt, INT32 Node, DALI_RAM_RANGE *Ranges, UINTN *Count, UINTN Capacity
+  CONST VOID *Fdt, INT32 Node, INT32 Parent,
+  DALI_RAM_RANGE *Ranges, UINTN *Count, UINTN Capacity
   ) {
-  INT32 Length, Parent = FdtParentOffset (Fdt, Node);
+  INT32 Length;
   INT32 Ac = FdtAddressCells (Fdt, Parent), Sc = FdtSizeCells (Fdt, Parent);
   CONST UINT32 *Reg = FdtGetProp (Fdt, Node, "reg", &Length);
-  for (INT32 Bus = Parent; Bus >= 0; Bus = FdtParentOffset (Fdt, Bus)) {
-    INT32 RangeLength;
-    if (FdtGetProp (Fdt, Bus, "ranges", &RangeLength) != NULL && RangeLength != 0) { return FALSE; }
-  }
   if (Reg == NULL) { return TRUE; } // Dynamic requests are placed in the second pass.
   if (Ac < 1 || Ac > 2 || Sc < 1 || Sc > 2 || Length <= 0 || Length % (4 * (Ac + Sc))) { return FALSE; }
   for (INT32 I = 0; I < Length / 4; I += Ac + Sc) {
@@ -30,10 +45,10 @@ STATIC BOOLEAN DaliAddNodeRanges (
 }
 
 STATIC BOOLEAN DaliReserveDynamicPool (
-  CONST VOID *Fdt, INT32 Node, CONST DALI_RAM_RANGE *Banks, UINTN BankCount,
+  CONST VOID *Fdt, INT32 Node, INT32 Parent, CONST DALI_RAM_RANGE *Banks, UINTN BankCount,
   DALI_RAM_RANGE *Blocked, UINTN *BlockedCount, UINTN Capacity
   ) {
-  INT32 Length, Parent = FdtParentOffset (Fdt, Node);
+  INT32 Length;
   INT32 Ac = FdtAddressCells (Fdt, Parent), Sc = FdtSizeCells (Fdt, Parent);
   CONST UINT32 *Property = FdtGetProp (Fdt, Node, "reg", &Length);
   DALI_RAM_RANGE Allowed[16], PoolBanks[64];
@@ -88,8 +103,11 @@ STATIC BOOLEAN DaliWindowFromFdt (
   UINTN BankCount = 0, BlockedCount = 0;
   UINT64 Lo, Bytes;
   INT32 Node, Depth, Length, Reserved;
+  INT32 Parents[DALI_FDT_MAX_DEPTH];
+  UINTN Visited = 0;
   CONST UINT32 *Property;
-  if (FdtCheckHeader (Fdt) || !DaliAddNodeRanges (Fdt, FdtPathOffset (Fdt, "/memory"),
+  if (FdtCheckHeader (Fdt) || !DaliIdentityBus (Fdt, 0) ||
+      !DaliAddNodeRanges (Fdt, FdtPathOffset (Fdt, "/memory"), 0,
       Banks, &BankCount, ARRAY_SIZE (Banks)) || BankCount == 0) { return FALSE; }
   DALI_MEMORY_TRACE ("banks");
   for (UINTN I = 0; I < FixedCount; I++) {
@@ -105,17 +123,24 @@ STATIC BOOLEAN DaliWindowFromFdt (
   }
   DALI_MEMORY_TRACE ("static-reservations");
   Reserved = FdtPathOffset (Fdt, "/reserved-memory");
-  if (Reserved < 0) { return FALSE; }
+  if (Reserved < 0 || !DaliIdentityAncestors (Fdt, Reserved)) { return FALSE; }
   Depth = 0;
+  Parents[0] = Reserved;
   for (Node = FdtNextNode (Fdt, Reserved, &Depth); Node >= 0 && Depth > 0; Node = FdtNextNode (Fdt, Node, &Depth)) {
-    if (!DaliAddNodeRanges (Fdt, Node, Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
+    if (Depth >= DALI_FDT_MAX_DEPTH || !DaliIdentityBus (Fdt, Parents[Depth - 1])) { return FALSE; }
+    Parents[Depth] = Node;
+    if (!DaliAddNodeRanges (Fdt, Node, Parents[Depth - 1], Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
+    Visited++;
+    if (Visited == 1 || (Visited & 7) == 0) { DALI_MEMORY_NODE_TRACE (Node, Visited); }
   }
   DALI_MEMORY_TRACE ("protected-regions");
   Depth = 0;
   for (Node = FdtNextNode (Fdt, -1, &Depth); Node >= 0; Node = FdtNextNode (Fdt, Node, &Depth)) {
     if (FdtStringListSearch (Fdt, Node, "compatible", "pkvm,protected-region") >= 0) {
+      INT32 Parent = FdtParentOffset (Fdt, Node);
       if (FdtGetProp (Fdt, Node, "reg", &Length) == NULL ||
-          !DaliAddNodeRanges (Fdt, Node, Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
+          !DaliIdentityAncestors (Fdt, Parent) ||
+          !DaliAddNodeRanges (Fdt, Node, Parent, Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
     }
   }
   Node = FdtPathOffset (Fdt, "/chosen");
@@ -133,9 +158,12 @@ STATIC BOOLEAN DaliWindowFromFdt (
   // Honor size-only Linux pool requests without starting their consumers.
   // The chosen placements stay excluded for this entire firmware/XNU boot.
   Depth = 0;
+  Parents[0] = Reserved;
   DALI_MEMORY_TRACE ("dynamic-pools");
   for (Node = FdtNextNode (Fdt, Reserved, &Depth); Node >= 0 && Depth > 0; Node = FdtNextNode (Fdt, Node, &Depth)) {
-    if (!DaliReserveDynamicPool (Fdt, Node, Banks, BankCount, Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
+    if (Depth >= DALI_FDT_MAX_DEPTH) { return FALSE; }
+    Parents[Depth] = Node;
+    if (!DaliReserveDynamicPool (Fdt, Node, Parents[Depth - 1], Banks, BankCount, Blocked, &BlockedCount, ARRAY_SIZE (Blocked))) { return FALSE; }
   }
   DALI_MEMORY_TRACE ("choose-gap");
   *Exclusions = BlockedCount;

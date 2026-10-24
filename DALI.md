@@ -109,12 +109,18 @@ The selection and loader allocation/failure stage are persisted in ramoops.
 This extension still requires hardware qualification.
 
 The next hardware attempt retained only the SEC entry and normal register
-snapshot, with no MMU/DXE/menu evidence. Its exact stop is unresolved. Early
+snapshot. Trace v2 subsequently located the stop inside the static reserved-memory
+walk, before MMU/DXE/menu entry. Its underlying cause remains unresolved. Early
 `SEC trace` and `RAM trace` records now use the direct ramoops writer, including
 the incoming FDT address, SP and EL1 control registers; platform rejection also
 uses that path. These records are diagnostics, not evidence that the hang is
 fixed. The compiled SEC and real FDT traverse the selector under QEMU, including
 strict alignment, then refuse the unimplemented RGU register readback.
+Trace v3 keeps parent offsets during reserved-memory traversal instead of
+repeatedly searching from the FDT root, with a bounded 64-level ancestor stack.
+It retains nested cell-width and translated-bus checks and periodically records
+node progress plus physical timer ticks. This removes a measured source-level
+rescan hotspot; it is not yet a confirmed hardware hang fix.
 
 ## Build
 

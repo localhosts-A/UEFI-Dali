@@ -40,7 +40,12 @@ typedef bool BOOLEAN;
 #define MAX_UINT64 UINT64_MAX
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define Fdt32ToCpu fdt32_to_cpu
-#define FdtParentOffset fdt_parent_offset
+static size_t parent_calls;
+static int counted_parent(const void *fdt, int node) {
+  parent_calls++;
+  return fdt_parent_offset(fdt, node);
+}
+#define FdtParentOffset counted_parent
 #define FdtAddressCells fdt_address_cells
 #define FdtSizeCells fdt_size_cells
 #define FdtGetProp fdt_getprop
@@ -63,8 +68,10 @@ bool add(uint64_t base, uint64_t size, size_t capacity) {
 bool select_fdt(const void *fdt, uint64_t address, const DALI_RAM_RANGE *fixed,
                 size_t count, uint64_t *base, uint64_t *size) {
   size_t exclusions = 0;
+  parent_calls = 0;
   return DaliWindowFromFdt(fdt, address, fixed, count, base, size, &exclusions);
 }
+size_t get_parent_calls(void) { return parent_calls; }
 ''')
         subprocess.run([compiler, "-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror",
                         "-I", str(header.parent), str(base / "window.c"), "-lfdt", "-o", str(base / "window.so")], check=True)
@@ -77,6 +84,7 @@ bool select_fdt(const void *fdt, uint64_t address, const DALI_RAM_RANGE *fixed,
         cls.lib.select_fdt.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.POINTER(Range), ctypes.c_size_t,
                                        ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
         cls.lib.select_fdt.restype = ctypes.c_bool
+        cls.lib.get_parent_calls.restype = ctypes.c_size_t
 
     @classmethod
     def tearDownClass(cls):
@@ -139,6 +147,31 @@ bool select_fdt(const void *fdt, uint64_t address, const DALI_RAM_RANGE *fixed,
     def test_dynamic_pool_is_placed_before_choosing_xnu(self):
         self.assertEqual(self.select_fdt(tree(reserved='dynamic { size = <0 0x4000000>; alignment = <0 0x1000000>; alloc-ranges = <0 0xa0000000 0 0x30000000>; };')),
                          (0xa4000000, 0x2c000000))
+
+    def test_reserved_walk_keeps_known_parents_without_root_rescans(self):
+        reserved = "".join(f"hole{i} {{ reg = <0 0x81000000 0 0x1000>; }};" for i in range(80))
+        self.assertEqual(self.select_fdt(tree(reserved=reserved)), (0xa0000000, 0x30000000))
+        # Only the reserved-memory -> root chain needs parent lookup, regardless
+        # of the number of static nodes or the repeated dynamic-pool pass.
+        self.assertEqual(self.lib.get_parent_calls(), 2)
+
+    def test_reserved_walk_uses_each_nested_parent_cell_width(self):
+        reserved = ('container { #address-cells = <1>; #size-cells = <1>; ranges; '
+                    'child { reg = <0xa0000000 0x10000000>; }; }; '
+                    'sibling { reg = <0 0x81000000 0 0x1000>; };')
+        self.assertEqual(self.select_fdt(tree(reserved=reserved)), (0xb0000000, 0x20000000))
+
+    def test_reserved_walk_depth_limit_fails_closed(self):
+        reserved = 'leaf { reg = <0 0x81000000 0 0x1000>; };'
+        for index in range(64):
+            reserved = f'level{index} {{ #address-cells = <2>; #size-cells = <2>; ranges; {reserved} }};'
+        self.assertIsNone(self.select_fdt(tree(reserved=reserved)))
+
+    def test_protected_translated_ancestor_still_fails_closed(self):
+        extra = ('bus { #address-cells = <2>; #size-cells = <2>; '
+                 'ranges = <0 0 0 0xb0000000 0 0x10000000>; '
+                 'protected { compatible = "pkvm,protected-region"; reg = <0 0 0 0x1000>; }; };')
+        self.assertIsNone(self.select_fdt(tree(extra=extra)))
 
     def test_randomized_against_interval_subtraction(self):
         rng = random.Random(6991)
