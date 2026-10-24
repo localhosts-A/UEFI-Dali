@@ -8,8 +8,9 @@
 #include <Library/IoLib.h>
 #include <Library/Mt6991PlatformLib.h>
 STATIC VOID Log (CONST CHAR8 *Text);
+STATIC VOID LogTimed (CONST CHAR8 *Text);
 STATIC VOID LogMemoryNode (INT32 Node, UINTN Count);
-#define DALI_MEMORY_TRACE(Message) Log ("DALI: RAM trace=" Message "\n")
+#define DALI_MEMORY_TRACE(Message) LogTimed ("DALI: RAM trace=" Message)
 #define DALI_MEMORY_NODE_TRACE(Node, Count) LogMemoryNode (Node, Count)
 #include "MemoryWindowFdt.h"
 
@@ -43,6 +44,14 @@ VOID Mt6991GetMemoryMap (OUT EFI_MEMORY_REGION_DESCRIPTOR **Map, OUT UINT8 *Coun
 
 STATIC VOID Log (CONST CHAR8 *Text) {
   SerialPortWrite ((UINT8 *)Text, AsciiStrLen (Text));
+}
+
+STATIC VOID LogTimed (CONST CHAR8 *Text) {
+  UINT64 Ticks;
+  CHAR8 Message[192];
+  __asm__ volatile ("mrs %0, cntpct_el0" : "=r" (Ticks));
+  AsciiSPrint (Message, sizeof Message, "%a ticks=%lx\n", Text, Ticks);
+  Log (Message);
 }
 
 STATIC VOID LogMemoryNode (INT32 Node, UINTN Count) {
@@ -155,6 +164,8 @@ STATIC BOOLEAN CheckProbeRegion (CONST VOID *Fdt, CONST CHAR8 *Path, UINT64 Base
     Canonical[I] = (Path[I] >= 'A' && Path[I] <= 'F') ? Path[I] + ('a' - 'A') : Path[I];
   }
   Canonical[I] = 0;
+  AsciiSPrint (Message, sizeof Message, "DALI: FDT probe begin %a", Canonical);
+  LogTimed (Message);
   INT32 Length, Node = FdtPathOffset (Fdt, Canonical);
   if (Node < 0) {
     AsciiSPrint (Message, sizeof Message, "DALI: FDT probe region missing: %a\n", Canonical);
@@ -162,7 +173,10 @@ STATIC BOOLEAN CheckProbeRegion (CONST VOID *Fdt, CONST CHAR8 *Path, UINT64 Base
     return FALSE;
   }
   CONST UINT32 *Reg = FdtGetProp (Fdt, Node, "reg", &Length);
-  if (Reg != NULL && Length >= 16 && Cells (Reg, 2) == Base && Cells (Reg + 2, 2) == 0x1000) { return TRUE; }
+  if (Reg != NULL && Length >= 16 && Cells (Reg, 2) == Base && Cells (Reg + 2, 2) == 0x1000) {
+    LogTimed ("DALI: FDT probe accepted");
+    return TRUE;
+  }
   AsciiSPrint (Message, sizeof Message, "DALI: FDT probe region rejected: %a\n", Canonical);
   Log (Message);
   return FALSE;
@@ -324,7 +338,7 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
   Ring[0] = 0x43474244; Ring[1] = 0; Ring[2] = 0;
   Log ("\nDALI: SEC diagnostics v1\n");
   Mt6991LogRegisters ();
-  Log ("DALI: SEC trace version=3\n");
+  Log ("DALI: SEC trace version=4\n");
   __asm__ volatile ("mov %0, sp" : "=r" (Sp));
   __asm__ volatile ("mrs %0, sctlr_el1" : "=r" (Sctlr));
   __asm__ volatile ("mrs %0, cpacr_el1" : "=r" (Cpacr));
@@ -332,7 +346,7 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
   AsciiSPrint (Message, sizeof Message, "DALI: SEC fdt=%lx sp=%lx sctlr=%lx cpacr=%lx vbar=%lx\n",
     (UINT64)BootFdt, Sp, Sctlr, Cpacr, Vbar);
   Log (Message);
-  Log ("DALI: SEC trace=header-check\n");
+  LogTimed ("DALI: SEC trace=header-check");
   if (BootFdt < 0x80000000ULL || BootFdt >= 0x100000000ULL || (BootFdt & 7) || FdtCheckHeader (Fdt)) {
     Log ("DALI: bad incoming FDT pointer/header\n");
     return EFI_INVALID_PARAMETER;
@@ -346,7 +360,13 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
     Log ("DALI: SEC FDT extent/platform rejected\n");
     return EFI_UNSUPPORTED;
   }
-  Log ("DALI: SEC trace=memory-arenas\n");
+  // Validate the watchdog's own FDT/MMIO contract before touching it, then
+  // stop the inherited LK timer before the uncached, read-only FDT scans.
+  // Recovery is armed separately by BDS after the payload opts in.
+  LogTimed ("DALI: SEC trace=stop-inherited-watchdog");
+  EFI_STATUS Status = StopInheritedWatchdog (Fdt);
+  if (EFI_ERROR (Status)) { return Status; }
+  LogTimed ("DALI: SEC trace=memory-arenas");
   Memory = FdtPathOffset (Fdt, "/memory");
   Reg = FdtGetProp (Fdt, Memory, "reg", &Length);
   if (Memory < 0 || Reg == NULL || FdtAddressCells (Fdt, 0) != 2 || FdtSizeCells (Fdt, 0) != 2 ||
@@ -360,24 +380,24 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
     }
     if (!Covered) { return EFI_OUT_OF_RESOURCES; }
   }
-  Log ("DALI: SEC trace=memreserve\n");
+  LogTimed ("DALI: SEC trace=memreserve");
   for (INTN I = 0; I < FdtGetNumberOfReserveMapEntries (Fdt); I++) {
     if (FdtGetReserveMapEntry (Fdt, I, &Base, &Size) || OverlapsArena (Base, Size)) { return EFI_ACCESS_DENIED; }
   }
-  Log ("DALI: SEC trace=reserved-memory\n");
+  LogTimed ("DALI: SEC trace=reserved-memory");
   Node = FdtPathOffset (Fdt, "/reserved-memory");
   if (Node < 0) { return EFI_UNSUPPORTED; }
   Depth = 0;
   for (INT32 Child = FdtNextNode (Fdt, Node, &Depth); Child >= 0 && Depth > 0; Child = FdtNextNode (Fdt, Child, &Depth)) {
     if (!CheckReservedNode (Fdt, Child)) { Log ("DALI: reserved-memory collision\n"); return EFI_ACCESS_DENIED; }
   }
-  Log ("DALI: SEC trace=protected-memory\n");
+  LogTimed ("DALI: SEC trace=protected-memory");
   Depth = 0;
   for (Node = FdtNextNode (Fdt, -1, &Depth); Node >= 0; Node = FdtNextNode (Fdt, Node, &Depth)) {
     if (FdtStringListSearch (Fdt, Node, "compatible", "pkvm,protected-region") >= 0 &&
         !CheckReservedNode (Fdt, Node)) { Log ("DALI: protected-region collision\n"); return EFI_ACCESS_DENIED; }
   }
-  Log ("DALI: SEC trace=initrd\n");
+  LogTimed ("DALI: SEC trace=initrd");
   Node = FdtPathOffset (Fdt, "/chosen");
   Reg = FdtGetProp (Fdt, Node, "linux,initrd-start", &Length);
   if (Reg != NULL && (Length == 4 || Length == 8)) {
@@ -387,14 +407,14 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
     Size = Cells (Reg, Length / 4);
     if (Size < Base || OverlapsArena (Base, Size - Base)) { return EFI_ACCESS_DENIED; }
   }
-  Log ("DALI: SEC trace=select-window\n");
-  EFI_STATUS Status = SelectXnuMemory (Fdt, BootFdt);
+  LogTimed ("DALI: SEC trace=select-window");
+  Status = SelectXnuMemory (Fdt, BootFdt);
   if (EFI_ERROR (Status)) { return Status; }
-  Log ("DALI: SEC trace=copy-fdt\n");
+  LogTimed ("DALI: SEC trace=copy-fdt");
   CopyMem ((VOID *)(UINTN)DALI_FDT_BASE, Fdt, FdtTotalSize (Fdt));
   // Validate every MMIO address used by the optional display/key probes before
   // DXE can touch it. A changed firmware needs a new layout review.
-  Log ("DALI: SEC trace=mmio-contract\n");
+  LogTimed ("DALI: SEC trace=mmio-contract");
   if (!CheckProbeRegion (Fdt, "/soc/pinctrl@1002d000", DALI_GPIO_BASE)) { return EFI_UNSUPPORTED; }
   for (UINTN I = 0; I < 3; I++) {
     CHAR8 Path[64]; UINT64 Address = 0x32490000 + I * 0x10000;
@@ -410,6 +430,6 @@ EFI_STATUS Mt6991PlatformInitialize (IN UINTN BootFdt) {
     }
   }
   Log ("DALI: FDT copied; diagnostic RAM checked against carveouts\n");
-  Log ("DALI: SEC trace=stop-inherited-watchdog\n");
-  return StopInheritedWatchdog (Fdt);
+  LogTimed ("DALI: SEC trace=platform-ready");
+  return EFI_SUCCESS;
 }

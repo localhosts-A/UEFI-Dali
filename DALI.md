@@ -120,7 +120,12 @@ Trace v3 keeps parent offsets during reserved-memory traversal instead of
 repeatedly searching from the FDT root, with a bounded 64-level ancestor stack.
 It retains nested cell-width and translated-bus checks and periodically records
 node progress plus physical timer ticks. This removes a measured source-level
-rescan hotspot; it is not yet a confirmed hardware hang fix.
+rescan hotspot. Hardware v3 completed selection of `0x90800000 + 0x16600000`,
+then stopped during MMIO-node validation; the owner entered fastboot manually.
+Trace v4 timestamps every stage and MMIO probe. It stops the inherited LK
+watchdog immediately after validating that watchdog's own FDT/MMIO contract,
+before the uncached memory scans. BDS still arms opt-in recovery separately.
+Watchdog expiry as the cause of either early stop remains unproven.
 
 ## Build
 
@@ -179,6 +184,7 @@ rooted Android device; keep it outside Git.
   FDT keycodes must match 114 and 116. The GPIO60 volume-up path stays separate.
 - RGU watchdog `0x1c010000` must advertise both MT6991 and MT6589 compatibility.
   Only inherited MODE.EN is cleared with key `0x22000000`, after reload `0x1971`.
+  Its contract is checked and the inherited timer stopped before memory scanning.
 - XNU tests default to a one-shot bootloader reboot marker at RGU `+0x24` and a
   31-second maximum single-shot watchdog; the configuration may select 2–31
   seconds or disable auto-fastboot. The 120-second timeout is only the host
@@ -206,7 +212,8 @@ python3 tools/dali/qemu_sec_smoke.py --dtb /private/runtime.dtb --exception-leve
 
 The earlier QEMU check verified shim/SEC/MMU entry into DXE. QEMU does not
 emulate MT6991 MMIO; the newer strict RGU readback currently rejects its
-all-ones register value before MMU entry. This run is unsupported, not a pass.
+all-ones register value before memory scanning/MMU entry. This run is unsupported,
+not a pass. Native tests exercise the actual C memory selector independently.
 The image and FAT tools check headers, sizes, hashes and per-file FAT readback.
 
 Hardware tests must first recheck the exact device, running FDT, active B slot
