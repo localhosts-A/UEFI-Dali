@@ -50,6 +50,6 @@ EFI_STATUS DaliUsbReadCalibration (CONST VOID *Fdt, UINTN FdtSize, struct dali_x
   CONST VOID *Chip = FdtGetProp (Fdt, Chosen, "atag,chipid", &ChipSize);
   CONST VOID *Info = FdtGetProp (Fdt, Chosen, "atag,devinfo", &InfoSize);
   if (Chip == NULL || Info == NULL || ChipSize < 0 || InfoSize < 0) { return EFI_UNSUPPORTED; }
-  int Result = dali_usb_calibration_decode (Chip, (UINTN)ChipSize, Info, (UINTN)InfoSize, Out);
+  int Result = dali_usb_calibration_decode (Chip, (size_t)ChipSize, Info, (size_t)InfoSize, Out);
   return Result == USB_OK ? EFI_SUCCESS : Result == USB_UNSUPPORTED ? EFI_UNSUPPORTED : EFI_COMPROMISED_DATA;
 }

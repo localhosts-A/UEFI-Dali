@@ -17,6 +17,9 @@
   INF ArmPkg/Drivers/ArmGicDxe/ArmGicDxe.inf
   INF ArmPkg/Drivers/TimerDxe/TimerDxe.inf
   INF daliPkg/Drivers/PmicBusDxe/PmicBusDxe.inf
+!if $(DALI_USB_RESOURCE_CONTEXT) == TRUE
+  INF daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.inf
+!endif
   INF daliPkg/Drivers/DisplayDxe/DisplayDxe.inf
   INF SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
   INF SiliciumPkg/Drivers/KeypadDxe/KeypadDxe.inf

@@ -124,6 +124,8 @@ python3 "$PORT_ROOT/tools/make_payload.py" \
   "${FASTBOOT_ARGS[@]}" "${PAYLOAD_ARGS[@]}"
 export DALI_UNIXNU_PACKAGE="$PORT_UNIXNU/package"
 export DALI_DARWINBOOT_PACKAGE="$PORT_UNIXNU/drivers/DarwinBoot"
+export DALI_USB_CORE_DRIVERS="$PORT_UNIXNU/drivers"
+export DALI_USB_DEVICE_DRIVERS="$PORT_DEVICE/drivers"
 export DALI_PAYLOAD_IMAGE="$PORT_ROOT/out/payload.img"
 export SOURCE_DATE_EPOCH=$(git -C "$PORT_ROOT" show -s --format=%ct HEAD)
 (

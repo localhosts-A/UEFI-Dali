@@ -44,7 +44,10 @@ class CommonPlatform ():
         "Silicium-ACPI",
         "Silicium-ACPI/Platforms/Xiaomi",
         "Silicium-ACPI/Silicon/MediaTek"
-    )
+    ) + ((
+        os.environ.get("DALI_USB_CORE_DRIVERS", os.path.join(WorkspaceRoot, "../UniXNU/drivers")),
+        os.environ.get("DALI_USB_DEVICE_DRIVERS", os.path.join(WorkspaceRoot, "../UniXNU-Dali/drivers")),
+    ) if os.environ.get("DALI_USB_RESOURCE_CONTEXT") == "true" else ())
 
 # ####################################################################################### #
 #                         Configuration for Update & Setup                                #
@@ -173,6 +176,10 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         if usb_stack not in ("true", "false"):
             raise ValueError("DALI_USB_HOST_STACK must be true or false")
         self.env.SetValue ("BLD_*_DALI_USB_HOST_STACK", "TRUE" if usb_stack == "true" else "FALSE", "Opt-in USB host/class FV stack")
+        usb_context = os.environ.get("DALI_USB_RESOURCE_CONTEXT", "false")
+        if usb_context not in ("true", "false"):
+            raise ValueError("DALI_USB_RESOURCE_CONTEXT must be true or false")
+        self.env.SetValue ("BLD_*_DALI_USB_RESOURCE_CONTEXT", "TRUE" if usb_context == "true" else "FALSE", "Opt-in USB CPU mappings/private FDT context")
         ufs_probe = os.environ.get("DALI_UFS_PROBE", "false")
         if ufs_probe not in ("true", "false"):
             raise ValueError("DALI_UFS_PROBE must be true or false")

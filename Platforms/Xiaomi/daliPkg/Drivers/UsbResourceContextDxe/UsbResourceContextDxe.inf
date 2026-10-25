@@ -1,0 +1,36 @@
+[Defines]
+  INF_VERSION = 0x00010019
+  BASE_NAME = DaliUsbResourceContextDxe
+  FILE_GUID = 2682F728-CA87-4E94-A336-DA87CE9D7436
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DaliUsbResourceContextInitialize
+[Sources]
+  UsbResourceContextDxe.c
+[Packages]
+  MdePkg/MdePkg.dec
+  UefiCpuPkg/UefiCpuPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  daliPkg/dali.dec
+  UsbCore/UsbCore.dec
+  DaliUsb/DaliUsb.dec
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DxeServicesTableLib
+  DaliUsbPlatformLib
+  ArmMmuLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  FdtLib
+  DebugLib
+[Protocols]
+  gDaliUsbResourceContextProtocolGuid ## PRODUCES
+  gEfiCpuArchProtocolGuid ## CONSUMES
+[Guids]
+  gEfiEventExitBootServicesGuid
+[Depex]
+  gEfiCpuArchProtocolGuid
+[BuildOptions]
+  *_*_*_CC_FLAGS = -DUNIXNU_USB_EDK2

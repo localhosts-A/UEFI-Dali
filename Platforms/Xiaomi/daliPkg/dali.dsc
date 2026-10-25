@@ -14,6 +14,9 @@
   # Opt-in source host/class stack only; native port/DMA registration is separate.
   DEFINE DALI_USB_HOST_STACK = FALSE
 !endif
+!ifndef DALI_USB_RESOURCE_CONTEXT
+  DEFINE DALI_USB_RESOURCE_CONTEXT = FALSE
+!endif
 !ifndef DALI_UFS_PROBE
   DEFINE DALI_UFS_PROBE = FALSE
 !endif
@@ -28,6 +31,12 @@
   CpuLib|daliPkg/Library/PollingCpuLib/PollingCpuLib.inf
   KeypadDeviceLib|daliPkg/Library/KeypadDeviceLib/KeypadDeviceLib.inf
   UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
+!if $(DALI_USB_RESOURCE_CONTEXT) == TRUE
+  UsbCoreLib|UsbCore/UsbCoreLib.inf
+  DaliUsbLib|DaliUsb/DaliUsbLib.inf
+  DaliUsbPlatformLib|daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
+  FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
+!endif
 
 [PcdsFixedAtBuild]
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled|$(DALI_UFS_PROBE)
@@ -46,6 +55,9 @@
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosProcessorPartNumber|"MT6991"
 
 [Components]
+!if $(DALI_USB_RESOURCE_CONTEXT) == TRUE
+  daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.inf
+!endif
 !if $(DALI_USB_HOST_STACK) == TRUE
   MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
   MdeModulePkg/Bus/Usb/UsbMouseDxe/UsbMouseDxe.inf
