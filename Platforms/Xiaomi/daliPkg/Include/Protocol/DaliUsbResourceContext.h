@@ -85,4 +85,8 @@ struct _DALI_USB_RESOURCE_CONTEXT_PROTOCOL {
     DALI_USB_I2C_POLICY, VOID *, UINT32 UlposcHz, struct dali_nxp_repeater_bus *, DALI_USB_I2C_INFO *);
   EFI_STATUS (EFIAPI *GetI2cBusStatus)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *, DALI_USB_I2C_INFO *);
   EFI_STATUS (EFIAPI *ReleaseI2cBus)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *);
+  /* Revision5: copied, FDT-validated xHCI register window. The resource context
+   * maps its CPU page but does not authorize register access or provide an
+   * xHCI/IRQ lease, clock/power/role control, or DMA mapping/qualification. */
+  EFI_STATUS (EFIAPI *GetXhciResources)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_XHCI_RESOURCES *);
 };

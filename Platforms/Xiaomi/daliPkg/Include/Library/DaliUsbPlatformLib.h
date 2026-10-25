@@ -41,6 +41,18 @@ EFI_STATUS DaliUsbReadClockResources (
   );
 
 typedef struct {
+  DALI_USB_MMIO_RANGE Registers;
+} DALI_USB_XHCI_RESOURCES;
+/* Validate the complete USB0/PHY/clock/calibration graph and copy the physical
+ * xHCI register window described by the fixed Dali FDT. The window is a resource
+ * description only: mapping/access is separate, and it grants no permission to
+ * touch an unpowered controller or qualifies DMA, IRQ, power, role or hardware. */
+EFI_STATUS DaliUsbReadXhciResources (
+  IN CONST VOID *Fdt, IN UINTN FdtSize,
+  OUT DALI_USB_XHCI_RESOURCES *Out
+  );
+
+typedef struct {
   UINT16 SpmiDeviceMask;
   UINT32 MinMicrovolt, MaxMicrovolt, EnableRampMicroseconds;
 } DALI_USB_VUSB_RESOURCES;

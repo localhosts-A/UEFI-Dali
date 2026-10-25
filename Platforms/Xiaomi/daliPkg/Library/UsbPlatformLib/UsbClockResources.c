@@ -84,3 +84,13 @@ EFI_STATUS DaliUsbReadClockResources (CONST VOID *Fdt, UINTN FdtSize, DALI_USB_C
   *Out = Value;
   return EFI_SUCCESS;
 }
+
+EFI_STATUS DaliUsbReadXhciResources (CONST VOID *Fdt, UINTN FdtSize, DALI_USB_XHCI_RESOURCES *Out) {
+  if (Out == NULL) { return EFI_INVALID_PARAMETER; }
+  DALI_USB_CLOCK_RESOURCES Validated;
+  EFI_STATUS Status = DaliUsbReadClockResources (Fdt, FdtSize, &Validated);
+  if (Status != EFI_SUCCESS) { return Status; }
+  DALI_USB_XHCI_RESOURCES Value = {{0x16700000, 0x1000}};
+  *Out = Value;
+  return EFI_SUCCESS;
+}

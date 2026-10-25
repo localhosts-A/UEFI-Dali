@@ -18,10 +18,11 @@
 #include <DaliUsbVusb.h>
 
 #define PAGE_BYTES  4096U
-#define MAX_PAGES   (DaliUsbClockBankCount * 2 + 4)
+#define MAX_PAGES   (DaliUsbClockBankCount * 2 + 5)
 STATIC struct {
   DALI_USB_RESOURCE_CONTEXT_STATUS Status;
   DALI_USB_CLOCK_RESOURCES Clocks;
+  DALI_USB_XHCI_RESOURCES Xhci;
   VOID *Snapshot;
   UINTN SnapshotSize;
   EFI_HANDLE Image;
@@ -48,12 +49,13 @@ STATIC EFI_STATUS EFIAPI ReadVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DAL
 STATIC EFI_STATUS EFIAPI AcquireVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_VUSB_TOKEN *, DALI_USB_VUSB_GUARD, VOID *, DALI_USB_VUSB_INFO *);
 STATIC EFI_STATUS EFIAPI ReleaseVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_VUSB_TOKEN *);
 STATIC EFI_STATUS EFIAPI ReadI2c (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_RESOURCES *);
+STATIC EFI_STATUS EFIAPI ReadXhci (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_XHCI_RESOURCES *);
 STATIC EFI_STATUS EFIAPI ReadPins (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_RESOURCE_GUARD, VOID *, struct dali_i2c6_pin_snapshot *);
 STATIC EFI_STATUS EFIAPI AcquireBus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *, DALI_USB_I2C_POLICY, VOID *, UINT32, struct dali_nxp_repeater_bus *, DALI_USB_I2C_INFO *);
 STATIC EFI_STATUS EFIAPI BusStatus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *, DALI_USB_I2C_INFO *);
 STATIC EFI_STATUS EFIAPI ReleaseBus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *);
-STATIC DALI_USB_RESOURCE_CONTEXT_PROTOCOL mProtocol = {4, ReadStatus, ReadClocks, ReadVusb, AcquireVusb, ReleaseVusb,
-  ReadI2c, ReadPins, AcquireBus, BusStatus, ReleaseBus};
+STATIC DALI_USB_RESOURCE_CONTEXT_PROTOCOL mProtocol = {5, ReadStatus, ReadClocks, ReadVusb, AcquireVusb, ReleaseVusb,
+  ReadI2c, ReadPins, AcquireBus, BusStatus, ReleaseBus, ReadXhci};
 
 STATIC EFI_STATUS EFIAPI ReadStatus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_RESOURCE_CONTEXT_STATUS *Out) {
   if (This != &mProtocol || Out == NULL) { return EFI_INVALID_PARAMETER; }
@@ -161,6 +163,12 @@ STATIC EFI_STATUS EFIAPI ReadI2c (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI
   if (mContext.Status.BootServicesClosed) { return EFI_UNSUPPORTED; }
   if (EFI_ERROR (mContext.Status.InitializationStatus)) { return mContext.Status.InitializationStatus; }
   *Out = mI2c; return EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI ReadXhci (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_XHCI_RESOURCES *Out) {
+  if (This != &mProtocol || Out == NULL) { return EFI_INVALID_PARAMETER; }
+  if (mContext.Status.BootServicesClosed) { return EFI_UNSUPPORTED; }
+  if (EFI_ERROR (mContext.Status.InitializationStatus)) { return mContext.Status.InitializationStatus; }
+  *Out = mContext.Xhci; return EFI_SUCCESS;
 }
 STATIC int PinRead32 (VOID *Context, UINT32 Offset, UINT32 *Out) {
   CONST DALI_USB_MMIO_RANGE *Range = Context;
@@ -333,6 +341,9 @@ STATIC EFI_STATUS Prepare (CONST VOID *Source, UINTN Capacity) {
   DALI_USB_CLOCK_RESOURCES Clocks;
   EFI_STATUS Status = DaliUsbReadClockResources (mContext.Snapshot, Size, &Clocks);
   if (EFI_ERROR (Status)) { return Status; }
+  DALI_USB_XHCI_RESOURCES Xhci;
+  Status = DaliUsbReadXhciResources (mContext.Snapshot, Size, &Xhci);
+  if (EFI_ERROR (Status)) { return Status; }
   Status = DaliUsbReadVusbResources (mContext.Snapshot, Size, &mVusb.Resources);
   if (EFI_ERROR (Status)) { return Status; }
   Status = DaliUsbReadI2cResources (mContext.Snapshot, Size, &mI2c);
@@ -341,8 +352,8 @@ STATIC EFI_STATUS Prepare (CONST VOID *Source, UINTN Capacity) {
   // observed change while copying. Subsequent source changes cannot modify our
   // private snapshot; no API returns its pointer, and no code writes it again.
   if (CompareMem (mContext.Snapshot, Source, Size) != 0) { return EFI_COMPROMISED_DATA; }
-  mContext.Status.SnapshotValid = TRUE; mContext.Clocks = Clocks;
-  DALI_USB_MMIO_RANGE Ranges[DaliUsbClockBankCount + 4];
+  mContext.Status.SnapshotValid = TRUE; mContext.Clocks = Clocks; mContext.Xhci = Xhci;
+  DALI_USB_MMIO_RANGE Ranges[DaliUsbClockBankCount + 5];
   for (UINTN I = 0; I < DaliUsbClockBankCount; I++) { Ranges[I] = Clocks.Bank[I]; }
   // GPIO already has an initial platform mapping; claim/recheck it with the
   // same GCD/CPU rules. The remaining three pages are absent from that map.
@@ -350,7 +361,8 @@ STATIC EFI_STATUS Prepare (CONST VOID *Source, UINTN Capacity) {
   Ranges[DaliUsbClockBankCount + 1] = mI2c.IocfgLb2;
   Ranges[DaliUsbClockBankCount + 2] = (DALI_USB_MMIO_RANGE){mI2c.Controller.Base, PAGE_BYTES};
   Ranges[DaliUsbClockBankCount + 3] = (DALI_USB_MMIO_RANGE){mI2c.Dma.Base, PAGE_BYTES};
-  for (UINTN I = 0; I < DaliUsbClockBankCount + 4; I++) {
+  Ranges[DaliUsbClockBankCount + 4] = Xhci.Registers;
+  for (UINTN I = 0; I < DaliUsbClockBankCount + 5; I++) {
     UINT64 End = (UINT64)Ranges[I].Base + Ranges[I].Size;
     if (Ranges[I].Size == 0 || End > 0x100000000ULL) { return EFI_COMPROMISED_DATA; }
     for (EFI_PHYSICAL_ADDRESS Page = Ranges[I].Base & ~(EFI_PHYSICAL_ADDRESS)(PAGE_BYTES - 1); Page < End; Page += PAGE_BYTES) {

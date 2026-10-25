@@ -89,7 +89,7 @@ static void power_failed_output(DALI_USB_VUSB_TOKEN *token,EFI_STATUS expected) 
   assert(power_acquire(token,&info)==expected && !memcmp(&info,&old,sizeof info));
 }
 static void power_protocol_tests(void) {
-  reset(); entry(EFI_SUCCESS); assert(power_commands==0 && mProtocol.Revision==4);
+  reset(); entry(EFI_SUCCESS); assert(power_commands==0 && mProtocol.Revision==5);
   DALI_USB_VUSB_RESOURCES desc; assert(mProtocol.GetVusbResources(&mProtocol,&desc)==EFI_SUCCESS && desc.SpmiDeviceMask==0x85c0);
   DALI_USB_VUSB_TOKEN a={0},b={0}; DALI_USB_VUSB_INFO info;
   current_tpl=TPL_NOTIFY; power_failed_output(&a,EFI_UNSUPPORTED); assert(!a.Active && !power_commands);

@@ -41,11 +41,15 @@ static void fail(void)
 {
     DALI_USB_CLOCK_RESOURCES out,before; memset(&out,0xa5,sizeof out); memcpy(&before,&out,sizeof out);
     assert(DaliUsbReadClockResources(tree,sizeof tree,&out)!=EFI_SUCCESS && !memcmp(&out,&before,sizeof out));
+    DALI_USB_XHCI_RESOURCES xhci,xhci_before; memset(&xhci,0xa5,sizeof xhci); memcpy(&xhci_before,&xhci,sizeof xhci);
+    assert(DaliUsbReadXhciResources(tree,sizeof tree,&xhci)!=EFI_SUCCESS && !memcmp(&xhci,&xhci_before,sizeof xhci));
 }
 static void expect_status(const void *fdt,size_t capacity,EFI_STATUS expected)
 {
     DALI_USB_CLOCK_RESOURCES out,before; memset(&out,0xa5,sizeof out); memcpy(&before,&out,sizeof out);
     assert(DaliUsbReadClockResources(fdt,capacity,&out)==expected && !memcmp(&out,&before,sizeof out));
+    DALI_USB_XHCI_RESOURCES xhci,xhci_before; memset(&xhci,0xa5,sizeof xhci); memcpy(&xhci_before,&xhci,sizeof xhci);
+    assert(DaliUsbReadXhciResources(fdt,capacity,&xhci)==expected && !memcmp(&xhci,&xhci_before,sizeof xhci));
 }
 static void mutations(void)
 {
@@ -113,6 +117,7 @@ static void mutations(void)
     assert(DaliUsbReadClockResources(NULL,sizeof tree,&out)==EFI_INVALID_PARAMETER && !memcmp(&out,&before,sizeof out));
     assert(DaliUsbReadClockResources(tree+1,sizeof tree-1,&out)==EFI_INVALID_PARAMETER && !memcmp(&out,&before,sizeof out));
     assert(DaliUsbReadClockResources(tree,sizeof tree,NULL)==EFI_INVALID_PARAMETER);
+    assert(DaliUsbReadXhciResources(tree,sizeof tree,NULL)==EFI_INVALID_PARAMETER);
     clocks_fixture(); text(paths[0],"status","disabled"); expect_status(tree,sizeof tree,EFI_UNSUPPORTED);
     clocks_fixture(); assert(fdt_delprop(tree,node("/chosen"),"atag,chipid")==0);
     expect_status(tree,sizeof tree,EFI_UNSUPPORTED);
@@ -121,26 +126,36 @@ static void mutations(void)
     size_t maximum=16u*1024*1024;
     void *large=malloc(maximum+1); assert(large); memcpy(large,tree,sizeof tree);
     expect_status(large,maximum+1,EFI_INVALID_PARAMETER);
-    assert(DaliUsbReadClockResources(large,maximum,&out)==EFI_SUCCESS && out.ReferenceHz==26000000); free(large);
+    assert(DaliUsbReadClockResources(large,maximum,&out)==EFI_SUCCESS && out.ReferenceHz==26000000);
+    DALI_USB_XHCI_RESOURCES xhci; assert(DaliUsbReadXhciResources(large,maximum,&xhci)==EFI_SUCCESS);
+    assert(xhci.Registers.Base==0x16700000 && xhci.Registers.Size==0x1000); free(large);
 }
 static void check(const DALI_USB_CLOCK_RESOURCES *out)
 {
     assert(out->ReferenceHz==26000000 && out->Calibration.qualified && out->Calibration.sw_ver==1);
     for (unsigned n=0;n<5;++n) assert(out->Bank[n].Base==bases[n] && out->Bank[n].Size==sizes[n]);
 }
+static void check_xhci(const DALI_USB_XHCI_RESOURCES *out)
+{
+    assert(out->Registers.Base==0x16700000 && out->Registers.Size==0x1000);
+}
 int main(int argc,char **argv)
 {
     clocks_fixture(); DALI_USB_CLOCK_RESOURCES out={0};
     assert(DaliUsbReadClockResources(tree,sizeof tree,&out)==EFI_SUCCESS); check(&out);
+    DALI_USB_XHCI_RESOURCES xhci={0}; assert(DaliUsbReadXhciResources(tree,sizeof tree,&xhci)==EFI_SUCCESS); check_xhci(&xhci);
     for (unsigned n=0;n<5;++n) cell(paths[n],"linux,phandle",100+n);
     assert(DaliUsbReadClockResources(tree,sizeof tree,&out)==EFI_SUCCESS); check(&out);
+    assert(DaliUsbReadXhciResources(tree,sizeof tree,&xhci)==EFI_SUCCESS); check_xhci(&xhci);
     assert(fdt_set_name(tree,node("/chosen"),"chosen@0")==0);
     assert(DaliUsbReadClockResources(tree,sizeof tree,&out)==EFI_SUCCESS); check(&out);
+    assert(DaliUsbReadXhciResources(tree,sizeof tree,&xhci)==EFI_SUCCESS); check_xhci(&xhci);
     mutations();
     if (argc==2) {
         FILE *f=fopen(argv[1],"rb"); assert(f && fseek(f,0,SEEK_END)==0); long length=ftell(f); assert(length>40 && length<=16*1024*1024);
         rewind(f); void *saved=malloc((size_t)length); assert(saved && fread(saved,1,(size_t)length,f)==(size_t)length); fclose(f);
-        assert(DaliUsbReadClockResources(saved,(size_t)length,&out)==EFI_SUCCESS); check(&out); free(saved);
+        assert(DaliUsbReadClockResources(saved,(size_t)length,&out)==EFI_SUCCESS); check(&out);
+        assert(DaliUsbReadXhciResources(saved,(size_t)length,&xhci)==EFI_SUCCESS); check_xhci(&xhci); free(saved);
         puts("PASS: saved Dali FDT clock resource acquisition; no raw ATAG data printed");
     }
     puts("PASS: production UEFI clock resource graph and calibration, pinned real libfdt; no hardware access");

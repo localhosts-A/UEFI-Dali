@@ -69,7 +69,7 @@ def main():
              'DaliNativeXhciCommitEndpointConfiguration', 'DaliNativeXhciRollbackEndpointConfiguration',
              'DaliNativeXhciRemoveSlotReservations', 'DaliNativeXhciScheduleEndpoint',
              'XhcControlTransfer', 'XhcBulkTransfer', 'XhcCreateTransferTrb', 'UsbHcInitMemPool')),
-        'DaliUsbPlatformLib': (('UsbCalibration', 'UsbClockResources', 'UsbVusbResources', 'UsbI2cResources'), ('DaliUsbReadCalibration', 'DaliUsbReadClockResources', 'DaliUsbReadVusbResources', 'DaliUsbReadI2cResources')),
+        'DaliUsbPlatformLib': (('UsbCalibration', 'UsbClockResources', 'UsbVusbResources', 'UsbI2cResources'), ('DaliUsbReadCalibration', 'DaliUsbReadClockResources', 'DaliUsbReadXhciResources', 'DaliUsbReadVusbResources', 'DaliUsbReadI2cResources')),
         'BaseFdtLib': (('fdt_check', 'FdtLib'), ('fdt_check_full', 'FdtGetProp')),
     }
     for name, (objects, symbols) in required.items():
