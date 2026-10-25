@@ -11,6 +11,9 @@
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   daliPkg/dali.dec
+  DaliUsb/DaliUsb.dec
+  UsbCore/UsbCore.dec
+  UniXNUPkg/UniXNUPkg.dec
 [LibraryClasses]
   UefiDriverEntryPoint
   UefiBootServicesTableLib
