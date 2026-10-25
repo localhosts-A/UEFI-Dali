@@ -16,6 +16,7 @@
   DaliUsbLib|DaliUsb/DaliUsbLib.inf
   DaliUsbPmicLib|daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
   DaliUsbPlatformLib|daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
+  DaliUsbI2cLib|daliPkg/Library/UsbI2cLib/UsbI2cLib.inf
   BaseLib|MdePkg/Library/BaseLib/BaseLib.inf
   BaseMemoryLib|MdePkg/Library/BaseMemoryLib/BaseMemoryLib.inf
   DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
@@ -30,4 +31,5 @@
   DaliUsb/DaliUsbLib.inf
   daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
   daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
+  daliPkg/Library/UsbI2cLib/UsbI2cLib.inf
   MdePkg/Library/BaseFdtLib/BaseFdtLib.inf

@@ -1,0 +1,22 @@
+[Defines]
+  INF_VERSION = 0x00010019
+  BASE_NAME = DaliUsbI2cLib
+  FILE_GUID = 896957B2-C739-4E61-AAC4-A6803F07DC9E
+  MODULE_TYPE = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = DaliUsbI2cLib
+[Sources]
+  UsbI2cLib.c
+[Packages]
+  MdePkg/MdePkg.dec
+  daliPkg/dali.dec
+  UsbCore/UsbCore.dec
+  DaliUsb/DaliUsb.dec
+[LibraryClasses]
+  DaliUsbLib
+  BaseLib
+  BaseMemoryLib
+  IoLib
+  TimerLib
+[BuildOptions]
+  *_*_*_CC_FLAGS = -DUNIXNU_USB_EDK2

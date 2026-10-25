@@ -36,6 +36,7 @@
   DaliUsbLib|DaliUsb/DaliUsbLib.inf
   DaliUsbPlatformLib|daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
   DaliUsbPmicLib|daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
+  DaliUsbI2cLib|daliPkg/Library/UsbI2cLib/UsbI2cLib.inf
   FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
 !endif
 

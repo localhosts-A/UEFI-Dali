@@ -39,6 +39,8 @@ STATIC struct {
   volatile UINT32 Busy;
 } mVusb;
 STATIC DALI_USB_I2C_RESOURCES mI2c;
+STATIC DALI_USB_NATIVE_I2C mI2cBus;
+STATIC DALI_USB_I2C_TOKEN *mI2cOwner;
 
 STATIC EFI_STATUS EFIAPI ReadStatus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_RESOURCE_CONTEXT_STATUS *Out);
 STATIC EFI_STATUS EFIAPI ReadClocks (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_CLOCK_RESOURCES *Out);
@@ -47,7 +49,11 @@ STATIC EFI_STATUS EFIAPI AcquireVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI
 STATIC EFI_STATUS EFIAPI ReleaseVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_VUSB_TOKEN *);
 STATIC EFI_STATUS EFIAPI ReadI2c (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_RESOURCES *);
 STATIC EFI_STATUS EFIAPI ReadPins (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_RESOURCE_GUARD, VOID *, struct dali_i2c6_pin_snapshot *);
-STATIC DALI_USB_RESOURCE_CONTEXT_PROTOCOL mProtocol = {3, ReadStatus, ReadClocks, ReadVusb, AcquireVusb, ReleaseVusb, ReadI2c, ReadPins};
+STATIC EFI_STATUS EFIAPI AcquireBus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *, DALI_USB_I2C_POLICY, VOID *, UINT32, struct dali_nxp_repeater_bus *, DALI_USB_I2C_INFO *);
+STATIC EFI_STATUS EFIAPI BusStatus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *, DALI_USB_I2C_INFO *);
+STATIC EFI_STATUS EFIAPI ReleaseBus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *);
+STATIC DALI_USB_RESOURCE_CONTEXT_PROTOCOL mProtocol = {4, ReadStatus, ReadClocks, ReadVusb, AcquireVusb, ReleaseVusb,
+  ReadI2c, ReadPins, AcquireBus, BusStatus, ReleaseBus};
 
 STATIC EFI_STATUS EFIAPI ReadStatus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_RESOURCE_CONTEXT_STATUS *Out) {
   if (This != &mProtocol || Out == NULL) { return EFI_INVALID_PARAMETER; }
@@ -63,6 +69,7 @@ STATIC EFI_STATUS EFIAPI ReadClocks (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, D
 STATIC VOID EFIAPI ExitBootServices (EFI_EVENT Event, VOID *Context) {
   (VOID)Event; (VOID)Context;
   mVusb.Pmic.Faulted = TRUE; // Block every new PMIF transfer, independent of event order.
+  mI2cBus.Closed = TRUE; mI2cBus.Faulted = TRUE; mI2cBus.Ready = FALSE;
   mContext.Status.BootServicesClosed = TRUE;
 }
 STATIC EFI_STATUS EFIAPI ReadVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_VUSB_RESOURCES *Out) {
@@ -101,6 +108,11 @@ STATIC EFI_STATUS PowerEnter (VOID) {
 }
 STATIC EFI_STATUS PowerLeave (EFI_STATUS Status) {
   InterlockedCompareExchange32 (&mVusb.Busy, 1, 0); return Status;
+}
+STATIC int UsbResult(EFI_STATUS Status) {
+  return !EFI_ERROR(Status) ? USB_OK : Status == EFI_NOT_READY ? USB_BUSY :
+    Status == EFI_UNSUPPORTED ? USB_UNSUPPORTED : Status == EFI_TIMEOUT ? USB_TIMEOUT :
+    Status == EFI_INVALID_PARAMETER ? USB_INVALID : USB_IO;
 }
 STATIC EFI_STATUS EFIAPI AcquireVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_VUSB_TOKEN *Token,
   DALI_USB_VUSB_GUARD Guard, VOID *Context, DALI_USB_VUSB_INFO *Out) {
@@ -181,6 +193,95 @@ STATIC EFI_STATUS EFIAPI ReadPins (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This,
   if (mContext.Status.BootServicesClosed) { Status = EFI_UNSUPPORTED; }
   if (!EFI_ERROR (Status)) { *Out = Value; }
   return PowerLeave (Status);
+}
+STATIC int EnterBus(VOID *Context) {
+  EFI_STATUS Status = PowerEnter();
+  if (EFI_ERROR(Status)) { return UsbResult(Status); }
+  DALI_USB_I2C_TOKEN *Token = Context;
+  if (Token == NULL || mI2cOwner != Token || !Token->Active) { PowerLeave(EFI_ACCESS_DENIED); return USB_UNSUPPORTED; }
+  return USB_OK;
+}
+STATIC int LeaveBus(int Result) {
+  if (mContext.Status.BootServicesClosed) { Result = USB_UNSUPPORTED; }
+  PowerLeave(EFI_SUCCESS); return Result;
+}
+STATIC int BusRead(VOID *Context, UINT8 Reg, UINT8 *Out) {
+  if (Out == NULL) { return USB_INVALID; }
+  int Result = EnterBus(Context); UINT8 Value;
+  if (Result) { return Result; }
+  Result = DaliUsbNativeI2cRead(&mI2cBus,Reg,&Value);
+  if (mContext.Status.BootServicesClosed) { Result = USB_UNSUPPORTED; }
+  if (!Result) { *Out = Value; }
+  return LeaveBus(Result);
+}
+STATIC int BusWrite(VOID *Context, UINT8 Reg, UINT8 Value) {
+  int Result = EnterBus(Context);
+  if (!Result) { Result = LeaveBus(DaliUsbNativeI2cWrite(&mI2cBus,Reg,Value)); }
+  return Result;
+}
+STATIC int BusRecover(VOID *Context) {
+  int Result = EnterBus(Context);
+  if (!Result) { Result = LeaveBus(DaliUsbNativeI2cRecover(&mI2cBus)); }
+  return Result;
+}
+STATIC int BusReset(VOID *Context, bool Enable) {
+  int Result = EnterBus(Context);
+  if (!Result) { Result = LeaveBus(DaliUsbNativeI2cReset(&mI2cBus,Enable)); }
+  return Result;
+}
+STATIC VOID BusDelay(VOID *Context, UINT32 Us) {
+  int Result = EnterBus(Context);
+  if (Result) {
+    // Void bus delays cannot report refusal. Latch a fault so a subsequent
+    // peripheral access cannot accept a sequence without its required delay.
+    if (mI2cOwner == Context && mI2cBus.Initialized) {
+      mI2cBus.Faulted = TRUE; mI2cBus.Ready = FALSE;
+    }
+    return;
+  }
+  if (Us > 10000) { mI2cBus.Faulted = TRUE; mI2cBus.Ready = FALSE; }
+  else { DaliUsbNativeI2cDelay(&mI2cBus,Us); }
+  LeaveBus(USB_OK);
+}
+STATIC EFI_STATUS EFIAPI AcquireBus(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_I2C_TOKEN *Token,
+  DALI_USB_I2C_POLICY Guard, VOID *Context, UINT32 UlposcHz, struct dali_nxp_repeater_bus *Out, DALI_USB_I2C_INFO *Info) {
+  if (This != &mProtocol || Token == NULL || Guard == NULL || Out == NULL || Info == NULL) { return EFI_INVALID_PARAMETER; }
+  EFI_STATUS Status = PowerEnter();
+  if (EFI_ERROR(Status)) { return Status; }
+  if (mI2cOwner != NULL && mI2cOwner != Token) { return PowerLeave(EFI_NOT_READY); }
+  int Result;
+  if (mI2cOwner == NULL) {
+    if (Token->Active) { return PowerLeave(EFI_INVALID_PARAMETER); }
+    mI2cOwner = Token; Token->Active = TRUE;
+    Result = DaliUsbNativeI2cOpen(&mI2cBus,&mContext.Clocks,&mI2c,Guard,Context,UlposcHz);
+  } else if (!Token->Active || mI2cBus.Policy != Guard || mI2cBus.PolicyContext != Context || mI2cBus.UlposcHz != UlposcHz) {
+    return PowerLeave(EFI_ACCESS_DENIED);
+  } else { Result = DaliUsbNativeI2cCheck(&mI2cBus); }
+  DALI_USB_I2C_INFO Value;
+  if (!Result) { Result = DaliUsbNativeI2cInfo(&mI2cBus,&Value); }
+  if (mContext.Status.BootServicesClosed) { Result = USB_UNSUPPORTED; }
+  if (!Result) {
+    struct dali_nxp_repeater_bus Bus = {Token,BusRead,BusWrite,BusRecover,BusReset,BusDelay};
+    *Out = Bus; *Info = Value;
+  }
+  return PowerLeave(EfiResult(Result));
+}
+STATIC EFI_STATUS EFIAPI BusStatus(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_I2C_TOKEN *Token, DALI_USB_I2C_INFO *Out) {
+  if (This != &mProtocol || Token == NULL || Out == NULL) { return EFI_INVALID_PARAMETER; }
+  EFI_STATUS Status = PowerEnter();
+  if (EFI_ERROR(Status)) { return Status; }
+  if (mI2cOwner != Token || !Token->Active) { return PowerLeave(EFI_ACCESS_DENIED); }
+  return PowerLeave(EfiResult(DaliUsbNativeI2cInfo(&mI2cBus,Out)));
+}
+STATIC EFI_STATUS EFIAPI ReleaseBus(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_I2C_TOKEN *Token) {
+  if (This != &mProtocol || Token == NULL) { return EFI_INVALID_PARAMETER; }
+  EFI_STATUS Status = PowerEnter();
+  if (EFI_ERROR(Status)) { return Status; }
+  if (mI2cOwner != Token || !Token->Active) { return PowerLeave(EFI_ACCESS_DENIED); }
+  Status = EfiResult(DaliUsbNativeI2cClose(&mI2cBus));
+  if (mContext.Status.BootServicesClosed) { Status = EFI_UNSUPPORTED; }
+  if (!EFI_ERROR(Status)) { Token->Active = FALSE; mI2cOwner = NULL; }
+  return PowerLeave(Status);
 }
 
 STATIC BOOLEAN Covers (EFI_GCD_MEMORY_SPACE_DESCRIPTOR *D, EFI_PHYSICAL_ADDRESS Page) {

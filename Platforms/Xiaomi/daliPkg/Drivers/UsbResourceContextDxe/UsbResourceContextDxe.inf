@@ -21,6 +21,7 @@
   DxeServicesTableLib
   DaliUsbPlatformLib
   DaliUsbPmicLib
+  DaliUsbI2cLib
   DaliUsbLib
   SynchronizationLib
   ArmMmuLib

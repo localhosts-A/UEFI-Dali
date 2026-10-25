@@ -24,7 +24,7 @@ int main(int argc,char **argv) {
   for(unsigned n=0;n<sizeof props/sizeof props[0];n++) { i2c_fixture(); cell(I2C,props[n],7); i2c_failure(); }
   i2c_fixture(); cell(I2C,"ch-offset-i2c",0); cell(I2C,"ch-offset-dma",0); cell(I2C,"i2c-offset-ap",0x100);
   assert(DaliUsbReadI2cResources(tree,sizeof tree,&out)==EFI_SUCCESS);
-  const char *unsupported[]={"mediatek,use-push-pull","mediatek,disable-clk-stretch","mediatek,have-pmic","mediatek,control-irq-sel","mediatek,control-rs-stop"};
+  const char *unsupported[]={"mediatek,use-push-pull","mediatek,disable-clk-stretch","mediatek,have-pmic","mediatek,control-irq-sel","mediatek,control-rs-stop","mediatek,wake-scp-check-en"};
   for(unsigned n=0;n<sizeof unsupported/sizeof unsupported[0];n++) { i2c_fixture(); empty(I2C,unsupported[n]); i2c_failure(); }
   i2c_fixture(); text(PINCTRL_PATH,"compatible","mediatek,gpio"); i2c_failure();
   i2c_fixture(); text(PINCTRL_PATH,"reg-names","iocfg_lb2"); i2c_failure();

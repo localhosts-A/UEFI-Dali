@@ -56,6 +56,7 @@ class UsbResourceContextTests(unittest.TestCase):
             # Boot/DXE service structures still use the actual EDK2 ABI. The
             # firmware build separately exercises UNIXNU_USB_EDK2 on AArch64.
             command = flags + ['-fshort-wchar', '-DMDEPKG_NDEBUG',
+                               '-DDALI_I2C_FIXTURE_FILE="' + str(DEVICE / 'tests/fixtures/usb_i2c6_test.c') + '"',
                                '-Wall', '-Wextra', '-Werror', '-Wconversion',
                                '-I' + str(base), '-isystem', str(libfdt),
                                '-I' + str(edk / 'MdePkg/Include'),
@@ -69,10 +70,16 @@ class UsbResourceContextTests(unittest.TestCase):
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbVusbResources.c'),
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbI2cResources.c'),
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPmicLib/UsbPmicLib.c'),
+                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbI2cLib/UsbI2cLib.c'),
                                str(GENERIC / 'drivers/UsbCore/UsbCore.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbPmif.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbVusb.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbI2cPins.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbI2cClocks.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbClockRates.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbI2c.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbGpio.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbNxpRepeater.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbCalibration.c'),
                                str(ROOT / 'tools/dali/fixtures/usb_resource_context_test.c'),
                                *objects, '-o', str(target)]
@@ -80,7 +87,7 @@ class UsbResourceContextTests(unittest.TestCase):
             args = [str(target)]
             if os.environ.get('DALI_USB_SAVED_FDT'):
                 args.append(os.environ['DALI_USB_SAVED_FDT'])
-            subprocess.run(args, check=True, timeout=30)
+            subprocess.run(args, check=True, timeout=90)
 
 
 if __name__ == '__main__':

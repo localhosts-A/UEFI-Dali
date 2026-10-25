@@ -71,7 +71,7 @@ EFI_STATUS DaliUsbReadI2cResources (CONST VOID *Fdt, UINTN FdtSize, DALI_USB_I2C
       !ValueOrAbsent (Fdt, I2c, "ch-offset-i2c", 0) || !ValueOrAbsent (Fdt, I2c, "ch-offset-dma", 0) ||
       !ValueOrAbsent (Fdt, I2c, "i2c-offset-ap", 0x100)) { return EFI_UNSUPPORTED; }
   CONST CHAR8 *Unsupported[] = {"mediatek,use-push-pull", "mediatek,disable-clk-stretch",
-    "mediatek,have-pmic", "mediatek,control-irq-sel", "mediatek,control-rs-stop"};
+    "mediatek,have-pmic", "mediatek,control-irq-sel", "mediatek,control-rs-stop", "mediatek,wake-scp-check-en"};
   for (UINTN I = 0; I < sizeof Unsupported / sizeof Unsupported[0]; ++I) {
     if (!Absent (Fdt, I2c, Unsupported[I])) { return EFI_UNSUPPORTED; }
   }

@@ -2,6 +2,7 @@
 #pragma once
 #include <Library/DaliUsbPlatformLib.h>
 #include <DaliUsbI2cPins.h>
+#include <Library/DaliUsbI2cLib.h>
 
 extern EFI_GUID gDaliUsbResourceContextProtocolGuid;
 typedef struct _DALI_USB_RESOURCE_CONTEXT_PROTOCOL DALI_USB_RESOURCE_CONTEXT_PROTOCOL;
@@ -13,6 +14,7 @@ typedef struct {
   BOOLEAN BootServicesClosed;
 } DALI_USB_RESOURCE_CONTEXT_STATUS;
 typedef struct { BOOLEAN Active; } DALI_USB_VUSB_TOKEN;
+typedef struct { BOOLEAN Active; } DALI_USB_I2C_TOKEN;
 typedef EFI_STATUS (EFIAPI *DALI_USB_RESOURCE_GUARD)(VOID *Context);
 typedef DALI_USB_RESOURCE_GUARD DALI_USB_VUSB_GUARD;
 typedef struct {
@@ -63,4 +65,24 @@ struct _DALI_USB_RESOURCE_CONTEXT_PROTOCOL {
   EFI_STATUS (EFIAPI *GetI2cResources)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_RESOURCES *);
   EFI_STATUS (EFIAPI *ReadI2cPins)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *,
     DALI_USB_RESOURCE_GUARD Guard, VOID *Context, struct dali_i2c6_pin_snapshot *Out);
+  /* Revision4: actual native FIFO I2C6/GPIO72/gate binding for the production
+   * NXP/PHY code. No peripheral probe/reset at entry or bus acquisition (GPIO
+   * init is read-only). Policy holds all mappings/source/reference/electrical/
+   * physical shared-gate/bus/pin conditions for the entire lease. Quiesce proves
+   * every affected consumer stopped; Release additionally proves all dependent NXP/PHY
+   * objects destroyed. These are caller proofs, not a policy implementation.
+   * Persistent zeroed noncopyable Token owns one bus; its callbacks serialize
+   * with VUSB operations and ReadI2cPins. Copied metadata getters take no lease.
+   * BSP calls cannot overlap ExitBootServices. Context/Policy persist until
+   * successful release. Failed acquisition can leave Token active; Release it.
+   * Bus/Info/Token/Context storage is distinct. All copied bus interfaces expire
+   * on release; destroy dependent users before token/storage reuse. No stale
+   * interface may be used in a later lease, including a reused token address.
+   * Faults stop new transfers, retain gates/controller/pin and uncertain writes.
+   * Only recovery/reset-low/status/release remain usable. Complete release
+   * before final memory map/EBS; after EBS every callback refuses access. */
+  EFI_STATUS (EFIAPI *AcquireI2cBus)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *,
+    DALI_USB_I2C_POLICY, VOID *, UINT32 UlposcHz, struct dali_nxp_repeater_bus *, DALI_USB_I2C_INFO *);
+  EFI_STATUS (EFIAPI *GetI2cBusStatus)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *, DALI_USB_I2C_INFO *);
+  EFI_STATUS (EFIAPI *ReleaseI2cBus)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_TOKEN *);
 };

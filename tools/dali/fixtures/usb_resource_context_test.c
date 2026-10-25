@@ -31,8 +31,14 @@ static void reset(void);
 static void entry(EFI_STATUS expected);
 static UINT32 pin_mmio_read(UINTN);
 static void pin_reset(void);
+static BOOLEAN native_bus_enabled(void);
+static UINT32 native_bus_read32(UINTN);
+static UINT32 native_bus_write32(UINTN,UINT32);
+static void native_bus_delay(UINTN);
+static void native_bus_reset(void);
 #include "usb_resource_power_fixture.h"
 #include "usb_resource_pin_fixture.h"
+#include "usb_resource_bus_fixture.h"
 
 static UINTN index_of(UINT64 page) {
   for (UINTN i=0;i<9;i++) { if (pages[i]==page) { return i; } }
@@ -220,7 +226,7 @@ static void inherited(void) {
   entry(EFI_SUCCESS); assert(arm_calls==9 && operation==61); // Initial platform GPIO page.
 }
 int main(int argc,char **argv) {
-  assert(ClockGraphMain(argc,argv)==0); success(); refusals(); inherited(); power_protocol_tests(); pin_protocol_tests(); reset();
+  assert(ClockGraphMain(argc,argv)==0); success(); refusals(); inherited(); power_protocol_tests(); pin_protocol_tests(); native_bus_tests(); reset();
   if (argc==2) {
     FILE *f=fopen(argv[1],"rb"); assert(f && fseek(f,0,SEEK_END)==0); long length=ftell(f); assert(length>40);
     rewind(f); void *saved=malloc((size_t)length); assert(saved && fread(saved,1,(size_t)length,f)==(size_t)length); fclose(f);
