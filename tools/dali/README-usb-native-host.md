@@ -49,6 +49,9 @@ retention, EBS closure, descriptor bounds/noncontiguous interface and
 configuration numbers, actual event-ring async completion, cache/remap,
 callback cancellation and failed cancellation/remap. The IO regression adds
 12 before/applied EBS positions during checked rearm.
+The actual source event decoder also rejects a residual length larger than its
+TRB or completed bytes larger than the user's buffer; native mode stops and
+proves halt before returning DMA ownership after a malformed completion.
 
 Run from this isolated firmware tree:
 

@@ -7,6 +7,7 @@
 #include <Library/SynchronizationLib.h>
 // Include the actual source unit to exercise its private descriptor validator.
 #include "../../../Platforms/Xiaomi/daliPkg/Library/UsbNativeHostLib/MuEngine.c"
+BOOLEAN XhcCheckUrbResult(USB_XHCI_INSTANCE *, URB *);
 static DALI_USB_NATIVE_HOST host;
 static EFI_TPL tpl=TPL_APPLICATION;
 static struct {
@@ -222,6 +223,16 @@ static void async_lifecycle(void) {
   finish();
   puts("PASS: actual async completion/cache/remap/rearm and callback cancellation; failed remap/cancel stop before callback/rearm/free");
 }
+static void malformed_completion(void) {
+  native_reset();assert(start()==EFI_SUCCESS);make_slot();URB *u=submit_async();complete_async(u);
+  USB_XHCI_INSTANCE *x=host.Engine;
+  ((EVT_TRB_TRANSFER *)x->EventRing.EventRingDequeue)->Length=9; // submitted TRB is only8 bytes
+  UINTN frees=m.frees;
+  XhcCheckUrbResult(x,u);
+  assert(u->Finished && (u->Result&EFI_USB_ERR_BUFFER) && !u->Completed);
+  assert(host.Faulted && c.HaltProven && m.frees==frees && !callbacks);
+  finish();
+}
 static void ebs_latch(void) {
   native_reset();assert(start()==EFI_SUCCESS);UINTN frees=m.frees;
   for(unsigned n=0;n<8;n++)if(events[n].live && events[n].type==EVT_SIGNAL_EXIT_BOOT_SERVICES) {
@@ -233,7 +244,7 @@ static void ebs_latch(void) {
   assert(DaliUsbNativeHostStop(&host)==EFI_UNSUPPORTED && DaliUsbNativeHostPrepareHandoff(&host)==EFI_UNSUPPORTED && m.ops==ops);
 }
 int main(void) {
-  lifecycle();failures();descriptors();async_lifecycle();ebs_latch();native_reset();reset();
-  puts("PASS: actual native USB2 HC install/reset/halt/run/pre-map prepare/stop, actual Mu schedules, 4KiB+32-bit DMA and failure-retained lifecycle; register model only");
+  lifecycle();failures();descriptors();async_lifecycle();malformed_completion();ebs_latch();native_reset();reset();
+  puts("PASS: actual native USB2 HC lifecycle, async remap/cancel, malformed event-length fault and 32-bit DMA retention; register model only");
   return 0;
 }
