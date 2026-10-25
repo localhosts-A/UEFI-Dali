@@ -70,10 +70,10 @@ polling idle (YIELD), retaining the upstream EL1 TLB flush sequence, until WFI
 wakeup on this handoff is separately validated. This is a power-efficiency
 limitation of the bring-up firmware.
 
-Physical UFS has an opt-in read-only host implementation under qualification;
+Physical UFS has a qualified opt-in UEFI read-only diagnostic for baseline LUN 2;
 the normal payload remains on the RAM volume. USB device transport, touch and
 panel cold initialization remain unimplemented. The source-XNU platform
-checkpoint has passed; physical UFS and its XNU handoff remain unqualified.
+checkpoint has passed; UFS writes, persistence and XNU handoff remain unqualified.
 
 ### UFS control diagnostics
 
@@ -163,6 +163,22 @@ real BaseCryptLib/OpenSSL dependency, an abc known-answer check before any
 controller writes, and packaging rejects null/mixed/missing crypto link inputs.
 Other modules retain their existing crypto policy. Real build/runtime validation
 of this correction is pending.
+
+The correction was built as 1746ed7/device 9067ecc with generic 2ab7dfd.
+The final-FD ARM64 SHA function passed five actual-PE QEMU vectors, including
+unaligned 4 KiB and 64 KiB. Hardware run ea82d126 then returned to the RAM menu.
+Its raw current-token trace contains three read-only LUNs, 96 GPT partitions,
+10 block samples, successful device SYNC(10) completions on LUNs 0/1/2 and
+quiesce/HCE=0. Baseline LUN 2's capacity, partition paths, GPT-header hashes and
+the current candidate's boot_b block hash independently match captured inputs.
+
+The initial host scorer rejected nonzero UPIU task tags. Actual PassThru uses an
+incrementing UINT8 tag independently of slot 0. A bounded 0..255 parser fix
+rescored the original hash-verified console without reflashing or changing raw
+records; the original exit-2 result is preserved. Offline UEFI read/sync/stop
+qualification and full original boot_b/Android B/root/all 18 backup-byte/hash
+restoration checks passed. This does not qualify physical XNU, media writes,
+firmware/XNU ownership handoff or reboot persistence.
 
 ## Validated UEFI milestone (2026-10-24)
 

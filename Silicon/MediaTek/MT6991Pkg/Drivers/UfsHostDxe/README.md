@@ -2,7 +2,8 @@
 
 This is the default-disabled MT6991 host adapter. It connects the platform
 control core and private DMA allocator to UfsPassThru, ScsiBus, ScsiDisk and
-PartitionDxe. No physical UFS command or DMA qualification has been obtained.
+PartitionDxe. The named baseline LUN 2's UEFI reads and diagnostic sync/stop
+are qualified; XNU ownership, media writes and persistence remain pending.
 
 DXE entry only publishes `DALI_UFS_DIAGNOSTIC_PROTOCOL` when
 `PcdDaliUfsReadOnlyEnabled` is explicitly enabled. BDS calls Initialize after
@@ -101,6 +102,17 @@ and its dependencies only for this host. Before control writes, a SHA-256 abc
 known-answer check must pass; packaging checks actual host link inputs and
 rejects missing, null, duplicate or mixed providers. This repairs a definite
 software defect; actual read/sync qualification still requires new evidence.
+
+Hardware run ea82d126 (firmware 1746ed7/device 9067ecc/generic 2ab7dfd) supplied
+that evidence: 3 read-only roots, 96 GPT partition paths, 10 samples and one
+validated device SYNC(10) each on LUNs 0/1/2, then HCE=0. LUN 2 geometry/GPT
+and known header/current-candidate block hashes match the fresh Android
+baseline. The host scorer initially required task tag 0; bounded UINT8 tags
+92/96/101 are valid command identifiers, independently of the hardware slot.
+The corrected parser passes the same hash-verified raw trace, retaining the
+original failure report. Complete original Android B/root/all 18 hashes and
+backup bytes were independently verified after restoration. This qualifies
+only the explicit UEFI read-only/sync/diagnostic-stop path.
 
 The existing off/register-probe packager verifies the compiled disabled host
 inside the actual FD and refuses enabled physical-host builds. The separate
