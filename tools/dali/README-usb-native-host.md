@@ -39,8 +39,17 @@ Resources/MuPatches/Xhci-Native-Safety.patch reproduces checked source
 allocation failures, partial scheduler cleanup, bounded configuration-cache
 validation, value-based configuration lookup and retained slot cleanup.
 Xhci-Native-Short-Event.patch adds the one-event MTK short-transfer quirk to the
-native event decoder. Native-only guards also exclude PCI binding code from the
-engine compilation. Ordinary PCI source builds retain their own lifecycle.
+native event decoder. Xhci-Native-MTK-Scheduler.patch adds native-only USB2
+interrupt endpoint admission for high-speed root-port and full/low-speed TT
+bandwidth, with transactional Configure Endpoint/SET_INTERFACE reservations and
+slot teardown. High-bandwidth transactions and MTK reserved context fields are
+checked. Direct full/low-speed root-port periodic endpoints use BPKTS=1 as in the
+MTK reference. Isochronous endpoints remain unsupported by the EDK2 engine;
+the Slot Context MTT bit follows the active hub interface protocol and is set only
+after successful SET_INTERFACE to protocol 2. The source UsbHub driver still
+does not select alternate setting 1, so multi-TT mode is not activated.
+Native-only guards also exclude PCI binding code from the engine compilation.
+Ordinary PCI source builds retain their own lifecycle.
 
 The production tests compile the real engine with DEBUG assertions and
 ASan/UBSan, using modeled Boot Services/MMIO/DMA/ownership. They exercise
@@ -57,6 +66,13 @@ Dali-native event path records completed short TDs and ignores only the next
 unmatched successful event for that same slot/endpoint. A new matched TD
 completion or successful configuration change clears the one-event marker; the
 ordinary PCI source path does not enable this MTK quirk.
+The scheduler fixture executes the actual endpoint initializers and verifies
+high-speed transaction counts, per-root-port 6144-byte admission, long-interval
+64-microframe saturation, 188-byte TT budgets, the USB2 Y6 split restriction,
+single/multi-TT scheduler isolation with explicit active MTT context and reservation
+rollback/slot teardown across both context sizes under both sanitizer compilers.
+It does not run the hardware Configure Endpoint command path or prove controller
+timing.
 
 Run from this isolated firmware tree:
 
@@ -67,10 +83,10 @@ python tools/dali/test_usb_xhci_io.py
 python tools/dali/build_usb_libraries.py --output ../.outputs/usb-libraries-native-host
 ```
 
-This is a callable engine and library checkpoint. No Dali production worker
-currently supplies its qualified board policy/DMA provider or calls Start.
-The MTK USB2 interrupt/TT bandwidth scheduler still needs a native binding, so
-the engine is not a ready MT6991 hardware backend. Native-path QEMU and
+This is a callable engine and library checkpoint. It is not a ready MT6991
+hardware backend: the source UsbHub driver still does not select multi-TT
+alternate setting 1, and no Dali production worker currently supplies its
+qualified board policy/DMA provider or calls Start. Native-path QEMU and
 DarwinBoot pre-final-map wiring remain required. The existing PCI/source QEMU
 gate is separate. These files remain outside the default FV and
 hardware_qualified=false.

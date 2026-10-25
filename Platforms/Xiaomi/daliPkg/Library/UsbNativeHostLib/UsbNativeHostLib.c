@@ -10,10 +10,47 @@
 extern EFI_USB2_HC_PROTOCOL gXhciUsb2HcTemplate;
 BOOLEAN XhcCheckUrbResult(USB_XHCI_INSTANCE *, URB *);
 EFI_STATUS XhcFlushAsyncIntMap(USB_XHCI_INSTANCE *, URB *);
+EFI_STATUS DaliNativeXhciRollbackEndpointConfiguration(USB_XHCI_INSTANCE *, UINT8);
+#define DALI_MTK_MAX_ENDPOINTS 128U
+#define DALI_MTK_MAX_TTS 128U
+#define DALI_MTK_ESIT_SLOTS 64U
+#define DALI_MTK_HS_BW_LIMIT 6144U
+#define DALI_MTK_FS_BW_LIMIT 188U
+
+typedef struct {
+  BOOLEAN Used, HasTt;
+  UINT8 Slot, Dci, RootPort, Speed, Interface, Alternate;
+  UINT8 TtHubSlot, TtPort, TtIndex, Pkts, CsCount, Offset;
+  UINT8 Repeat, BurstMode, Esit, NumEsit, NumBudget;
+  UINT16 MaxPacket;
+  UINT32 Cost;
+} MTK_ENDPOINT;
+
+typedef struct {
+  BOOLEAN Used;
+  UINT8 HubSlot, Port;
+  UINT16 References;
+  UINT32 FsBus[64];
+} MTK_TT;
+
+typedef struct {
+  BOOLEAN Active, AllInterfaces;
+  UINT8 Slot, Interface, Count;
+  MTK_ENDPOINT Backup[31];
+} MTK_TRANSACTION;
+
+typedef struct {
+  UINT32 RootBus[256][64];
+  MTK_TT Tt[DALI_MTK_MAX_TTS];
+  MTK_ENDPOINT Endpoints[DALI_MTK_MAX_ENDPOINTS];
+  MTK_TRANSACTION Transaction;
+} MTK_SCHEDULER;
+
 typedef struct {
   USB_XHCI_INSTANCE Raw;
   DALI_USB_NATIVE_HOST *Owner;
   UINT32 LastShortEndpointMask[256];
+  MTK_SCHEDULER Mtk;
 } ENGINE;
 #define RAW(H) (&((ENGINE *)(H)->Engine)->Raw)
 STATIC DALI_USB_NATIVE_HOST *Host(EFI_USB2_HC_PROTOCOL *P) {
@@ -69,6 +106,267 @@ VOID DaliNativeXhciClearShortCompletions(USB_XHCI_INSTANCE *X, UINT8 SlotId) {
   ENGINE *E=BASE_CR(X,ENGINE,Raw);
   DALI_USB_NATIVE_HOST *H=E->Owner;
   if (H!=NULL && H->Engine==E && !H->Closed) { E->LastShortEndpointMask[SlotId]=0; }
+}
+STATIC ENGINE *NativeEngine(USB_XHCI_INSTANCE *X) {
+  if (X==NULL) { return NULL; }
+  ENGINE *E=BASE_CR(X,ENGINE,Raw);
+  if (E->Owner==NULL || E->Owner->Engine!=E || E->Owner->Closed) { return NULL; }
+  return E;
+}
+
+STATIC UINT8 MtkFindTt(ENGINE *E, UINT8 HubSlot, UINT8 Port, BOOLEAN Create) {
+  for (UINTN I=0; I<DALI_MTK_MAX_TTS; I++) {
+    MTK_TT *T=(MTK_TT *)&E->Mtk.Tt[I];
+    if (T->Used && T->HubSlot==HubSlot && T->Port==Port) { return (UINT8)I; }
+  }
+  if (!Create) { return 0xff; }
+  for (UINTN I=0; I<DALI_MTK_MAX_TTS; I++) {
+    MTK_TT *T=(MTK_TT *)&E->Mtk.Tt[I];
+    if (!T->Used) {
+      ZeroMem(T,sizeof *T); T->Used=TRUE; T->HubSlot=HubSlot; T->Port=Port;
+      return (UINT8)I;
+    }
+  }
+  return 0xff;
+}
+
+STATIC BOOLEAN MtkRecordFits(ENGINE *E, CONST MTK_ENDPOINT *R, UINT8 Offset) {
+  MTK_TT *T=NULL;
+  if (R->HasTt) {
+    UINT8 Index=MtkFindTt(E,R->TtHubSlot,R->TtPort,FALSE);
+    if (Index!=0xff) { T=(MTK_TT *)&E->Mtk.Tt[Index]; }
+  }
+  for (UINTN I=0; I<R->NumEsit; I++) {
+    UINTN Base=(Offset+I*R->Esit)&63U;
+    for (UINTN J=0; J<R->NumBudget; J++) {
+      UINTN Index=(Base+J)&63U;
+      UINT32 Root=E->Mtk.RootBus[R->RootPort][Index];
+      if (Root>DALI_MTK_HS_BW_LIMIT-R->Cost) { return FALSE; }
+      if (T!=NULL && T->FsBus[Index]>DALI_MTK_FS_BW_LIMIT-R->Cost) { return FALSE; }
+    }
+  }
+  return TRUE;
+}
+
+STATIC BOOLEAN MtkUpdateRecord(ENGINE *E, MTK_ENDPOINT *R, BOOLEAN Add) {
+  MTK_TT *T=NULL;
+  if (R->HasTt) {
+    UINT8 Index=Add ? MtkFindTt(E,R->TtHubSlot,R->TtPort,TRUE) : R->TtIndex;
+    if (Index==0xff || Index>=DALI_MTK_MAX_TTS) { return FALSE; }
+    T=(MTK_TT *)&E->Mtk.Tt[Index];
+    if (!T->Used || T->HubSlot!=R->TtHubSlot || T->Port!=R->TtPort) { return FALSE; }
+    if (Add) { R->TtIndex=Index; T->References++; }
+    else if (T->References==0) { return FALSE; }
+  }
+  for (UINTN I=0; I<R->NumEsit; I++) {
+    UINTN Base=(R->Offset+I*R->Esit)&63U;
+    for (UINTN J=0; J<R->NumBudget; J++) {
+      UINTN Index=(Base+J)&63U;
+      if (Add) {
+        E->Mtk.RootBus[R->RootPort][Index]+=R->Cost;
+        if (T!=NULL) { T->FsBus[Index]+=R->Cost; }
+      } else {
+        if (E->Mtk.RootBus[R->RootPort][Index]<R->Cost ||
+            (T!=NULL && T->FsBus[Index]<R->Cost)) { return FALSE; }
+        E->Mtk.RootBus[R->RootPort][Index]-=R->Cost;
+        if (T!=NULL) { T->FsBus[Index]-=R->Cost; }
+      }
+    }
+  }
+  if (T!=NULL && !Add) {
+    T->References--;
+    if (T->References==0) { ZeroMem(T,sizeof *T); }
+  }
+  return TRUE;
+}
+
+STATIC BOOLEAN MtkAddRecord(ENGINE *E, MTK_ENDPOINT *R) {
+  UINTN FreeIndex=DALI_MTK_MAX_ENDPOINTS;
+  for (UINTN I=0; I<DALI_MTK_MAX_ENDPOINTS; I++) {
+    MTK_ENDPOINT *P=(MTK_ENDPOINT *)&E->Mtk.Endpoints[I];
+    if (P->Used && P->Slot==R->Slot && P->Dci==R->Dci) { return FALSE; }
+    if (!P->Used && FreeIndex==DALI_MTK_MAX_ENDPOINTS) { FreeIndex=I; }
+  }
+  if (FreeIndex==DALI_MTK_MAX_ENDPOINTS || !MtkRecordFits(E,R,R->Offset)) { return FALSE; }
+  if (!MtkUpdateRecord(E,R,TRUE)) { return FALSE; }
+  R->Used=TRUE;
+  CopyMem(&E->Mtk.Endpoints[FreeIndex],R,sizeof *R);
+  return TRUE;
+}
+
+STATIC BOOLEAN MtkRemoveRecord(ENGINE *E, UINTN Index) {
+  MTK_ENDPOINT *R=(MTK_ENDPOINT *)&E->Mtk.Endpoints[Index];
+  if (!R->Used || !MtkUpdateRecord(E,R,FALSE)) { return FALSE; }
+  ZeroMem(R,sizeof *R);
+  return TRUE;
+}
+
+STATIC BOOLEAN MtkInTransaction(ENGINE *E, UINT8 Slot, UINT8 Interface) {
+  MTK_TRANSACTION *T=(MTK_TRANSACTION *)&E->Mtk.Transaction;
+  return T->Active && T->Slot==Slot && (T->AllInterfaces || T->Interface==Interface);
+}
+
+EFI_STATUS DaliNativeXhciBeginEndpointConfiguration(USB_XHCI_INSTANCE *X, UINT8 Slot,
+                                                     BOOLEAN AllInterfaces, UINT8 Interface) {
+  ENGINE *E=NativeEngine(X);
+  if (E==NULL || Slot==0 || !X->UsbDevContext[Slot].Enabled ||
+      X->UsbDevContext[Slot].SlotId!=Slot) { return EFI_INVALID_PARAMETER; }
+  MTK_TRANSACTION *T=(MTK_TRANSACTION *)&E->Mtk.Transaction;
+  if (T->Active) { return EFI_NOT_READY; }
+  UINTN Count=0;
+  for (UINTN I=0; I<DALI_MTK_MAX_ENDPOINTS; I++) {
+    MTK_ENDPOINT *R=(MTK_ENDPOINT *)&E->Mtk.Endpoints[I];
+    if (R->Used && R->Slot==Slot && (AllInterfaces || R->Interface==Interface)) { Count++; }
+  }
+  if (Count>31) { return EFI_OUT_OF_RESOURCES; }
+  ZeroMem(T,sizeof *T); T->Active=TRUE; T->AllInterfaces=AllInterfaces; T->Slot=Slot;
+  T->Interface=Interface;
+  UINTN Out=0;
+  for (UINTN I=0; I<DALI_MTK_MAX_ENDPOINTS; I++) {
+    MTK_ENDPOINT *R=(MTK_ENDPOINT *)&E->Mtk.Endpoints[I];
+    if (R->Used && R->Slot==Slot && (AllInterfaces || R->Interface==Interface)) {
+      CopyMem(&T->Backup[Out++],R,sizeof *R);
+      if (!MtkRemoveRecord(E,I)) { T->Count=(UINT8)Out; return DaliNativeXhciRollbackEndpointConfiguration(X,Slot); }
+    }
+  }
+  T->Count=(UINT8)Out;
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS DaliNativeXhciCommitEndpointConfiguration(USB_XHCI_INSTANCE *X, UINT8 Slot) {
+  ENGINE *E=NativeEngine(X);
+  if (E==NULL) { return EFI_UNSUPPORTED; }
+  MTK_TRANSACTION *T=(MTK_TRANSACTION *)&E->Mtk.Transaction;
+  if (!T->Active || T->Slot!=Slot) { return EFI_NOT_STARTED; }
+  ZeroMem(T,sizeof *T);
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS DaliNativeXhciRollbackEndpointConfiguration(USB_XHCI_INSTANCE *X, UINT8 Slot) {
+  ENGINE *E=NativeEngine(X);
+  if (E==NULL) { return EFI_UNSUPPORTED; }
+  MTK_TRANSACTION *T=(MTK_TRANSACTION *)&E->Mtk.Transaction;
+  if (!T->Active || T->Slot!=Slot) { return EFI_NOT_STARTED; }
+  for (UINTN I=0; I<DALI_MTK_MAX_ENDPOINTS; I++) {
+    MTK_ENDPOINT *R=(MTK_ENDPOINT *)&E->Mtk.Endpoints[I];
+    if (R->Used && R->Slot==Slot && (T->AllInterfaces || R->Interface==T->Interface)) {
+      if (!MtkRemoveRecord(E,I)) { return Fault(E->Owner,EFI_DEVICE_ERROR); }
+    }
+  }
+  UINT8 Count=T->Count;
+  for (UINTN I=0; I<Count; I++) {
+    MTK_ENDPOINT R; CopyMem(&R,&T->Backup[I],sizeof R);
+    if (!MtkAddRecord(E,&R)) { return Fault(E->Owner,EFI_DEVICE_ERROR); }
+  }
+  ZeroMem(T,sizeof *T);
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS DaliNativeXhciRemoveSlotReservations(USB_XHCI_INSTANCE *X, UINT8 Slot) {
+  ENGINE *E=NativeEngine(X);
+  if (E==NULL) { return EFI_UNSUPPORTED; }
+  MTK_TRANSACTION *T=(MTK_TRANSACTION *)&E->Mtk.Transaction;
+  if (T->Active && T->Slot==Slot) { return Fault(E->Owner,EFI_NOT_READY); }
+  for (UINTN I=0; I<DALI_MTK_MAX_ENDPOINTS; I++) {
+    MTK_ENDPOINT *R=(MTK_ENDPOINT *)&E->Mtk.Endpoints[I];
+    if (R->Used && R->Slot==Slot && !MtkRemoveRecord(E,I)) { return Fault(E->Owner,EFI_DEVICE_ERROR); }
+  }
+  return EFI_SUCCESS;
+}
+
+BOOLEAN DaliNativeXhciScheduleEndpoint(USB_XHCI_INSTANCE *X, UINT8 Slot, UINT8 Dci,
+                                       UINT8 Speed, CONST USB_INTERFACE_DESCRIPTOR *IfDesc,
+                                       CONST USB_ENDPOINT_DESCRIPTOR *EpDesc, UINT8 Interval,
+                                       UINT16 *PayloadOut, UINT8 *BurstOut, UINT16 *EsitPayloadOut,
+                                       UINT32 *MtkWord0, UINT32 *MtkWord1) {
+  ENGINE *E=NativeEngine(X);
+  if (E==NULL || IfDesc==NULL || EpDesc==NULL ||
+      !MtkInTransaction(E,Slot,IfDesc->InterfaceNumber) ||
+      PayloadOut==NULL || BurstOut==NULL || EsitPayloadOut==NULL || MtkWord0==NULL || MtkWord1==NULL) { return FALSE; }
+  UINT16 Raw=EpDesc->MaxPacketSize;
+  UINT16 Payload=(UINT16)(Raw&0x07ffU);
+  UINT8 Transactions=1;
+  if (Speed==EFI_USB_SPEED_HIGH) {
+    UINT8 Mult=(UINT8)((Raw>>11)&3U);
+    if ((Raw&0xe000U)!=0 || Mult==3) { return FALSE; }
+    Transactions=(UINT8)(Mult+1U);
+  } else if (Speed==EFI_USB_SPEED_FULL || Speed==EFI_USB_SPEED_LOW) {
+    if ((Raw&0xf800U)!=0 || Payload>(Speed==EFI_USB_SPEED_LOW ? 8U : 64U)) { return FALSE; }
+  } else { return FALSE; }
+  if (Payload==0 || Payload>(Speed==EFI_USB_SPEED_HIGH ? 1024U : 1023U) || Interval>15U) { return FALSE; }
+
+  MTK_ENDPOINT R; ZeroMem(&R,sizeof R);
+  USB_DEV_CONTEXT *Device=&X->UsbDevContext[Slot];
+  SLOT_CONTEXT *SlotContext=(SLOT_CONTEXT *)Device->OutputContext;
+  if (SlotContext==NULL || SlotContext->RootHubPortNum==0 || SlotContext->RootHubPortNum> X->HcSParams1.Data.MaxPorts) { return FALSE; }
+  R.Slot=Slot; R.Dci=Dci; R.RootPort=SlotContext->RootHubPortNum; R.Speed=Speed;
+  R.Interface=IfDesc->InterfaceNumber; R.Alternate=IfDesc->AlternateSetting;
+  R.MaxPacket=Payload; R.Pkts=Transactions;
+  UINTN Esit=1U<<Interval;
+  if (Esit>DALI_MTK_ESIT_SLOTS) { Esit=DALI_MTK_ESIT_SLOTS; }
+  R.Esit=(UINT8)Esit;
+  R.NumEsit=(UINT8)(DALI_MTK_ESIT_SLOTS/R.Esit); R.NumBudget=1;
+  R.Cost=(UINT32)Payload*Transactions;
+  if (Speed==EFI_USB_SPEED_HIGH) {
+    R.HasTt=FALSE;
+  } else {
+    R.Pkts=1;
+    R.Cost=Payload>DALI_MTK_FS_BW_LIMIT ? DALI_MTK_FS_BW_LIMIT : Payload;
+    if (SlotContext->TTHubSlotId!=0) {
+      UINT8 HubSlot=SlotContext->TTHubSlotId;
+      if (!X->UsbDevContext[HubSlot].Enabled || X->UsbDevContext[HubSlot].SlotId!=HubSlot ||
+          X->UsbDevContext[HubSlot].OutputContext==NULL || SlotContext->TTPortNum==0 || SlotContext->TTPortNum>127) { return FALSE; }
+      SLOT_CONTEXT *HubContext=(SLOT_CONTEXT *)X->UsbDevContext[HubSlot].OutputContext;
+      if (!HubContext->Hub || HubContext->Speed!=(EFI_USB_SPEED_HIGH+1) ||
+          HubContext->RootHubPortNum!=R.RootPort || SlotContext->TTPortNum>HubContext->PortNum) { return FALSE; }
+      R.HasTt=TRUE; R.TtHubSlot=HubSlot; R.TtPort=HubContext->MTT ? SlotContext->TTPortNum : 0;
+      R.CsCount=(UINT8)((Payload+DALI_MTK_FS_BW_LIMIT-1U)/DALI_MTK_FS_BW_LIMIT);
+      if (R.CsCount>7) { R.CsCount=7; }
+      R.NumBudget=R.CsCount>R.Esit ? R.Esit : R.CsCount;
+    } else {
+      *PayloadOut=Payload; *BurstOut=0; *EsitPayloadOut=Payload;
+      *MtkWord0=1; *MtkWord1=0;
+      return TRUE;
+    }
+  }
+
+  UINT8 BestOffset=0xff; UINT32 BestWorst=~(UINT32)0;
+  UINT8 OriginalBudget=R.NumBudget;
+  for (UINTN Offset=0; Offset<R.Esit; Offset++) {
+    if (R.HasTt) {
+      UINTN StartSs=Offset%8U;
+      UINTN StartCs,LastCs,CsCount=(Payload+DALI_MTK_FS_BW_LIMIT-1U)/DALI_MTK_FS_BW_LIMIT;
+      if (StartSs==6U) { continue; }
+      StartCs=(StartSs+2U)%8U; LastCs=StartCs+CsCount-1U;
+      if (LastCs>7U) { continue; }
+      if (CsCount>7U) { CsCount=7U; }
+      R.CsCount=(UINT8)CsCount; R.NumBudget=(UINT8)(CsCount>R.Esit ? R.Esit : CsCount);
+    } else { R.CsCount=0; R.NumBudget=1; }
+    if (!MtkRecordFits(E,&R,(UINT8)Offset)) { continue; }
+    UINT32 Worst=0;
+    for (UINTN I=0; I<R.NumEsit; I++) {
+      UINTN Base=(Offset+I*R.Esit)&63U;
+      for (UINTN J=0; J<R.NumBudget; J++) {
+        UINT32 Used=E->Mtk.RootBus[R.RootPort][(Base+J)&63U]+R.Cost;
+        if (Used>Worst) { Worst=Used; }
+      }
+    }
+    if (Worst<BestWorst) { BestWorst=Worst; BestOffset=(UINT8)Offset; }
+    if (R.HasTt || Worst==0) { break; }
+  }
+  if (BestOffset==0xff) { return FALSE; }
+  R.Offset=BestOffset; R.NumBudget=OriginalBudget;
+  if (R.HasTt) {
+    UINTN CsCount=(Payload+DALI_MTK_FS_BW_LIMIT-1U)/DALI_MTK_FS_BW_LIMIT;
+    R.CsCount=(UINT8)(CsCount>7U ? 7U : CsCount);
+    R.NumBudget=(UINT8)(R.CsCount>R.Esit ? R.Esit : R.CsCount);
+  }
+  if (!MtkAddRecord(E,&R)) { return FALSE; }
+  *PayloadOut=Payload; *BurstOut=(UINT8)(Transactions-1U);
+  *EsitPayloadOut=(UINT16)((UINT32)Payload*Transactions);
+  *MtkWord0=((UINT32)R.Pkts&0x7fU)|(((UINT32)R.CsCount&7U)<<8)|(((UINT32)R.BurstMode&1U)<<11);
+  *MtkWord1=((UINT32)R.Offset&0x3fffU)|(((UINT32)R.Repeat&0x7fffU)<<16);
+  return TRUE;
 }
 STATIC EFI_STATUS Enter(DALI_USB_NATIVE_HOST *H, BOOLEAN Cleanup, EFI_TPL *Old) {
   if (H==NULL || CurrentTpl()>TPL_NOTIFY) { return EFI_UNSUPPORTED; }
@@ -187,6 +485,7 @@ STATIC VOID FreeUsers(DALI_USB_NATIVE_HOST *H) {
   }
   ZeroMem(((ENGINE *)H->Engine)->LastShortEndpointMask,
           sizeof ((ENGINE *)H->Engine)->LastShortEndpointMask);
+  ZeroMem(&((ENGINE *)H->Engine)->Mtk, sizeof ((ENGINE *)H->Engine)->Mtk);
   // Context/ring DMA allocations belong to MemPool, freed exactly once below.
   XhcFreeSched(X);
 }

@@ -9,6 +9,12 @@
 #include "../../../Platforms/Xiaomi/daliPkg/Library/UsbNativeHostLib/MuEngine.c"
 BOOLEAN XhcCheckUrbResult(USB_XHCI_INSTANCE *, URB *);
 BOOLEAN DaliNativeXhciIgnoreSpuriousSuccess(USB_XHCI_INSTANCE *, UINT8, UINT8, UINT8);
+UINT8 EFIAPI XhcInitializeEndpointContext(USB_XHCI_INSTANCE *, UINT8, UINT8, INPUT_CONTEXT *, USB_INTERFACE_DESCRIPTOR *);
+UINT8 EFIAPI XhcInitializeEndpointContext64(USB_XHCI_INSTANCE *, UINT8, UINT8, INPUT_CONTEXT_64 *, USB_INTERFACE_DESCRIPTOR *);
+EFI_STATUS DaliNativeXhciBeginEndpointConfiguration(USB_XHCI_INSTANCE *, UINT8, BOOLEAN, UINT8);
+EFI_STATUS DaliNativeXhciCommitEndpointConfiguration(USB_XHCI_INSTANCE *, UINT8);
+EFI_STATUS DaliNativeXhciRollbackEndpointConfiguration(USB_XHCI_INSTANCE *, UINT8);
+EFI_STATUS DaliNativeXhciRemoveSlotReservations(USB_XHCI_INSTANCE *, UINT8);
 static DALI_USB_NATIVE_HOST host;
 static EFI_TPL tpl=TPL_APPLICATION;
 static struct {
@@ -174,11 +180,188 @@ static void make_slot(void) {
   d->Enabled=TRUE;d->SlotId=1;d->BusDevAddr=1;
   d->InputContext=UsbHcAllocateMem(x->MemPool,sizeof(INPUT_CONTEXT),FALSE);
   d->OutputContext=UsbHcAllocateMem(x->MemPool,sizeof(DEVICE_CONTEXT),FALSE);
+  ((DEVICE_CONTEXT *)d->OutputContext)->Slot.Speed=EFI_USB_SPEED_HIGH;
+  ((DEVICE_CONTEXT *)d->OutputContext)->Slot.RootHubPortNum=1;
   for(unsigned n=0;n<=2;n+=2) {
     d->EndpointTransferRing[n]=AllocateZeroPool(sizeof(TRANSFER_RING));
     CreateTransferRing(x,TR_RING_TRB_NUMBER,d->EndpointTransferRing[n]);
   }
   ((DEVICE_CONTEXT *)d->OutputContext)->EP[2].EPType=ED_INTERRUPT_IN;
+}
+static void make_sched_device(UINT8 slot,UINT8 speed,UINT8 tt_hub,UINT8 tt_port) {
+  USB_XHCI_INSTANCE *x=host.Engine;USB_DEV_CONTEXT *d=&x->UsbDevContext[slot];
+  d->Enabled=TRUE;d->SlotId=slot;
+  d->InputContext=UsbHcAllocateMem(x->MemPool,sizeof(INPUT_CONTEXT),FALSE);
+  d->OutputContext=UsbHcAllocateMem(x->MemPool,sizeof(DEVICE_CONTEXT),FALSE);
+  DEVICE_CONTEXT *out=d->OutputContext;
+  out->Slot.Speed=(UINT8)(speed+1U);out->Slot.RootHubPortNum=1;
+  out->Slot.TTHubSlotId=tt_hub;out->Slot.TTPortNum=tt_port;
+}
+static void make_sched_device64(UINT8 slot,UINT8 speed) {
+  USB_XHCI_INSTANCE *x=host.Engine;USB_DEV_CONTEXT *d=&x->UsbDevContext[slot];
+  d->Enabled=TRUE;d->SlotId=slot;
+  d->InputContext=UsbHcAllocateMem(x->MemPool,sizeof(INPUT_CONTEXT_64),FALSE);
+  d->OutputContext=UsbHcAllocateMem(x->MemPool,sizeof(DEVICE_CONTEXT_64),FALSE);
+  DEVICE_CONTEXT_64 *out=d->OutputContext;
+  out->Slot.Speed=(UINT8)(speed+1U);out->Slot.RootHubPortNum=1;
+}
+static USB_INTERFACE_DESCRIPTOR *sched_interface(UINT8 *bytes,UINT8 count,UINT8 first_address,
+                                                  UINT16 max_packet,UINT8 interval) {
+  USB_INTERFACE_DESCRIPTOR *iface=(VOID *)bytes;
+  ZeroMem(bytes,sizeof(USB_INTERFACE_DESCRIPTOR)+(UINTN)count*sizeof(USB_ENDPOINT_DESCRIPTOR));
+  iface->Length=sizeof(*iface);iface->DescriptorType=USB_DESC_TYPE_INTERFACE;
+  iface->InterfaceNumber=0;iface->AlternateSetting=0;iface->NumEndpoints=count;
+  USB_ENDPOINT_DESCRIPTOR *ep=(VOID *)(bytes+iface->Length);
+  for(UINTN n=0;n<count;n++,ep++) {
+    ep->Length=sizeof(*ep);ep->DescriptorType=USB_DESC_TYPE_ENDPOINT;
+    if(count==1) {ep->EndpointAddress=first_address;}
+    else if(n<15) {ep->EndpointAddress=(UINT8)(0x81+n);}
+    else {ep->EndpointAddress=1;}
+    ep->Attributes=USB_ENDPOINT_INTERRUPT;ep->MaxPacketSize=max_packet;ep->Interval=interval;
+  }
+  return iface;
+}
+static UINT8 init_sched_interface(UINT8 slot,UINT8 speed,USB_INTERFACE_DESCRIPTOR *iface) {
+  USB_XHCI_INSTANCE *x=host.Engine;USB_DEV_CONTEXT *d=&x->UsbDevContext[slot];
+  INPUT_CONTEXT *input=d->InputContext;DEVICE_CONTEXT *output=d->OutputContext;
+  ZeroMem(input,sizeof(*input));CopyMem(&input->Slot,&output->Slot,sizeof(input->Slot));
+  return XhcInitializeEndpointContext(x,slot,speed,input,iface);
+}
+static UINT8 init_sched_interface64(UINT8 slot,UINT8 speed,USB_INTERFACE_DESCRIPTOR *iface) {
+  USB_XHCI_INSTANCE *x=host.Engine;USB_DEV_CONTEXT *d=&x->UsbDevContext[slot];
+  INPUT_CONTEXT_64 *input=d->InputContext;DEVICE_CONTEXT_64 *output=d->OutputContext;
+  ZeroMem(input,sizeof(*input));CopyMem(&input->Slot,&output->Slot,sizeof(input->Slot));
+  return XhcInitializeEndpointContext64(x,slot,speed,input,iface);
+}
+static void mtk_high_speed_scheduler(void) {
+  native_reset();assert(start()==EFI_SUCCESS);make_slot();
+  USB_XHCI_INSTANCE *x=host.Engine;
+  UINT8 bytes[sizeof(USB_INTERFACE_DESCRIPTOR)+3*sizeof(USB_ENDPOINT_DESCRIPTOR)];
+  USB_INTERFACE_DESCRIPTOR *iface=sched_interface(bytes,1,0x81,(UINT16)(1024|(2U<<11)),1);
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,1,TRUE,0)==EFI_SUCCESS);
+  UINT8 dci=init_sched_interface(1,EFI_USB_SPEED_HIGH,iface);assert(dci==3);
+  ENDPOINT_CONTEXT *ep=&((INPUT_CONTEXT *)x->UsbDevContext[1].InputContext)->EP[dci-1];
+  assert(ep->MaxPacketSize==1024 && ep->MaxBurstSize==2 && ep->Mult==0 && ep->MaxESITPayload==3072);
+  assert(ep->RsvdZ5==3 && ep->RsvdZ6==0 && ep->RsvdZ7==0);
+  assert(DaliNativeXhciCommitEndpointConfiguration(x,1)==EFI_SUCCESS);
+
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,1,TRUE,0)==EFI_SUCCESS);
+  iface=sched_interface(bytes,3,0x81,(UINT16)(1024|(2U<<11)),1);
+  assert(init_sched_interface(1,EFI_USB_SPEED_HIGH,iface)==0);
+  assert(DaliNativeXhciRollbackEndpointConfiguration(x,1)==EFI_SUCCESS && !host.Faulted);
+
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,1,FALSE,1)==EFI_SUCCESS);
+  iface=sched_interface(bytes,1,0x82,(UINT16)(1024|(2U<<11)),1);
+  iface->InterfaceNumber=1;iface->AlternateSetting=1;
+  assert(init_sched_interface(1,EFI_USB_SPEED_HIGH,iface)==5);
+  iface=sched_interface(bytes,1,0x83,(UINT16)(1024|(2U<<11)),1);
+  iface->InterfaceNumber=1;iface->AlternateSetting=1;
+  assert(init_sched_interface(1,EFI_USB_SPEED_HIGH,iface)==0);
+  assert(DaliNativeXhciRollbackEndpointConfiguration(x,1)==EFI_SUCCESS && !host.Faulted);
+
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,1,FALSE,1)==EFI_SUCCESS);
+  iface=sched_interface(bytes,1,0x82,(UINT16)(1024|(2U<<11)),1);
+  iface->InterfaceNumber=1;iface->AlternateSetting=1;
+  assert(init_sched_interface(1,EFI_USB_SPEED_HIGH,iface)==5);
+  assert(DaliNativeXhciCommitEndpointConfiguration(x,1)==EFI_SUCCESS);
+
+  make_sched_device(3,EFI_USB_SPEED_HIGH,0,0);
+  ((DEVICE_CONTEXT *)x->UsbDevContext[3].OutputContext)->Slot.RootHubPortNum=2;
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,3,TRUE,0)==EFI_SUCCESS);
+  iface=sched_interface(bytes,1,0x81,(UINT16)(1024|(2U<<11)),1);
+  assert(init_sched_interface(3,EFI_USB_SPEED_HIGH,iface)==3);
+  assert(DaliNativeXhciCommitEndpointConfiguration(x,3)==EFI_SUCCESS);
+  assert(DaliNativeXhciRemoveSlotReservations(x,3)==EFI_SUCCESS);
+
+  make_sched_device(2,EFI_USB_SPEED_HIGH,0,0);
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,2,TRUE,0)==EFI_SUCCESS);
+  iface=sched_interface(bytes,1,0x81,(UINT16)(1024|(2U<<11)),1);
+  assert(init_sched_interface(2,EFI_USB_SPEED_HIGH,iface)==0);
+  assert(DaliNativeXhciRollbackEndpointConfiguration(x,2)==EFI_SUCCESS);
+  assert(DaliNativeXhciRemoveSlotReservations(x,1)==EFI_SUCCESS);
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,2,TRUE,0)==EFI_SUCCESS);
+  assert(init_sched_interface(2,EFI_USB_SPEED_HIGH,iface)==3);
+  assert(DaliNativeXhciCommitEndpointConfiguration(x,2)==EFI_SUCCESS);
+  assert(DaliNativeXhciRemoveSlotReservations(x,2)==EFI_SUCCESS);
+
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,1,TRUE,0)==EFI_SUCCESS);
+  iface=sched_interface(bytes,1,0x81,64,9);
+  assert(init_sched_interface(1,EFI_USB_SPEED_HIGH,iface)==3);
+  ENDPOINT_CONTEXT *long_interval=&((INPUT_CONTEXT *)x->UsbDevContext[1].InputContext)->EP[2];
+  assert(long_interval->Interval==8 && long_interval->MaxPacketSize==64);
+  assert(DaliNativeXhciCommitEndpointConfiguration(x,1)==EFI_SUCCESS);
+  assert(DaliNativeXhciRemoveSlotReservations(x,1)==EFI_SUCCESS);
+  finish();
+}
+static void mtk_high_speed_scheduler64(void) {
+  native_reset();m.regs[4]|=1U<<2;assert(start()==EFI_SUCCESS);make_sched_device64(1,EFI_USB_SPEED_HIGH);
+  USB_XHCI_INSTANCE *x=host.Engine;UINT8 bytes[sizeof(USB_INTERFACE_DESCRIPTOR)+sizeof(USB_ENDPOINT_DESCRIPTOR)];
+  USB_INTERFACE_DESCRIPTOR *iface=sched_interface(bytes,1,0x81,(UINT16)(1024|(2U<<11)),1);
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,1,TRUE,0)==EFI_SUCCESS);
+  assert(init_sched_interface64(1,EFI_USB_SPEED_HIGH,iface)==3);
+  ENDPOINT_CONTEXT_64 *ep=&((INPUT_CONTEXT_64 *)x->UsbDevContext[1].InputContext)->EP[2];
+  assert(ep->MaxPacketSize==1024 && ep->MaxBurstSize==2 && ep->MaxESITPayload==3072 && ep->RsvdZ5==3);
+  assert(DaliNativeXhciCommitEndpointConfiguration(x,1)==EFI_SUCCESS);
+  assert(DaliNativeXhciRemoveSlotReservations(x,1)==EFI_SUCCESS);
+
+  make_sched_device64(2,EFI_USB_SPEED_HIGH);
+  SLOT_CONTEXT_64 *hub=&((DEVICE_CONTEXT_64 *)x->UsbDevContext[2].OutputContext)->Slot;
+  hub->Hub=TRUE;hub->PortNum=4;hub->MTT=TRUE;
+  make_sched_device64(3,EFI_USB_SPEED_FULL);
+  SLOT_CONTEXT_64 *child=&((DEVICE_CONTEXT_64 *)x->UsbDevContext[3].OutputContext)->Slot;
+  child->TTHubSlotId=2;child->TTPortNum=1;
+  UINT8 tt_bytes[sizeof(USB_INTERFACE_DESCRIPTOR)+sizeof(USB_ENDPOINT_DESCRIPTOR)];
+  USB_INTERFACE_DESCRIPTOR *tt_iface=sched_interface(tt_bytes,1,0x81,64,1);
+  assert(DaliNativeXhciBeginEndpointConfiguration(x,3,TRUE,0)==EFI_SUCCESS);
+  assert(init_sched_interface64(3,EFI_USB_SPEED_FULL,tt_iface)==3);
+  ENDPOINT_CONTEXT_64 *tt_ep=&((INPUT_CONTEXT_64 *)x->UsbDevContext[3].InputContext)->EP[2];
+  assert(tt_ep->MaxPacketSize==64 && tt_ep->RsvdZ5==0x101 && tt_ep->RsvdZ6==0);
+  assert(DaliNativeXhciCommitEndpointConfiguration(x,3)==EFI_SUCCESS);
+  assert(DaliNativeXhciRemoveSlotReservations(x,3)==EFI_SUCCESS);
+  finish();
+}
+static void mtk_tt_scheduler(void) {
+  for(UINTN multi=0;multi<2;multi++) {
+    native_reset();assert(start()==EFI_SUCCESS);make_sched_device(2,EFI_USB_SPEED_HIGH,0,0);
+    USB_XHCI_INSTANCE *x=host.Engine;
+    DEVICE_CONTEXT *hub=x->UsbDevContext[2].OutputContext;
+    hub->Slot.Speed=(UINT8)(EFI_USB_SPEED_HIGH+1U);
+    hub->Slot.Hub=TRUE;hub->Slot.PortNum=8;
+    hub->Slot.MTT=(UINT8)multi; // models the selected alt-1 multi-TT mode.
+    make_sched_device(3,EFI_USB_SPEED_FULL,2,1);
+    UINT8 bytes[sizeof(USB_INTERFACE_DESCRIPTOR)+16*sizeof(USB_ENDPOINT_DESCRIPTOR)];
+    USB_INTERFACE_DESCRIPTOR *iface=sched_interface(bytes,14,0x81,64,1);
+    assert(DaliNativeXhciBeginEndpointConfiguration(x,3,TRUE,0)==EFI_SUCCESS);
+    assert(init_sched_interface(3,EFI_USB_SPEED_FULL,iface)==29);
+    INPUT_CONTEXT *input=x->UsbDevContext[3].InputContext;
+    ENDPOINT_CONTEXT *first=&input->EP[2];
+    ENDPOINT_CONTEXT *last=&input->EP[28];
+    assert(first->MaxPacketSize==64 && first->MaxESITPayload==64 && first->RsvdZ5==0x101);
+    assert((last->RsvdZ6&0x3fffU)==7); // start-split Y6 is skipped; Y7 is used.
+    assert(DaliNativeXhciCommitEndpointConfiguration(x,3)==EFI_SUCCESS);
+
+    make_sched_device(4,EFI_USB_SPEED_FULL,2,2);
+    UINT8 one[sizeof(USB_INTERFACE_DESCRIPTOR)+sizeof(USB_ENDPOINT_DESCRIPTOR)];
+    iface=sched_interface(one,1,0x81,64,1);
+    assert(DaliNativeXhciBeginEndpointConfiguration(x,4,TRUE,0)==EFI_SUCCESS);
+    UINT8 result=init_sched_interface(4,EFI_USB_SPEED_FULL,iface);
+    if(multi) {
+      assert(result==3);
+      ENDPOINT_CONTEXT *other=&((INPUT_CONTEXT *)x->UsbDevContext[4].InputContext)->EP[2];
+      assert(other->RsvdZ5==0x101 && other->RsvdZ6==0);
+      assert(DaliNativeXhciCommitEndpointConfiguration(x,4)==EFI_SUCCESS);
+      assert(DaliNativeXhciRemoveSlotReservations(x,4)==EFI_SUCCESS);
+    } else {
+      assert(result==0);
+      assert(DaliNativeXhciRollbackEndpointConfiguration(x,4)==EFI_SUCCESS);
+      assert(DaliNativeXhciRemoveSlotReservations(x,3)==EFI_SUCCESS);
+      assert(DaliNativeXhciBeginEndpointConfiguration(x,4,TRUE,0)==EFI_SUCCESS);
+      assert(init_sched_interface(4,EFI_USB_SPEED_FULL,iface)==3);
+      assert(DaliNativeXhciCommitEndpointConfiguration(x,4)==EFI_SUCCESS);
+      assert(DaliNativeXhciRemoveSlotReservations(x,4)==EFI_SUCCESS);
+    }
+    finish();
+  }
 }
 static EFI_STATUS EFIAPI callback(VOID *data,UINTN bytes,VOID *context,UINT32 result) {
   assert(context==&host && bytes==8 && !result && data && host.CallbackDepth==1 && !host.Busy);callbacks++;
@@ -280,7 +463,7 @@ static void ebs_latch(void) {
   assert(DaliUsbNativeHostStop(&host)==EFI_UNSUPPORTED && DaliUsbNativeHostPrepareHandoff(&host)==EFI_UNSUPPORTED && m.ops==ops);
 }
 int main(void) {
-  lifecycle();failures();descriptors();async_lifecycle();malformed_completion();short_completion_spurious_success();ebs_latch();native_reset();reset();
-  puts("PASS: actual native USB2 HC lifecycle, async remap/cancel, short-event quirk and malformed event-length fault; register model only");
+  lifecycle();failures();descriptors();mtk_high_speed_scheduler();mtk_high_speed_scheduler64();mtk_tt_scheduler();async_lifecycle();malformed_completion();short_completion_spurious_success();ebs_latch();native_reset();reset();
+  puts("PASS: actual native USB2 HC lifecycle, MTK HS/TT periodic admission and rollback, async remap/cancel and completion quirks; register model only");
   return 0;
 }

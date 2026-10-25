@@ -17,6 +17,7 @@ PATCH_NAMES = (
     "Usb-Bus.patch",
     "Xhci-Native-Safety.patch",
     "Xhci-Native-Short-Event.patch",
+    "Xhci-Native-MTK-Scheduler.patch",
 )
 
 

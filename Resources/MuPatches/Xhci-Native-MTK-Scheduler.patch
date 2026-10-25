@@ -1,0 +1,419 @@
+diff --git a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
+index 50fa802f92..7ce76d3fa8 100644
+--- a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
++++ b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
+@@ -21,6 +21,14 @@ EFI_STATUS DaliNativeXhciCheck (USB_XHCI_INSTANCE *Xhc);
+ VOID DaliNativeXhciRecordShortCompletion (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId, UINT8 EndpointId, BOOLEAN Short);
+ BOOLEAN DaliNativeXhciIgnoreSpuriousSuccess (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId, UINT8 EndpointId, UINT8 CompletionCode);
+ VOID DaliNativeXhciClearShortCompletions (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId);
++EFI_STATUS DaliNativeXhciBeginEndpointConfiguration (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId, BOOLEAN AllInterfaces, UINT8 Interface);
++EFI_STATUS DaliNativeXhciCommitEndpointConfiguration (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId);
++EFI_STATUS DaliNativeXhciRollbackEndpointConfiguration (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId);
++EFI_STATUS DaliNativeXhciRemoveSlotReservations (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId);
++BOOLEAN DaliNativeXhciScheduleEndpoint (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId, UINT8 Dci, UINT8 Speed,
++                                        CONST USB_INTERFACE_DESCRIPTOR *IfDesc, CONST USB_ENDPOINT_DESCRIPTOR *EpDesc,
++                                        UINT8 Interval, UINT16 *Payload, UINT8 *Burst, UINT16 *EsitPayload,
++                                        UINT32 *MtkWord0, UINT32 *MtkWord1);
+ #endif
+ 
+ /**
+@@ -2844,6 +2852,12 @@ XhcDisableSlotCmd (
+     return Status;
+   }
+ 
++#ifdef DALI_NATIVE_XHCI
++  Status = DaliNativeXhciRemoveSlotReservations (Xhc, SlotId);
++  if (EFI_ERROR (Status)) { return Status; }
++  DaliNativeXhciClearShortCompletions (Xhc, SlotId);
++#endif
++
+   //
+   // Free the slot's device context entry
+   //
+@@ -2963,6 +2977,12 @@ XhcDisableSlotCmd64 (
+     return Status;
+   }
+ 
++#ifdef DALI_NATIVE_XHCI
++  Status = DaliNativeXhciRemoveSlotReservations (Xhc, SlotId);
++  if (EFI_ERROR (Status)) { return Status; }
++  DaliNativeXhciClearShortCompletions (Xhc, SlotId);
++#endif
++
+   //
+   // Free the slot's device context entry
+   //
+@@ -3104,6 +3124,13 @@ XhcInitializeEndpointContext (
+   UINT8                    MaxDci;
+   EFI_PHYSICAL_ADDRESS     PhyAddr;
+   TRANSFER_RING            *EndpointTransferRing;
++#ifdef DALI_NATIVE_XHCI
++  UINT16                   NativePayload;
++  UINT16                   NativeEsitPayload;
++  UINT8                    NativeBurst;
++  UINT32                   NativeMtkWord0;
++  UINT32                   NativeMtkWord1;
++#endif
+ 
+   MaxDci = 0;
+ 
+@@ -3132,7 +3159,7 @@ XhcInitializeEndpointContext (
+       MaxDci = Dci;
+     }
+ 
+-    InputContext->InputControlContext.Dword2 |= (BIT0 << Dci);
++    InputContext->InputControlContext.Dword2 |= ((UINT32)BIT0 << Dci);
+     InputContext->EP[Dci-1].MaxPacketSize     = EpDesc->MaxPacketSize;
+ 
+     if (DeviceSpeed == EFI_USB_SPEED_SUPER) {
+@@ -3201,12 +3228,39 @@ XhcInitializeEndpointContext (
+         InputContext->EP[Dci-1].MaxESITPayload   = EpDesc->MaxPacketSize;
+         InputContext->EP[Dci-1].Interval         = CalculateInterval (USB_ENDPOINT_INTERRUPT, DeviceSpeed, EpDesc->Interval);
+ 
++#ifdef DALI_NATIVE_XHCI
++        if (!DaliNativeXhciScheduleEndpoint (
++               Xhc,
++               SlotId,
++               Dci,
++               DeviceSpeed,
++               IfDesc,
++               EpDesc,
++               InputContext->EP[Dci-1].Interval,
++               &NativePayload,
++               &NativeBurst,
++               &NativeEsitPayload,
++               &NativeMtkWord0,
++               &NativeMtkWord1
++               )) {
++          return 0;
++        }
++
++        InputContext->EP[Dci-1].MaxPacketSize   = NativePayload;
++        InputContext->EP[Dci-1].MaxBurstSize    = NativeBurst;
++        InputContext->EP[Dci-1].Mult            = 0;
++        InputContext->EP[Dci-1].MaxESITPayload  = NativeEsitPayload;
++        InputContext->EP[Dci-1].RsvdZ5          = NativeMtkWord0;
++        InputContext->EP[Dci-1].RsvdZ6          = NativeMtkWord1;
++        InputContext->EP[Dci-1].RsvdZ7          = 0;
++#else
+         if ((DeviceSpeed == EFI_USB_SPEED_HIGH) || (DeviceSpeed == EFI_USB_SPEED_SUPER)) {
+           InputContext->EP[Dci-1].AverageTRBLength = 0x1000;
+           InputContext->EP[Dci-1].MaxESITPayload   = 0x0002;
+           InputContext->EP[Dci-1].MaxBurstSize     = 0x0;
+           InputContext->EP[Dci-1].CErr             = 3;
+         }
++#endif
+ 
+         if (Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] == NULL) {
+           EndpointTransferRing                                   = AllocateZeroPool (sizeof (TRANSFER_RING));
+@@ -3284,6 +3338,13 @@ XhcInitializeEndpointContext64 (
+   UINT8                    MaxDci;
+   EFI_PHYSICAL_ADDRESS     PhyAddr;
+   TRANSFER_RING            *EndpointTransferRing;
++#ifdef DALI_NATIVE_XHCI
++  UINT16                   NativePayload;
++  UINT16                   NativeEsitPayload;
++  UINT8                    NativeBurst;
++  UINT32                   NativeMtkWord0;
++  UINT32                   NativeMtkWord1;
++#endif
+ 
+   MaxDci = 0;
+ 
+@@ -3312,7 +3373,7 @@ XhcInitializeEndpointContext64 (
+       MaxDci = Dci;
+     }
+ 
+-    InputContext->InputControlContext.Dword2 |= (BIT0 << Dci);
++    InputContext->InputControlContext.Dword2 |= ((UINT32)BIT0 << Dci);
+     InputContext->EP[Dci-1].MaxPacketSize     = EpDesc->MaxPacketSize;
+ 
+     if (DeviceSpeed == EFI_USB_SPEED_SUPER) {
+@@ -3381,12 +3442,39 @@ XhcInitializeEndpointContext64 (
+         InputContext->EP[Dci-1].MaxESITPayload   = EpDesc->MaxPacketSize;
+         InputContext->EP[Dci-1].Interval         = CalculateInterval (USB_ENDPOINT_INTERRUPT, DeviceSpeed, EpDesc->Interval);
+ 
++#ifdef DALI_NATIVE_XHCI
++        if (!DaliNativeXhciScheduleEndpoint (
++               Xhc,
++               SlotId,
++               Dci,
++               DeviceSpeed,
++               IfDesc,
++               EpDesc,
++               InputContext->EP[Dci-1].Interval,
++               &NativePayload,
++               &NativeBurst,
++               &NativeEsitPayload,
++               &NativeMtkWord0,
++               &NativeMtkWord1
++               )) {
++          return 0;
++        }
++
++        InputContext->EP[Dci-1].MaxPacketSize   = NativePayload;
++        InputContext->EP[Dci-1].MaxBurstSize    = NativeBurst;
++        InputContext->EP[Dci-1].Mult            = 0;
++        InputContext->EP[Dci-1].MaxESITPayload  = NativeEsitPayload;
++        InputContext->EP[Dci-1].RsvdZ5          = NativeMtkWord0;
++        InputContext->EP[Dci-1].RsvdZ6          = NativeMtkWord1;
++        InputContext->EP[Dci-1].RsvdZ7          = 0;
++#else
+         if ((DeviceSpeed == EFI_USB_SPEED_HIGH) || (DeviceSpeed == EFI_USB_SPEED_SUPER)) {
+           InputContext->EP[Dci-1].AverageTRBLength = 0x1000;
+           InputContext->EP[Dci-1].MaxESITPayload   = 0x0002;
+           InputContext->EP[Dci-1].MaxBurstSize     = 0x0;
+           InputContext->EP[Dci-1].CErr             = 3;
+         }
++#endif
+ 
+         if (Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] == NULL) {
+           EndpointTransferRing                                   = AllocateZeroPool (sizeof (TRANSFER_RING));
+@@ -3477,6 +3565,11 @@ XhcSetConfigCmd (
+ 
+   ASSERT (ConfigDesc != NULL);
+ 
++#ifdef DALI_NATIVE_XHCI
++  Status = DaliNativeXhciBeginEndpointConfiguration (Xhc, SlotId, TRUE, 0);
++  if (EFI_ERROR (Status)) { return Status; }
++#endif
++
+   MaxDci = 0;
+ 
+   IfDesc = (USB_INTERFACE_DESCRIPTOR *)((UINTN)ConfigDesc + ConfigDesc->Length);
+@@ -3491,7 +3584,12 @@ XhcSetConfigCmd (
+     }
+ 
+     Dci = XhcInitializeEndpointContext (Xhc, SlotId, DeviceSpeed, InputContext, IfDesc);
+-    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
++    if (Dci == 0) {
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++#endif
++      return EFI_OUT_OF_RESOURCES;
++    }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }
+@@ -3520,7 +3618,18 @@ XhcSetConfigCmd (
+              );
+   if (EFI_ERROR (Status) || (EvtTrb == NULL)) {
+     DEBUG ((DEBUG_ERROR, "XhcSetConfigCmd: Config Endpoint Failed, Status = %r\n", Status));
++#ifdef DALI_NATIVE_XHCI
++    DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++    if (!EFI_ERROR (Status)) { Status = EFI_DEVICE_ERROR; }
++#endif
+   } else {
++#ifdef DALI_NATIVE_XHCI
++    Status = DaliNativeXhciCommitEndpointConfiguration (Xhc, SlotId);
++    if (EFI_ERROR (Status)) {
++      DaliNativeXhciCommandFailed (Xhc, Status);
++      return Status;
++    }
++#endif
+     Xhc->UsbDevContext[SlotId].ActiveConfiguration = ConfigDesc->ConfigurationValue;
+ #ifdef DALI_NATIVE_XHCI
+     DaliNativeXhciClearShortCompletions (Xhc, SlotId);
+@@ -3574,6 +3683,11 @@ XhcSetConfigCmd64 (
+ 
+   ASSERT (ConfigDesc != NULL);
+ 
++#ifdef DALI_NATIVE_XHCI
++  Status = DaliNativeXhciBeginEndpointConfiguration (Xhc, SlotId, TRUE, 0);
++  if (EFI_ERROR (Status)) { return Status; }
++#endif
++
+   MaxDci = 0;
+ 
+   IfDesc = (USB_INTERFACE_DESCRIPTOR *)((UINTN)ConfigDesc + ConfigDesc->Length);
+@@ -3588,7 +3702,12 @@ XhcSetConfigCmd64 (
+     }
+ 
+     Dci = XhcInitializeEndpointContext64 (Xhc, SlotId, DeviceSpeed, InputContext, IfDesc);
+-    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
++    if (Dci == 0) {
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++#endif
++      return EFI_OUT_OF_RESOURCES;
++    }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }
+@@ -3617,7 +3736,18 @@ XhcSetConfigCmd64 (
+              );
+   if (EFI_ERROR (Status) || (EvtTrb == NULL)) {
+     DEBUG ((DEBUG_ERROR, "XhcSetConfigCmd64: Config Endpoint Failed, Status = %r\n", Status));
++#ifdef DALI_NATIVE_XHCI
++    DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++    if (!EFI_ERROR (Status)) { Status = EFI_DEVICE_ERROR; }
++#endif
+   } else {
++#ifdef DALI_NATIVE_XHCI
++    Status = DaliNativeXhciCommitEndpointConfiguration (Xhc, SlotId);
++    if (EFI_ERROR (Status)) {
++      DaliNativeXhciCommandFailed (Xhc, Status);
++      return Status;
++    }
++#endif
+     Xhc->UsbDevContext[SlotId].ActiveConfiguration = ConfigDesc->ConfigurationValue;
+ #ifdef DALI_NATIVE_XHCI
+     DaliNativeXhciClearShortCompletions (Xhc, SlotId);
+@@ -3913,6 +4043,10 @@ XhcSetInterface (
+   //
+ 
+   if ((IfDescActive != NULL) && (IfDescSet != NULL)) {
++#ifdef DALI_NATIVE_XHCI
++    Status = DaliNativeXhciBeginEndpointConfiguration (Xhc, SlotId, FALSE, (UINT8)Request->Index);
++    if (EFI_ERROR (Status)) { return Status; }
++#endif
+     NumEp  = IfDescActive->NumEndpoints;
+     EpDesc = (USB_ENDPOINT_DESCRIPTOR *)(IfDescActive + 1);
+     for (EpIndex = 0; EpIndex < NumEp; EpIndex++) {
+@@ -3940,6 +4074,10 @@ XhcSetInterface (
+       //
+       Status = XhcStopEndpoint (Xhc, SlotId, Dci, NULL);
+       if (EFI_ERROR (Status)) {
++#ifdef DALI_NATIVE_XHCI
++        DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++        DaliNativeXhciCommandFailed (Xhc, Status);
++#endif
+         return Status;
+       }
+ 
+@@ -3960,7 +4098,7 @@ XhcSetInterface (
+       //
+       // Set the Drop Context flag to '1'.
+       //
+-      InputContext->InputControlContext.Dword1 |= (BIT0 << Dci);
++      InputContext->InputControlContext.Dword1 |= ((UINT32)BIT0 << Dci);
+ 
+       EpDesc = (USB_ENDPOINT_DESCRIPTOR *)((UINTN)EpDesc + EpDesc->Length);
+     }
+@@ -3981,13 +4119,26 @@ XhcSetInterface (
+     //   c. Initialize the Endpoint Context data structure.
+     //
+     Dci = XhcInitializeEndpointContext (Xhc, SlotId, DeviceSpeed, InputContext, IfDescSet);
+-    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
++    if (Dci == 0) {
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++      DaliNativeXhciCommandFailed (Xhc, EFI_OUT_OF_RESOURCES);
++#endif
++      return EFI_OUT_OF_RESOURCES;
++    }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }
+ 
+     InputContext->InputControlContext.Dword2 |= BIT0;
+     InputContext->Slot.ContextEntries         = MaxDci;
++#ifdef DALI_NATIVE_XHCI
++    if ((DeviceSpeed == EFI_USB_SPEED_HIGH) &&
++        (Xhc->UsbDevContext[SlotId].DevDesc.DeviceProtocol == 2) &&
++        (IfDescSet->InterfaceClass == 9)) {
++      InputContext->Slot.MTT = (IfDescSet->InterfaceProtocol == 2);
++    }
++#endif
+     //
+     // XHCI 4.3.6 - Setting Alternate Interfaces
+     // 5) Issue and successfully complete a Configure Endpoint Command.
+@@ -4008,7 +4159,19 @@ XhcSetInterface (
+                );
+     if (EFI_ERROR (Status) || (EvtTrb == NULL)) {
+       DEBUG ((DEBUG_ERROR, "SetInterface: Config Endpoint Failed, Status = %r\n", Status));
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++      DaliNativeXhciCommandFailed (Xhc, EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR);
++      if (!EFI_ERROR (Status)) { Status = EFI_DEVICE_ERROR; }
++#endif
+     } else {
++#ifdef DALI_NATIVE_XHCI
++      Status = DaliNativeXhciCommitEndpointConfiguration (Xhc, SlotId);
++      if (EFI_ERROR (Status)) {
++        DaliNativeXhciCommandFailed (Xhc, Status);
++        return Status;
++      }
++#endif
+       //
+       // Update the active AlternateSetting.
+       //
+@@ -4124,6 +4287,10 @@ XhcSetInterface64 (
+   //
+ 
+   if ((IfDescActive != NULL) && (IfDescSet != NULL)) {
++#ifdef DALI_NATIVE_XHCI
++    Status = DaliNativeXhciBeginEndpointConfiguration (Xhc, SlotId, FALSE, (UINT8)Request->Index);
++    if (EFI_ERROR (Status)) { return Status; }
++#endif
+     NumEp  = IfDescActive->NumEndpoints;
+     EpDesc = (USB_ENDPOINT_DESCRIPTOR *)(IfDescActive + 1);
+     for (EpIndex = 0; EpIndex < NumEp; EpIndex++) {
+@@ -4151,6 +4318,10 @@ XhcSetInterface64 (
+       //
+       Status = XhcStopEndpoint (Xhc, SlotId, Dci, NULL);
+       if (EFI_ERROR (Status)) {
++#ifdef DALI_NATIVE_XHCI
++        DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++        DaliNativeXhciCommandFailed (Xhc, Status);
++#endif
+         return Status;
+       }
+ 
+@@ -4171,7 +4342,7 @@ XhcSetInterface64 (
+       //
+       // Set the Drop Context flag to '1'.
+       //
+-      InputContext->InputControlContext.Dword1 |= (BIT0 << Dci);
++      InputContext->InputControlContext.Dword1 |= ((UINT32)BIT0 << Dci);
+ 
+       EpDesc = (USB_ENDPOINT_DESCRIPTOR *)((UINTN)EpDesc + EpDesc->Length);
+     }
+@@ -4192,13 +4363,26 @@ XhcSetInterface64 (
+     //   c. Initialize the Endpoint Context data structure.
+     //
+     Dci = XhcInitializeEndpointContext64 (Xhc, SlotId, DeviceSpeed, InputContext, IfDescSet);
+-    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
++    if (Dci == 0) {
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++      DaliNativeXhciCommandFailed (Xhc, EFI_OUT_OF_RESOURCES);
++#endif
++      return EFI_OUT_OF_RESOURCES;
++    }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }
+ 
+     InputContext->InputControlContext.Dword2 |= BIT0;
+     InputContext->Slot.ContextEntries         = MaxDci;
++#ifdef DALI_NATIVE_XHCI
++    if ((DeviceSpeed == EFI_USB_SPEED_HIGH) &&
++        (Xhc->UsbDevContext[SlotId].DevDesc.DeviceProtocol == 2) &&
++        (IfDescSet->InterfaceClass == 9)) {
++      InputContext->Slot.MTT = (IfDescSet->InterfaceProtocol == 2);
++    }
++#endif
+     //
+     // XHCI 4.3.6 - Setting Alternate Interfaces
+     // 5) Issue and successfully complete a Configure Endpoint Command.
+@@ -4219,7 +4403,19 @@ XhcSetInterface64 (
+                );
+     if (EFI_ERROR (Status) || (EvtTrb == NULL)) {
+       DEBUG ((DEBUG_ERROR, "SetInterface64: Config Endpoint Failed, Status = %r\n", Status));
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciRollbackEndpointConfiguration (Xhc, SlotId);
++      DaliNativeXhciCommandFailed (Xhc, EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR);
++      if (!EFI_ERROR (Status)) { Status = EFI_DEVICE_ERROR; }
++#endif
+     } else {
++#ifdef DALI_NATIVE_XHCI
++      Status = DaliNativeXhciCommitEndpointConfiguration (Xhc, SlotId);
++      if (EFI_ERROR (Status)) {
++        DaliNativeXhciCommandFailed (Xhc, Status);
++        return Status;
++      }
++#endif
+       //
+       // Update the active AlternateSetting.
+       //
