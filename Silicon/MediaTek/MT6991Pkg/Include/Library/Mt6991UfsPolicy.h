@@ -31,6 +31,14 @@ EFI_STATUS Mt6991UfsReadOnlyCommand (CONST MT6991_UFS_GEOMETRY *Geometry,
   UINT8 Lun, CONST UINT8 *Cdb, UINTN CdbBytes, UINT32 ReadBytes);
 EFI_STATUS Mt6991UfsScratchWriteCommand (CONST MT6991_UFS_GEOMETRY *Geometry,
   CONST MT6991_UFS_SCRATCH_GRANT *Grant, UINT8 Lun, CONST UINT8 *Cdb, UINTN CdbBytes, UINT32 WriteBytes);
+// Maps a scratch BlockIo-relative request to an absolute UFS LBA. Reads and
+// writes are constrained to the same one-MiB grant window; writes additionally
+// require a known, clear Unit Descriptor write-protection state.
+EFI_STATUS Mt6991UfsScratchMapRange (CONST MT6991_UFS_GEOMETRY *Geometry,
+  CONST MT6991_UFS_SCRATCH_GRANT *Grant, UINT8 Lun, UINT64 RelativeLba,
+  UINTN BufferBytes, BOOLEAN Write, UINT64 *AbsoluteLba, UINT64 *BlockCount);
+EFI_STATUS Mt6991UfsBuildReadWriteCdb (BOOLEAN Write, UINT64 Lba, UINT64 BlockCount,
+  UINT8 Cdb[16], UINTN *CdbBytes);
 EFI_STATUS Mt6991UfsReadOnlyQuery (UINT8 Opcode, UINT8 Idn, UINT8 Index,
   UINT8 Selector, UINT32 Bytes, BOOLEAN InitAllowed);
 // Called beneath PassThru, immediately before ringing slot 0. Only exact owned

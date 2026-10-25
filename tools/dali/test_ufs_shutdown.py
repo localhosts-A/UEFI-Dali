@@ -42,6 +42,8 @@ typedef char CHAR8; typedef bool BOOLEAN; typedef uint64_t EFI_STATUS;
 #define EFI_ALREADY_STARTED 20
 #define EFI_ERROR(s) ((s)!=0)
 #define MAX_UINTN SIZE_MAX
+#define MAX_UINT16 UINT16_MAX
+#define MAX_UINT32 UINT32_MAX
 #define MAX_UINT64 UINT64_MAX
 #define EFI_PAGE_SIZE 4096
 #define EFI_SIZE_TO_PAGES(n) (((n)+4095UL)/4096UL)

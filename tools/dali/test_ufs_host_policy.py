@@ -14,7 +14,7 @@ class UfsHostPolicyTests(unittest.TestCase):
         dma_test.UfsDmaTests.setUpClass()
         base = Path(dma_test.UfsDmaTests.temp.name)
         with (base / 'Uefi.h').open('a') as f:
-            f.write('\ntypedef uint16_t UINT16; typedef char CHAR8;\n#define EFI_WRITE_PROTECTED 8\n')
+            f.write('\ntypedef uint16_t UINT16; typedef char CHAR8;\n#define MAX_UINT16 UINT16_MAX\n#define MAX_UINT32 UINT32_MAX\n#define EFI_WRITE_PROTECTED 8\n')
         with (base / 'Library/BaseMemoryLib.h').open('a') as f:
             f.write('#define CompareMem memcmp\n')
         (base / 'policy.c').write_text(r'''
@@ -74,6 +74,32 @@ uint64_t scratch(unsigned mode) {
  }
  if(cdb[0]==0x2a){be32(cdb+2,lba);be16(cdb+7,count);}else{be64(cdb+2,lba);be32(cdb+10,count);}
  return Mt6991UfsScratchWriteCommand(g,&grant,lun,cdb,cdbBytes,bytes);
+}
+static void grant_init(MT6991_UFS_SCRATCH_GRANT *grant);
+uint64_t scratch_map(unsigned mode,uint64_t *absolute,uint64_t *count) {
+ MT6991_UFS_GEOMETRY g[8]={0};MT6991_UFS_SCRATCH_GRANT grant={0};
+ grant_init(&grant);g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true,true,false};
+ uint64_t lba=0;unsigned bytes=4096;bool write=false;
+ switch(mode){
+ case 1:lba=255;break;                 /* final block in the one-MiB window */
+ case 2:lba=255;bytes=8192;break;      /* range spills into the tail guard */
+ case 3:lba=256;break;                 /* first block after the grant */
+ case 4:bytes=4095;break;              /* unaligned transfer */
+ case 5:g[2].BlockSize=512;break;      /* runtime geometry mismatch */
+ case 6:g[2].WriteProtectionKnown=false;write=true;break;
+ case 7:g[2].WriteProtected=true;write=true;break;
+ case 8:write=true;break;
+ case 9:lba=UINT64_MAX;break;
+ case 10:g[2].Blocks--;break;
+ }
+ return Mt6991UfsScratchMapRange(g,&grant,2,lba,bytes,write,absolute,count);
+}
+uint64_t build_rw(unsigned mode,unsigned char *cdb,uint64_t *bytes) {
+ uint64_t lba=434432,count=1;bool write=false;
+ switch(mode){case 1:lba=UINT64_C(0x100000000);break;case 2:write=true;break;
+ case 3:lba=UINT64_C(0x100000000);write=true;break;case 4:count=0;break;
+ case 5:count=UINT64_C(0x100000000);break;case 6:lba=UINT64_MAX;count=2;break;}
+ size_t length=0;uint64_t status=Mt6991UfsBuildReadWriteCdb(write,lba,count,cdb,&length);*bytes=length;return status;
 }
 static void grant_init(MT6991_UFS_SCRATCH_GRANT *grant) {
  memset(grant,0,sizeof *grant);grant->Enabled=true;grant->Lun=2;
@@ -172,6 +198,10 @@ void wire(unsigned which,uint64_t *out) {
         cls.lib.command.restype = ctypes.c_uint64
         cls.lib.scratch.argtypes = [ctypes.c_uint]
         cls.lib.scratch.restype = ctypes.c_uint64
+        cls.lib.scratch_map.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
+        cls.lib.scratch_map.restype = ctypes.c_uint64
+        cls.lib.build_rw.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(ctypes.c_uint64)]
+        cls.lib.build_rw.restype = ctypes.c_uint64
         cls.lib.Mt6991UfsBoundTimeout.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
         cls.lib.Mt6991UfsBoundTimeout.restype = ctypes.c_uint64
 
@@ -244,6 +274,38 @@ void wire(unsigned which,uint64_t *out) {
             with self.subTest(mode=mode): self.assertEqual(self.lib.scratch(mode), 8)
         for mode in (5, 20, 21, 22, 23, 24, 25, 26):
             with self.subTest(mode=mode): self.assertEqual(self.lib.scratch(mode), 2)
+
+    def test_scratch_blockio_translation_is_bounded_and_requires_known_wp_for_writes(self):
+        absolute = ctypes.c_uint64(); count = ctypes.c_uint64()
+        self.assertEqual(self.lib.scratch_map(0, ctypes.byref(absolute), ctypes.byref(count)), 0)
+        self.assertEqual((absolute.value, count.value), (434432, 1))
+        self.assertEqual(self.lib.scratch_map(1, ctypes.byref(absolute), ctypes.byref(count)), 0)
+        self.assertEqual((absolute.value, count.value), (434687, 1))
+        self.assertEqual(self.lib.scratch_map(8, ctypes.byref(absolute), ctypes.byref(count)), 0)
+        self.assertEqual((absolute.value, count.value), (434432, 1))
+        for mode, status in ((2, 2), (3, 2), (4, 4), (5, 8), (6, 8), (7, 8), (9, 2), (10, 8)):
+            with self.subTest(mode=mode):
+                absolute.value = count.value = 123
+                self.assertEqual(self.lib.scratch_map(mode, ctypes.byref(absolute), ctypes.byref(count)), status)
+                self.assertEqual((absolute.value, count.value), (0, 0))
+
+    def test_scratch_blockio_builds_exact_rw10_and_rw16_cdbs(self):
+        for mode, expected, length in (
+            (0, bytes.fromhex('28000006a10000000100'), 10),
+            (1, bytes.fromhex('88000000000100000000000000010000'), 16),
+            (2, bytes.fromhex('2a000006a10000000100'), 10),
+            (3, bytes.fromhex('8a000000000100000000000000010000'), 16),
+        ):
+            cdb = (ctypes.c_ubyte * 16)(); cdb_bytes = ctypes.c_uint64()
+            self.assertEqual(self.lib.build_rw(mode, cdb, ctypes.byref(cdb_bytes)), 0)
+            self.assertEqual(cdb_bytes.value, length)
+            self.assertEqual(bytes(cdb[:length]), expected)
+        for mode in (4, 5, 6):
+            cdb = (ctypes.c_ubyte * 16)(); cdb_bytes = ctypes.c_uint64()
+            cdb_bytes.value = 9
+            self.assertEqual(self.lib.build_rw(mode, cdb, ctypes.byref(cdb_bytes)), 2)
+            self.assertEqual(cdb_bytes.value, 0)
+            self.assertEqual(bytes(cdb), bytes(16))
 
     def test_scratch_wire_write_is_default_denied_and_authorized_data_is_staged_before_submission(self):
         denied = self.wire(28)

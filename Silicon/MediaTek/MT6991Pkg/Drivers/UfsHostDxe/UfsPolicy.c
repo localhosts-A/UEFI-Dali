@@ -109,6 +109,52 @@ EFI_STATUS Mt6991UfsScratchWriteCommand (CONST MT6991_UFS_GEOMETRY *G,
   return EFI_SUCCESS;
 }
 
+EFI_STATUS Mt6991UfsScratchMapRange (CONST MT6991_UFS_GEOMETRY *G,
+  CONST MT6991_UFS_SCRATCH_GRANT *Grant, UINT8 Lun, UINT64 RelativeLba,
+  UINTN BufferBytes, BOOLEAN Write, UINT64 *AbsoluteLba, UINT64 *BlockCount) {
+  UINT64 Count;
+  if (AbsoluteLba != NULL) { *AbsoluteLba = 0; }
+  if (BlockCount != NULL) { *BlockCount = 0; }
+  if (AbsoluteLba == NULL || BlockCount == NULL) { return EFI_INVALID_PARAMETER; }
+  if (BufferBytes == 0 || Lun >= 8 || !ValidScratchGrant (Grant) || G == NULL ||
+      !G[Lun].Valid || Lun != Grant->Lun || G[Lun].BlockSize != Grant->BlockSize ||
+      G[Lun].Blocks != Grant->CapacityBlocks) { return EFI_WRITE_PROTECTED; }
+  if (G[Lun].BlockSize == 0 || BufferBytes % G[Lun].BlockSize != 0) { return EFI_BAD_BUFFER_SIZE; }
+  if (Write && (!G[Lun].WriteProtectionKnown || G[Lun].WriteProtected)) { return EFI_WRITE_PROTECTED; }
+  Count = BufferBytes / G[Lun].BlockSize;
+  if (Count == 0 || RelativeLba >= Grant->ScratchBlocks ||
+      Count > Grant->ScratchBlocks - RelativeLba ||
+      RelativeLba > MAX_UINT64 - Grant->ScratchStartLba ||
+      Count > MAX_UINT64 / G[Lun].BlockSize) { return EFI_INVALID_PARAMETER; }
+  *AbsoluteLba = Grant->ScratchStartLba + RelativeLba;
+  *BlockCount = Count;
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS Mt6991UfsBuildReadWriteCdb (BOOLEAN Write, UINT64 Lba, UINT64 BlockCount,
+  UINT8 Cdb[16], UINTN *CdbBytes) {
+  UINT64 LastLba;
+  if (CdbBytes != NULL) { *CdbBytes = 0; }
+  if (Cdb != NULL) { ZeroMem (Cdb, 16); }
+  if (Cdb == NULL || CdbBytes == NULL || BlockCount == 0 || BlockCount > MAX_UINT32 ||
+      BlockCount - 1 > MAX_UINT64 - Lba) { return EFI_INVALID_PARAMETER; }
+  LastLba = Lba + BlockCount - 1;
+  if (LastLba <= MAX_UINT32 && BlockCount <= MAX_UINT16) {
+    Cdb[0] = Write ? 0x2A : 0x28;
+    Cdb[2] = (UINT8)(Lba >> 24); Cdb[3] = (UINT8)(Lba >> 16);
+    Cdb[4] = (UINT8)(Lba >> 8); Cdb[5] = (UINT8)Lba;
+    Cdb[7] = (UINT8)(BlockCount >> 8); Cdb[8] = (UINT8)BlockCount;
+    *CdbBytes = 10;
+  } else {
+    Cdb[0] = Write ? 0x8A : 0x88;
+    for (UINTN Index = 0; Index < 8; ++Index) { Cdb[2 + Index] = (UINT8)(Lba >> (56 - Index * 8)); }
+    Cdb[10] = (UINT8)(BlockCount >> 24); Cdb[11] = (UINT8)(BlockCount >> 16);
+    Cdb[12] = (UINT8)(BlockCount >> 8); Cdb[13] = (UINT8)BlockCount;
+    *CdbBytes = 16;
+  }
+  return EFI_SUCCESS;
+}
+
 EFI_STATUS Mt6991UfsReadOnlyQuery (UINT8 Op, UINT8 Id, UINT8 Index,
   UINT8 Selector, UINT32 Bytes, BOOLEAN InitAllowed) {
   if (Selector != 0) { return EFI_ACCESS_DENIED; }
