@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import socket
 import struct
@@ -83,6 +84,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--firmware', type=Path, default=Path('/usr/share/edk2/aarch64/QEMU_EFI.fd'))
     parser.add_argument('--vars', type=Path, default=Path('/usr/share/edk2/aarch64/QEMU_VARS.fd'))
+    parser.add_argument('--menu-layout', choices=('landscape', 'portrait'), default='landscape')
     args = parser.parse_args()
     for tool in ('qemu-system-aarch64', 'mkfs.fat', 'mcopy', 'mmd', 'mdir'):
         if not shutil.which(tool):
@@ -100,11 +102,42 @@ def main():
         with image.open('xb') as f:
             f.truncate(96 * MIB)
         call('mkfs.fat', '-F', '32', '-n', label, image)
-    call('mmd', '-i', boot, '::/EFI', '::/EFI/BOOT', '::/EFI/DALI')
+    call('mmd', '-i', boot, '::/EFI', '::/EFI/BOOT', '::/EFI/DALI', '::/EFI/UniXNU')
     for name, item in manifest['artifacts'].items():
         call('mcopy', '-i', boot, item['path'], '::/EFI/BOOT/BOOTAA64.EFI' if name == 'UsbQemuTest' else f'::/EFI/DALI/{name}.efi')
     marker = run / 'USBTEST.TAG'; marker.write_bytes(b'DALI USB QEMU ONLY\n')
     call('mcopy', '-i', store, marker, '::/USBTEST.TAG')
+    config = run / 'unixnu.toml'
+    config.write_text('''version = 1
+[boot]
+timeout = 20
+default = "must-not-boot"
+rotate = 0
+connect_all = false
+[ui]
+title = "USB QEMU menu"
+console = "graphics"
+scale = 1
+logo = false
+layout = "''' + args.menu_layout + '''"
+[[entry]]
+id = "must-not-boot"
+title = "Unselected entry"
+path = "missing.efi"
+[[entry]]
+id = "usb-menu-confirm"
+title = "USB input test"
+type = "action"
+action = "exit"
+confirm = "Confirm USB input test"
+confirm_titles = ["Confirm USB test"]
+confirm_args = ["checked"]
+[[entry]]
+id = "also-not-booted"
+title = "Another unselected entry"
+path = "also-missing.efi"
+''')
+    call('mcopy', '-i', boot, config, '::/EFI/UniXNU/unixnu.toml')
     boot_disk, storage = run / 'boot.img', run / 'usb.img'
     disk(boot, boot_disk); disk(store, storage)
     vars_template_sha256 = hashlib.sha256(args.vars.read_bytes()).hexdigest()
@@ -124,6 +157,8 @@ def main():
                '-device', 'ramfb', '-nic', 'none', '-display', 'none', '-monitor', 'none', '-no-reboot',
                '-serial', f'file:{serial}', '-qmp', f'unix:{qmp_path},server=on,wait=off']
     qmp = None; sent = released = False
+    menu_actions = []
+    menu_pattern = r'menu: pointer-ready x=(\d+) y=(\d+) step=(\d+) rows=(\d+) first=(\d+) cx=(\d+) cy=(\d+) confirm=(\d+)'
     with (run / 'qemu.log').open('wb') as output:
         proc = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
         try:
@@ -141,6 +176,41 @@ def main():
                 if 'DALI_USB_MOUSE_DOWN' in log and not released and qmp:
                     qmp.execute('input-send-event', {'events': [{'type': 'btn', 'data': {'down': False, 'button': 'left'}}]})
                     released = True
+                ready = list(re.finditer(menu_pattern, log))
+                if len(ready) > 4:
+                    raise RuntimeError('unexpected additional menu; previous input did not select/confirm correctly')
+                if qmp and len(ready) > len(menu_actions):
+                    x, y, step, rows, first, cx, cy, confirm = map(int, ready[len(menu_actions)].groups())
+                    number = len(menu_actions)
+                    if confirm != (number % 2) or first != 0 or rows < 2:
+                        raise RuntimeError('unexpected production menu layout/confirmation sequence')
+                    menu_actions.append({'number': number, 'phase': 0, 'time': time.monotonic(),
+                                         'x': x, 'y': y + (1 if number in (0, 1) else 0) * step, 'cx': cx, 'cy': cy})
+                    if number == 2:
+                        qmp.execute('send-key', {'keys': [{'type': 'qcode', 'data': 'down'}], 'hold-time': 100})
+                    else:
+                        qmp.execute('input-send-event', {'events': [
+                            {'type': 'rel', 'data': {'axis': 'x', 'value': 1}},
+                            {'type': 'btn', 'data': {'down': False, 'button': 'left'}}]})
+                if qmp and menu_actions:
+                    action = menu_actions[-1]; elapsed = time.monotonic() - action['time']
+                    if action['number'] == 2:
+                        if action['phase'] == 0 and elapsed >= 0.4:
+                            qmp.execute('screendump', {'filename': str(run / 'menu-keyboard.png'), 'format': 'png'})
+                            qmp.execute('send-key', {'keys': [{'type': 'qcode', 'data': 'ret'}], 'hold-time': 100})
+                            action['phase'] = 3
+                    elif action['phase'] == 0 and elapsed >= 0.3:
+                        qmp.execute('input-send-event', {'events': [
+                            {'type': 'rel', 'data': {'axis': 'x', 'value': action['x'] - action['cx'] - 1}},
+                            {'type': 'rel', 'data': {'axis': 'y', 'value': action['y'] - action['cy']}}]})
+                        action['phase'] = 1; action['time'] = time.monotonic()
+                    elif action['phase'] == 1 and elapsed >= 0.5:
+                        qmp.execute('screendump', {'filename': str(run / f"menu-{action['number']}.png"), 'format': 'png'})
+                        qmp.execute('input-send-event', {'events': [{'type': 'btn', 'data': {'down': True, 'button': 'left'}}]})
+                        action['phase'] = 2; action['time'] = time.monotonic()
+                    elif action['phase'] == 2 and elapsed >= 0.25:
+                        qmp.execute('input-send-event', {'events': [{'type': 'btn', 'data': {'down': False, 'button': 'left'}}]})
+                        action['phase'] = 3
                 time.sleep(0.05)
             if proc.poll() is None:
                 raise TimeoutError('USB QEMU gate timed out')
@@ -155,11 +225,17 @@ def main():
             qmp_path.unlink(missing_ok=True)
     log = serial.read_text(errors='replace')
     required = ('DALI_USB_HID_READY', 'DALI_USB_MOUSE_DOWN', 'DALI_USB_HID_PASS',
-                'DALI_USB_FAT_REMOUNT_PASS', 'DALI_USB_SOURCE_BINDINGS_PASS', 'DALI_USB_QEMU_PASS')
+                'DALI_USB_MENU_PASS', 'DALI_USB_FAT_REMOUNT_PASS', 'DALI_USB_SOURCE_BINDINGS_PASS', 'DALI_USB_QEMU_PASS')
     positions = [log.find(marker) for marker in required]
     if not sent or not released or any(log.count(marker) != 1 for marker in required) or \
             positions != sorted(positions) or 'DALI_USB_FAIL' in log:
         raise RuntimeError(f'incomplete gate: inspect {serial}')
+    menu_proof = ('menu: click, choosing 1 confirm=0', 'menu: click, choosing 1 confirm=1',
+                  'menu: entry 1 not confirmed', 'menu: enter, booting 1',
+                  'menu: click, choosing 0 confirm=1', "menu: confirmed 'usb-menu-confirm' choice 0", 'action: exit')
+    if len(menu_actions) != 4 or any(a['phase'] != 3 for a in menu_actions) or \
+            any(log.count(m) != 1 for m in menu_proof) or [log.find(m) for m in menu_proof] != sorted(log.find(m) for m in menu_proof):
+        raise RuntimeError('production menu mouse/cancel/keyboard/fresh-confirm flow did not pass')
     readback = run / 'readback.bin'
     call('mcopy', '-i', f'{storage}@@1048576', '::/UEFIUSB.DAT', readback)
     expected = bytearray((i * 37 + 11) & 255 for i in range(32768))
@@ -180,6 +256,9 @@ def main():
               'boot_image_sha256': hashlib.sha256(boot_disk.read_bytes()).hexdigest(),
               'usb_image_sha256': hashlib.sha256(storage.read_bytes()).hexdigest(),
               'fat_directory': sorted(files),
+              'menu_layout': args.menu_layout, 'menu_config_sha256': hashlib.sha256(config.read_bytes()).hexdigest(),
+              'production_menu_flow': list(menu_proof),
+              'menu_screenshots': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in run.glob('menu-*.png')},
               'hub_scope': 'QEMU usb-hub full-speed, xHCI USB2 ports only; no physical high-speed hub qualification'}
     (run / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))

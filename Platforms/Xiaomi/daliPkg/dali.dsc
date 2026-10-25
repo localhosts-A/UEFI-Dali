@@ -33,6 +33,7 @@
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled|$(DALI_UFS_PROBE)
   gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|$(DALI_UFS_PROBE_TOKEN)
   gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUPointerInputEnabled|$(DALI_USB_HOST_STACK)
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
   gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC5000000
   gArmPlatformTokenSpaceGuid.PcdCPUCorePrimaryStackSize|0x40000

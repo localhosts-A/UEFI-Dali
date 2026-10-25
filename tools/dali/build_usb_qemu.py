@@ -36,7 +36,8 @@ def main():
     args = parser.parse_args()
     output = args.output.resolve()
     edk = root / 'Mu_Basecore'
-    if output.is_relative_to(root) or root.is_relative_to(output):
+    generic = root.parent / 'UniXNU'
+    if output.is_relative_to(root) or root.is_relative_to(output) or output.is_relative_to(generic) or generic.is_relative_to(output):
         parser.error('output must be separate from firmware source/dependencies')
     tools = edk / 'BaseTools'
     clang = shutil.which('clang')
@@ -49,7 +50,7 @@ def main():
         shutil.copyfile(tools / 'Conf' / (name + '.template'), conf / (name + '.txt'))
     env = os.environ.copy()
     env.update(WORKSPACE=str(output), CONF_PATH=str(conf), EDK_TOOLS_PATH=str(tools),
-               PACKAGES_PATH=os.pathsep.join(map(str, (root / 'Platforms/Xiaomi', root / 'Silicon/Silicium', edk))),
+               PACKAGES_PATH=os.pathsep.join(map(str, (root / 'Platforms/Xiaomi', root / 'Silicon/Silicium', generic / 'package', edk))),
                CLANG_BIN=str(Path(clang).parent) + '/', PYTHON_COMMAND=sys.executable)
     env['PATH'] = os.pathsep.join((str(tools / 'BinWrappers/PosixLike'), str(tools / 'Source/C/bin'), env.get('PATH', '')))
     command = [str(tools / 'BinWrappers/PosixLike/build'), '-p', 'daliPkg/UsbQemu.dsc',
@@ -77,6 +78,7 @@ def main():
               'mu_reviewed_diff_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=edk)).hexdigest(),
               'mu_basecore_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=edk, text=True).strip(),
               'source_tree': source_tree(root), 'python': sys.version,
+              'generic_source_tree': source_tree(generic),
               'clang': subprocess.check_output([clang, '--version'], text=True).splitlines()[0]}
     (output / 'usb-qemu-build.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))

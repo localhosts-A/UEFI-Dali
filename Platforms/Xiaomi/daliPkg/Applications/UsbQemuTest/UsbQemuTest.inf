@@ -8,8 +8,10 @@
 [Sources]
   UsbQemuTest.c
 [Packages]
+  UniXNUPkg/UniXNUPkg.dec
   MdePkg/MdePkg.dec
 [LibraryClasses]
+  UniXNULib
   UefiApplicationEntryPoint
   UefiBootServicesTableLib
   UefiRuntimeServicesTableLib

@@ -25,6 +25,13 @@ The boot ESP uses virtio. The separate test GPT/FAT32 disk uses only USB BOT,
 behind QEMU's full-speed hub on xHCI USB2 ports. Keyboard/mouse also traverse
 the hub. QMP injects a key press/release and relative pointer movement/button
 press/release. Source SimpleTextIn/SimplePointer and USB GET_REPORT are checked.
+The application also invokes the complete public UniXNURun boot manager, with
+an explicit test-only system ConIn binding to the source keyboard. It reads a
+fresh boot-ESP config, selects by mouse, cancels the confirmation, selects again
+by keyboard, then confirms with a new mouse click. Ordered production logs and
+screenshots are required. The source graphics menu and confirmation are tested
+in both layouts (`--menu-layout portrait` selects the other run); this does not
+qualify native Dali console aggregation or a physical portrait display.
 FAT cases create, read, modify, flush, rename, delete a nonempty file, close,
 disconnect/rebind the mass-storage/filesystem stack and read back the contents.
 After shutdown, mtools reads the resulting FAT32 partition and SHA256 verifies
@@ -33,6 +40,7 @@ Each run preserves images, serial/QEMU logs and a separate result.json. Failure
 never writes a passing result. The helper processes only its own QEMU child.
 The build manifest records PE architecture/subsystem checks, source commits,
 tracked diffs, untracked file hashes and initialized nested submodule identities.
+The generic UniXNU source tree is independently identified as a build input.
 The run records the external firmware and initial variable-template hashes and
 requires exactly one copy of each serial milestone in order.
 
@@ -42,6 +50,9 @@ false in both DeviceBuild.py and dali.dsc. DiskIo/Fat/English already belong to
 the base FV. This opt-in assembles the class stack; native MT6991 port resources,
 MMIO-to-HC registration, qualified DMA, roles, CDC and EBS handoff remain separate
 implementation gates. The QEMU test application is never placed in the Dali FV.
+The same flag explicitly enables the default-false UniXNU pointer-input PCD;
+the production menu reacquires physical input protocols, clears button history
+on reinstall/stream changes and requires a fresh same-item press/release.
 The inherited DSC still compiles several USB modules when the FV switch is off.
 After a full opt-in build, verify the actual final compressed FD against compiled
 PE images with:

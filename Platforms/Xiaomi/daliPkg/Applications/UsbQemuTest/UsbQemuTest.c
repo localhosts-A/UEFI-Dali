@@ -15,11 +15,12 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 #include <Library/UefiLib.h>
+#include <Library/UniXNULib.h>
 
 enum { Xhc, Bus, Kb, Mouse, Mass, Disk, Partition, Fat, DriverCount };
 STATIC CONST CHAR16 *Names[] = {L"XhciDxe",L"UsbBusDxe",L"UsbKbDxe",L"UsbMouseDxe",
   L"UsbMassStorageDxe",L"DiskIoDxe",L"PartitionDxe",L"Fat"};
-STATIC EFI_HANDLE Drivers[DriverCount + 1], Controller, Hub, MassHandle;
+STATIC EFI_HANDLE Drivers[DriverCount + 1], Controller, Hub, MassHandle, KeyboardHandle;
 STATIC EFI_DEVICE_PATH_PROTOCOL *MassPath;
 STATIC EFI_SIMPLE_TEXT_INPUT_PROTOCOL *Keyboard;
 STATIC EFI_SIMPLE_POINTER_PROTOCOL *Pointer;
@@ -162,7 +163,7 @@ STATIC EFI_STATUS FindInputs (VOID) {
     if (Desc.InterfaceClass == 3 && Desc.InterfaceSubClass == 1 && Desc.InterfaceProtocol == 1 && Bound (Handles[I], Drivers[Kb])) {
       Keyboards++;
       Status = gBS->HandleProtocol (Handles[I], &gEfiSimpleTextInProtocolGuid, (VOID **)&Keyboard);
-      if (!EFI_ERROR (Status)) { KeyboardUsb = Usb; KeyboardInterface = Desc.InterfaceNumber; }
+      if (!EFI_ERROR (Status)) { KeyboardUsb = Usb; KeyboardInterface = Desc.InterfaceNumber; KeyboardHandle = Handles[I]; }
     }
     if (Desc.InterfaceClass == 3 && Desc.InterfaceSubClass == 1 && Desc.InterfaceProtocol == 2 && Bound (Handles[I], Drivers[Mouse])) {
       Mice++;
@@ -330,6 +331,18 @@ STATIC EFI_STATUS VerifySourceBindings (VOID) {
   for (UINTN J = Kb; J < DriverCount; J++) { if (!Seen[J]) { Print (L"DALI_USB_UNBOUND %s\n", Names[J]); return EFI_NOT_FOUND; } }
   Print (L"DALI_USB_SOURCE_BINDINGS_PASS\n"); return EFI_SUCCESS;
 }
+STATIC EFI_STATUS MenuTest (EFI_HANDLE Image) {
+  // QEMU-only consumer binding: use the actual source keyboard protocol as
+  // system ConIn while exercising the public, complete UniXNU boot manager.
+  EFI_SIMPLE_TEXT_INPUT_PROTOCOL *Previous = gST->ConIn;
+  EFI_HANDLE PreviousHandle = gST->ConsoleInHandle; UINT32 Crc = gST->Hdr.CRC32;
+  gST->ConIn = Keyboard; gST->ConsoleInHandle = KeyboardHandle; gST->Hdr.CRC32 = 0;
+  EFI_STATUS Status = gBS->CalculateCrc32 (gST, gST->Hdr.HeaderSize, &gST->Hdr.CRC32);
+  if (!EFI_ERROR (Status)) { Status = UniXNURun (Image, UniXNUHostApplication); }
+  gST->ConIn = Previous; gST->ConsoleInHandle = PreviousHandle; gST->Hdr.CRC32 = Crc;
+  if (!EFI_ERROR (Status)) { Print (L"DALI_USB_MENU_PASS\n"); }
+  return Status;
+}
 EFI_STATUS EFIAPI UsbQemuTestMain (EFI_HANDLE Image, EFI_SYSTEM_TABLE *SystemTable) {
   (VOID)SystemTable;
   Stage = "load"; EFI_STATUS Status = LoadDrivers (Image);
@@ -338,6 +351,7 @@ EFI_STATUS EFIAPI UsbQemuTestMain (EFI_HANDLE Image, EFI_SYSTEM_TABLE *SystemTab
   if (!EFI_ERROR (Status)) { Stage = "rebind"; Status = RebindClasses (); }
   if (!EFI_ERROR (Status)) { Stage = "enumerate"; Status = FindInputs (); }
   if (!EFI_ERROR (Status)) { Stage = "hid"; Status = HidTest (); }
+  if (!EFI_ERROR (Status)) { Stage = "menu"; Status = MenuTest (Image); }
   if (!EFI_ERROR (Status)) { Stage = "files"; Status = FileTest (); }
   if (!EFI_ERROR (Status)) { Stage = "bindings"; Status = VerifySourceBindings (); }
   if (!EFI_ERROR (Status)) { Stage = "stop"; Status = gBS->DisconnectController (Controller, NULL, NULL); }
