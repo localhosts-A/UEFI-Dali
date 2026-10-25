@@ -48,12 +48,14 @@ def main():
     required = {
         'UsbCoreLib': (('UsbCore', 'UsbMtu3Qmu', 'UsbMtu3Ep0', 'UsbMtu3Endpoints', 'UsbMtu3Device'),
                        ('usb_cdc_control', 'usb_bot_command', 'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init', 'usb_mtu3_device_init')),
-        'DaliUsbLib': (('DaliUsbPmif', 'DaliUsbTypec', 'DaliUsbMt6379Repeater', 'DaliUsbNxpRepeater', 'DaliUsbGpio', 'DaliUsbI2c', 'DaliUsbPhy', 'DaliUsbDomains', 'DaliUsbResources', 'DaliUsbIppc'),
+        'DaliUsbLib': (('DaliUsbPmif', 'DaliUsbTypec', 'DaliUsbMt6379Repeater', 'DaliUsbNxpRepeater', 'DaliUsbGpio', 'DaliUsbI2c', 'DaliUsbPhy', 'DaliUsbDomains', 'DaliUsbResources', 'DaliUsbIppc', 'DaliUsbCalibration'),
                        ('dali_usb_pmif_init', 'dali_mt6379_read', 'dali_usb_typec_start', 'dali_usb_vbus_enable',
                         'dali_mt6379_repeater_power_on', 'dali_nxp_repeater_probe', 'dali_usb_gpio72_set',
                         'dali_usb_i2c6_init', 'dali_nxp_io_bind', 'dali_usb_phy_power_on', 'dali_usb_domains_power_on',
-                        'dali_usb_clocks_enable', 'dali_usb_hwrsc_enable', 'dali_usb_ippc_enable', 'dali_usb_ippc_stop')),
+                        'dali_usb_clocks_enable', 'dali_usb_hwrsc_enable', 'dali_usb_ippc_enable', 'dali_usb_ippc_stop', 'dali_usb_calibration_decode')),
         'DaliUsbPmicLib': (('UsbPmicLib',), ('DaliUsbPmicOpen', 'DaliUsbPmicClose')),
+        'DaliUsbPlatformLib': (('UsbCalibration',), ('DaliUsbReadCalibration',)),
+        'BaseFdtLib': (('fdt_check', 'FdtLib'), ('fdt_check_full', 'FdtGetProp')),
     }
     for name, (objects, symbols) in required.items():
         matches = sorted((output / 'Build').rglob(name + '.lib'))

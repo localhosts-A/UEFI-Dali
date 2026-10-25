@@ -1,0 +1,19 @@
+[Defines]
+  INF_VERSION = 0x00010019
+  BASE_NAME = DaliUsbPlatformLib
+  FILE_GUID = 5B71407F-9408-49A4-8699-1ECAEF70B9E3
+  MODULE_TYPE = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = DaliUsbPlatformLib
+[Sources]
+  UsbCalibration.c
+[Packages]
+  MdePkg/MdePkg.dec
+  daliPkg/dali.dec
+  UsbCore/UsbCore.dec
+  DaliUsb/DaliUsb.dec
+[LibraryClasses]
+  DaliUsbLib
+  FdtLib
+[BuildOptions]
+  *_*_*_CC_FLAGS = -DUNIXNU_USB_EDK2

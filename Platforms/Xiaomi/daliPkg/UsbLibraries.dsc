@@ -15,6 +15,7 @@
   UsbCoreLib|UsbCore/UsbCoreLib.inf
   DaliUsbLib|DaliUsb/DaliUsbLib.inf
   DaliUsbPmicLib|daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
+  DaliUsbPlatformLib|daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
   BaseLib|MdePkg/Library/BaseLib/BaseLib.inf
   BaseMemoryLib|MdePkg/Library/BaseMemoryLib/BaseMemoryLib.inf
   DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
@@ -28,3 +29,5 @@
   UsbCore/UsbCoreLib.inf
   DaliUsb/DaliUsbLib.inf
   daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
+  daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
+  MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
