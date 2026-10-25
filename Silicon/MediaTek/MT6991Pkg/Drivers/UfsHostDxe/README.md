@@ -68,11 +68,21 @@ contains that candidate. Media identity is checked around reads and sync.
 Each successful Flush must advance the host's validated device-SYNC completion
 counter by exactly one; a no-op Flush cannot qualify synchronization.
 
-147 host tests pass, including 14 production DMA/backend, 9 wire-policy,
+162 host tests pass, including 26 production controller, 14 DMA/backend, 9 wire-policy,
 12 production PassThru, 8 ScsiDisk media/sync, 8 BlockIo diagnostic and 4 host
 sync-completion tests and 5 physical-profile packaging tests. An explicitly
 enabled AArch64 build has compiled these changes. Software results do not
 qualify MT6991 hardware.
+
+The latest completed hardware trial (b67c24a6, firmware 67118fc) stopped before
+DMA: early acknowledgement of startup IS=4 was followed by IS=404/HCS=f with
+the same isolated PA LINERESET code. Original Android B/root/all 18 hashes were
+restored. The current controller defers sampling/ACK of that latched indication
+until actual LINK_STARTUP completion, then checks all layer errors and command
+result, acknowledges 404 once and requires clean IS. Its ordinary completion
+also rejects unrelated status arriving before ACK. The unchanged 500 ms bound,
+device-presence check, fatal handling and no-replay policy remain mandatory.
+This new control policy still requires a fresh-token hardware trial.
 
 The existing off/register-probe packager verifies the compiled disabled host
 inside the actual FD and refuses enabled physical-host builds. The separate

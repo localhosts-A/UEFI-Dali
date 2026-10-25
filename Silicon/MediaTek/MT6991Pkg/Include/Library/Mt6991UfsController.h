@@ -46,7 +46,8 @@ typedef struct {
   UINT64 SipStatus, RefClockCleanupStatus;
   BOOLEAN Attempted, Touched, Failed, Ready, Stopped;
   MT6991_UFS_UIC_SNAPSHOT UicFailure, LinkResetEvent;
-  BOOLEAN LinkResetAccepted, LinkResetAcked;
+  BOOLEAN LinkResetPending, LinkResetAccepted, LinkResetAcked;
+  UINT32 LinkResetFirstIs, LinkResetPolls;
   UINT32 SipSelector, SipArg1, SipArg2;
   UINT64 DeviceResetCleanupStatus;
   BOOLEAN DeviceResetAsserted, DeviceResetReleaseAttempted, DeviceResetReleased, DeviceResetCleanupAttempted;

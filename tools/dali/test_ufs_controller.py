@@ -59,33 +59,46 @@ typedef struct {
   uint64_t sip_trace[8]; uint32_t device_low,device_high,low_held,release_waited,flow_errors,error_reads;
   uint32_t stop_seen,stop_error_reads;
   uint32_t link_polls,event_acks,link_commands,late_injected,link_complete,link_started_at;
+  uint32_t early_event_acks,layer_reads_without_uccs,event_ack_value,after_ack_polls,late_completed_at;
 } Port;
 static uint32_t read32(size_t a, void *ctx) {
   Port *p=ctx; ++p->reads;
   if (a==HCI+0x20 && p->scenario==29 && p->uics==5 && p->hci[0x20/4]==0 && !p->late_injected) {
     p->late_injected=1; p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010; return 0;
   }
-  if (a==HCI+0x20 && p->scenario==45 && p->link_commands==1 && p->uics==6 && !p->late_injected) {
-    if (++p->link_polls>=50000) { p->late_injected=1; p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010; }
-  }
-  if (a==HCI+0x20 && p->link_commands==1 && p->uics==6 && p->event_acks) {
+  if (a==HCI+0x20 && p->link_commands==1 && p->uics==6) {
     ++p->link_polls;
-    if (!p->link_complete && ((p->scenario==25 && p->link_polls>=4) || p->scenario==31 || p->scenario==32 ||
-        (p->scenario==47 && p->stalled-p->link_started_at>=500000) ||
-        (p->scenario==48 && p->stalled-p->link_started_at>=500010))) {
-      p->link_complete=1;
-      p->hci[0x20/4]|=0x400; p->hci[0x30/4]=p->scenario==32 ? 8 : 9;
-      p->hci[0x98/4]=p->scenario==31 ? 10 : 0;
+    if (p->scenario==45 && !p->late_injected && p->link_polls>=50000) {
+      p->late_injected=1; p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010;
     }
-    if (p->scenario==26) { p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010; }
-    if (p->scenario==46 && p->link_polls>=4) { p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010; }
-    if (p->scenario==33) p->hci[0x20/4]=0x10000;
+    if (p->scenario==50 && p->link_polls==3) p->hci[0x20/4]=0;
+    if (!p->link_complete && (((p->scenario==25 || p->scenario==31 || p->scenario==32 ||
+        p->scenario==49 || p->scenario==50 || p->scenario==59) && p->link_polls>=4) ||
+        (p->scenario==47 && p->stalled-p->link_started_at>=500000))) {
+      p->link_complete=1;
+      p->hci[0x20/4]|=0x400; p->hci[0x30/4]=p->scenario==32 ? 8 : p->scenario==49 ? 15 : 9;
+      p->hci[0x98/4]=p->scenario==31 ? 10 : 0;
+      if (p->scenario==59) p->hci[0x40/4]=0x80000001;
+    }
+    if (p->scenario==33 && p->link_polls>=4) p->hci[0x20/4]=0x10004;
+    if (p->event_acks) {
+      ++p->after_ack_polls;
+      if (p->scenario==26 || (p->scenario==46 && p->after_ack_polls>=3)) {
+        p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010;
+      }
+    }
   }
   if (a==AO+0x104 || a==AO+4) return 0;
   if (a==AO+0x148) return p->scenario==16 ? 0 : p->reset_assert;
   if (a==AO+0x14c) return p->scenario==16 ? 0 : p->reset_deassert;
   if (a>=HCI+0x38 && a<=HCI+0x48) {
+    if (p->link_commands==1 && p->uics==6 && !(p->hci[0x20/4]&0x400)) ++p->layer_reads_without_uccs;
     ++p->error_reads; uint32_t value=p->hci[(a-HCI)/4]; p->hci[(a-HCI)/4]=0; return value;
+  }
+  // Inject after the final UCCS poll, before the following ACK. Neither the
+  // plain nor the isolated-LINERESET completion may hide this unrelated bit.
+  if (a==HCI+0x9c && p->uics==6 && (p->scenario==60 || p->scenario==61)) {
+    p->hci[0x20/4]|=8; p->late_injected=1;
   }
   return a>=HCI && a<HCI+0x2a00 ? p->hci[(a-HCI)/4] : UINT32_MAX;
 }
@@ -96,10 +109,24 @@ static bool write32(size_t a, uint32_t v, void *ctx) {
   if (a==AO+0x14c) { p->reset_deassert=p->scenario==16 ? p->reset_deassert|v : v; return true; }
   if (a<HCI || a>=HCI+0x2a00) return false;
   unsigned o=(a-HCI)/4;
-  if (a==HCI+0x24 && p->uics && !p->stop_seen) { p->stop_seen=1; p->stop_error_reads=p->error_reads; }
+  if (a==HCI+0x24 && p->uics && !p->stop_seen) {
+    p->stop_seen=1; p->stop_error_reads=p->error_reads;
+    // Time can still advance while handling a timeout. Deliver completion
+    // during stop, 10us after the last allowed poll and the failure snapshot.
+    if (p->scenario==48 && p->link_commands==1 && !p->link_complete) {
+      p->stalled+=10; p->late_completed_at=p->stalled-p->link_started_at;
+      p->link_complete=1; p->late_injected=1;
+      p->hci[0x20/4]|=0x400; p->hci[0x30/4]=9; p->hci[0x98/4]=0;
+    }
+  }
   if (p->scenario==8 && p->writes==8) return false;
   if (a==HCI+0x20) {
-    if (v==4) { ++p->event_acks; if (p->scenario==40) return false; if (p->scenario==39) return true; }
+    if (v&4) {
+      ++p->event_acks; p->event_ack_value=v;
+      if (!(p->hci[o]&0x400)) ++p->early_event_acks;
+      if (p->scenario==40) return false;
+      if (p->scenario==39) return true;
+    }
     if (p->scenario!=14) p->hci[o]&=~v;
     return true;
   }
@@ -126,7 +153,7 @@ static bool write32(size_t a, uint32_t v, void *ctx) {
     if (v==0x16) { ++p->link_commands; p->link_started_at=p->stalled; }
     if (v==0x16 && (p->scenario==20 || p->scenario==21 ||
         (p->scenario>=23 && p->scenario<=28) || (p->scenario>=31 && p->scenario<=41) ||
-        (p->scenario>=43 && p->scenario<=48))) {
+        (p->scenario>=43 && p->scenario<=56) || p->scenario==59 || p->scenario==61)) {
       p->hci[0x20/4]=4; p->hci[0x30/4]=8; p->hci[0x38/4]=0x80000010;
       if (p->scenario==21) for (unsigned i=1;i<5;i++) p->hci[(0x38+i*4)/4]=i==1 ? 0x80002000 : 0x80000000+i;
       if (p->scenario==23) p->hci[0x38/4]=0x80000011;
@@ -142,6 +169,20 @@ static bool write32(size_t a, uint32_t v, void *ctx) {
       if (p->scenario==43) p->hci[0x44/4]=0x80000001;
       if (p->scenario==44) p->hci[0x48/4]=0x80000001;
       if (p->scenario==45) { p->hci[0x20/4]=0; p->hci[0x38/4]=0; }
+      if (p->scenario==46) p->hci[0x30/4]=9;
+      if (p->scenario==56) p->hci[0x3c/4]=0x80002000;
+      // Classification negatives carry a real completion; pending IS4 alone
+      // is tested separately and must reach the unchanged deadline unacked.
+      if (p->scenario==21 || p->scenario==23 || p->scenario==26 || p->scenario==28 ||
+          (p->scenario>=34 && p->scenario<=37) || (p->scenario>=39 && p->scenario<=44) ||
+          p->scenario==46 || (p->scenario>=51 && p->scenario<=55) || p->scenario==61) {
+        p->hci[0x20/4]=0x404; p->link_complete=1;
+      }
+      if (p->scenario==51) p->hci[0x34/4]=0;
+      if (p->scenario==52) p->hci[0x30/4]=0x38;
+      if (p->scenario==53) p->hci[0x30/4]=UINT32_MAX;
+      if (p->scenario==54) p->hci[0x98/4]=UINT32_MAX;
+      if (p->scenario==55) p->hci[0x9c/4]=UINT32_MAX;
     }
     if ((p->scenario==30 && p->uics==1) || (p->scenario==42 && p->uics==7)) {
       p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010;
@@ -208,6 +249,9 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
   for (unsigned i=0;i<3;i++) out[70+i]=c.LinkResetEvent.Arguments[i];
   for (unsigned i=0;i<5;i++) out[73+i]=c.LinkResetEvent.LayerErrors[i];
   out[78]=p.event_acks; out[79]=p.link_polls; out[80]=p.link_commands;
+  out[81]=p.early_event_acks; out[82]=p.layer_reads_without_uccs; out[83]=p.event_ack_value;
+  out[84]=c.LinkResetPending; out[85]=c.LinkResetFirstIs; out[86]=c.LinkResetPolls;
+  out[87]=p.link_complete; out[88]=p.late_completed_at; out[89]=p.late_injected;
   memcpy(trace,p.trace,sizeof p.trace); return 0;
 }
 ''')
@@ -367,8 +411,8 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
         for scenario in (23, 21):
             with self.subTest(scenario=scenario):
                 out, _ = self.run_case(scenario)
-                self.assertEqual((out[0], out[2], out[8], out[9], out[10]), (4, 6, 6, 0x16810020, 4))
-                self.assertEqual(out[42:46], [1, 4, 8, 1])
+                self.assertEqual((out[0], out[2], out[8], out[9], out[10]), (4, 6, 6, 0x16810020, 0x404))
+                self.assertEqual(out[42:46], [1, 0x404, 8, 1])
                 self.assertEqual(out[46:49], [0, 0, 0])
                 expected = [0x80000011, 0, 0, 0, 0] if scenario == 23 else [0x80000010, 0x80002000, 0x80000002, 0x80000003, 0x80000004]
                 self.assertEqual(out[49:54], expected)
@@ -390,19 +434,30 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
                 self.assertEqual(out[64:67], [1, 1, 1])
                 self.assertEqual(out[73:78], [0x80000010, 0, 0, 0, 0])
                 self.assertEqual((out[78], out[80]), (1, 1))
-                self.assertEqual(sum(a == 0x16810020 and v == 4 for a, v in trace), 1)
+                self.assertEqual(sum(a == 0x16810020 and v == 0x404 for a, v in trace), 1)
+                self.assertEqual((out[67], out[81], out[82], out[83]), (0x404, 0, 0, 0x404))
+                self.assertFalse(any(a == 0x16810020 and v == 4 for a, v in trace))
                 if scenario == 25:
                     self.assertGreaterEqual(out[79], 4)
-                    self.assertEqual(out[68], 8)  # Reproduces the actual pre-completion HCS.
+                    self.assertEqual((out[68], out[85]), (9, 4))
+
+    def test_actual_b67_latched_status_reaches_completion_before_any_layer_read_or_ack(self):
+        out, trace = self.run_case(49)
+        self.assertEqual((out[0], out[2], out[54], out[80]), (7, 12, 5, 1))
+        self.assertEqual(out[64:70], [1, 1, 1, 0x404, 15, 1])
+        self.assertEqual(out[81:86], [0, 0, 0x404, 1, 4])
+        self.assertGreaterEqual(out[86], 4)
+        self.assertEqual(sum(a == 0x16810020 and v & 4 != 0 for a, v in trace), 1)
 
     def test_link_reset_never_substitutes_for_uccs_or_extends_deadline(self):
-        for scenario in (20, 45):
+        for scenario in (20, 45, 56):
             with self.subTest(scenario=scenario):
                 out, _ = self.run_case(scenario)
                 self.assertEqual((out[0], out[2], out[8], out[80]), (3, 6, 6, 1))
-                self.assertEqual(out[64:67], [1, 1, 1])
-                self.assertEqual(out[73:78], [0x80000010, 0, 0, 0, 0])
-                self.assertEqual((out[42], out[54], out[78]), (1, 10, 1))
+                self.assertEqual(out[64:67], [0, 0, 0])
+                self.assertEqual(out[49], 0x80000010)
+                self.assertEqual((out[42], out[54], out[78], out[81]), (1, 5, 0, 0))
+                self.assertEqual(out[84], 1)
                 self.assertEqual(out[20], 515710)
                 self.assertEqual(out[1:4], out[13:16])
 
@@ -420,9 +475,23 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
             with self.subTest(scenario=scenario):
                 out, _ = self.run_case(scenario)
                 self.assertEqual((out[0], out[2], out[80]), (result, commands, 1))
-                self.assertEqual(out[64:67], [1, 1, 1])
-                self.assertEqual(out[20], 515710)
-                self.assertEqual(out[78], 1)
+                self.assertEqual(out[64:67], [1, 1, 1] if result == 7 else [0, 0, 0])
+                self.assertEqual(out[20], 515710 if scenario == 47 else 515720)
+                self.assertEqual(out[78], int(result == 7))
+                if scenario == 48:
+                    self.assertEqual(out[87:90], [1, 500010, 1])
+                    self.assertEqual(out[42:44], [1, 4])
+                    self.assertEqual(out[1:4], out[13:16])
+                    self.assertEqual((out[5], out[6], out[7]), (1, 0, 1))
+
+    def test_link_completion_ack_rejects_unrelated_status_arriving_after_final_poll(self):
+        for scenario in (60, 61):
+            with self.subTest(scenario=scenario):
+                out, _ = self.run_case(scenario)
+                self.assertEqual((out[0], out[2], out[5], out[6], out[7], out[80]), (4, 6, 1, 0, 1, 1))
+                self.assertEqual((out[9], out[10], out[89]), (0x16810020, 8, 1))
+                self.assertEqual(out[66], 0)
+                self.assertEqual(out[1:4], out[13:16])
 
     def test_link_reset_does_not_swallow_fatal_reserved_preexisting_or_other_commands(self):
         for scenario, commands in ((27, 6), (38, 6), (29, 5), (30, 1), (42, 7)):
@@ -433,13 +502,27 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
                 self.assertEqual(out[78], 0)
 
     def test_repeated_sticky_fatal_or_failed_event_ack_stops_without_replay(self):
-        for scenario in (26, 33, 39, 40, 46):
+        for scenario in (26, 39, 40, 46):
             with self.subTest(scenario=scenario):
                 out, _ = self.run_case(scenario)
                 self.assertEqual((out[0], out[2], out[42], out[54]), (4, 6, 1, 10))
-                self.assertEqual(out[64:67], [1, 1, int(scenario != 40)])
+                self.assertEqual(out[64:67], [1, 1, int(scenario == 46)])
                 self.assertEqual((out[78], out[80]), (1, 1))
                 self.assertEqual(out[73], 0x80000010)
+                self.assertEqual(out[1:4], out[13:16])
+
+    def test_fatal_during_deferred_wait_stops_without_ack_or_deadline_extension(self):
+        out, _ = self.run_case(33)
+        self.assertEqual((out[0], out[2], out[42], out[54], out[78], out[80]), (4, 6, 1, 5, 0, 1))
+        self.assertEqual(out[64:67], [0, 0, 0])
+        self.assertEqual(out[84], 1)
+        self.assertLess(out[20], 16000)
+
+    def test_deferred_completion_cannot_hide_lost_is_bad_hcs_hce_or_arguments(self):
+        for scenario in (50, 51, 52, 53, 54, 55, 59):
+            with self.subTest(scenario=scenario):
+                out, _ = self.run_case(scenario)
+                self.assertEqual((out[0], out[2], out[42], out[66], out[78], out[80]), (4, 6, 1, 0, 0, 1))
                 self.assertEqual(out[1:4], out[13:16])
 
     def test_link_reset_cannot_hide_failed_result_or_absent_device(self):
@@ -447,7 +530,7 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
             with self.subTest(scenario=scenario):
                 out, _ = self.run_case(scenario)
                 self.assertEqual((out[0], out[2], out[8], out[80]), (result, 6, 6, 1))
-                self.assertEqual(out[64:67], [1, 1, 1])
-                self.assertEqual(out[78], 1)
+                self.assertEqual(out[64:67], [1, 1, int(scenario == 32)])
+                self.assertEqual(out[78], int(scenario == 32))
                 if scenario == 31:
                     self.assertEqual(out[11], 10)

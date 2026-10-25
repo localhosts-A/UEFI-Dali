@@ -256,10 +256,11 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
       (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), S->LayerErrors[0], S->LayerErrors[1],
       S->LayerErrors[2], S->LayerErrors[3], S->LayerErrors[4]));
   }
-  if (mControl.LinkResetEvent.Captured) {
+  if (mControl.LinkResetPending || mControl.LinkResetEvent.Captured) {
     MT6991_UFS_UIC_SNAPSHOT *S = &mControl.LinkResetEvent;
-    DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a linereset accepted=%u acked=%u is=%x hcs=%x hce=%x ue=%x/%x/%x/%x/%x\n",
-      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mControl.LinkResetAccepted, mControl.LinkResetAcked,
+    DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a linereset deferred=%u first-is=%x polls=%u captured=%u accepted=%u acked=%u is=%x hcs=%x hce=%x ue=%x/%x/%x/%x/%x\n",
+      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mControl.LinkResetPending, mControl.LinkResetFirstIs,
+      mControl.LinkResetPolls, mControl.LinkResetEvent.Captured, mControl.LinkResetAccepted, mControl.LinkResetAcked,
       S->InterruptStatus, S->HostStatus, S->HostEnable, S->LayerErrors[0], S->LayerErrors[1],
       S->LayerErrors[2], S->LayerErrors[3], S->LayerErrors[4]));
   }

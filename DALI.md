@@ -106,16 +106,34 @@ LINK_STARTUP stopped with IS=4/HCS=8/HCE=1 and layer errors
 restored. The pinned Linux source identifies that exact PA generic code as
 LINERESET and independently waits for UIC completion during link startup.
 
-The next controller revision handles one isolated exact LINERESET indication
-only after submitting LINK_STARTUP. It saves all layer codes and acknowledges
-only IS bit 2, preserving simultaneous UCCS. The same 500 ms deadline still
-requires actual UCCS and a zero UIC result, followed by DEVICE_PRESENT. Repeated
-or sticky indications, other layer/lane/reserved/fatal bits, preexisting or
-non-link events, failed acknowledgements, nonzero results and missing completion
-or device presence fail closed. Transport error handling remains unchanged.
-Twenty-two controller tests execute the production C, including completion
-exactly at the deadline and refusal of completion 10 us later. This handling
-has no hardware qualification yet.
+The early-ACK revision (`67118fc`) was then tested with token prefix b67c24a6.
+It acknowledged IS=4, then rejected IS=404/HCS=f with the same isolated PA
+code. UCCS and device presence were visible, but control qualification failed
+before DMA/media I/O. Complete original Android B/root/all 18 hashes were
+restored and independently audited.
+
+The current revision defers both read-clear layer sampling and acknowledgement
+of startup IS=4 until real UCCS arrives within the original 500 ms deadline.
+Repeated polls of a latched indication do not represent new events or extend
+the deadline. At completion it requires exact IS=404, HCE=1, valid HCS, PA
+80000010 and all other layer errors zero, then result zero and valid ARG3.
+Only then does it acknowledge 404 together and require IS=0. The ordinary
+completion path also requires IS=0, including unrelated bits arriving after
+the final poll. DEVICE_PRESENT remains mandatory before post-link commands.
+
+This is a strict serial adaptation of fixed Linux f089d58: UCCS is enabled
+without UIC_ERROR before startup (ufshcd.c:4788-4789); the ISR acknowledges raw
+IS before handling enabled bits (:6948-6955), and UECPA is read-clear after
+POST_CHANGE (:4957-4958). Unlike that ordering, this adapter classifies all
+layers at completed LINK_STARTUP before issuing post-link commands. Fatal or
+unrelated bits fail immediately; other commands retain the original error
+mask. No uncertain command is resubmitted. Separate logs record pending,
+first IS, poll count, captured, accepted and successfully acknowledged states.
+
+Twenty-six controller tests execute production C, covering the actual b67
+latched status, no early layer reads/ACK, exact-deadline completion, a real
+completion injected 10 us late during stop, and the completion/ACK race.
+This deferred handling has no hardware qualification yet.
 
 ## Validated UEFI milestone (2026-10-24)
 

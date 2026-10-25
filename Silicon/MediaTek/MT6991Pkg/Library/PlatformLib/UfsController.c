@@ -156,9 +156,13 @@ STATIC BOOLEAN ResetBit (MT6991_UFS_CONTROLLER *C, UINT32 Offset, UINT32 Mask) {
   return Write (C, DALI_UFS_AO + Offset, Old | Mask);
 }
 
-STATIC BOOLEAN AckUic (MT6991_UFS_CONTROLLER *C) {
-  if (!Write (C, DALI_UFS_HCI + 0x20, UFS_UCCS)) { return FALSE; }
+STATIC BOOLEAN AckUic (MT6991_UFS_CONTROLLER *C, UINT32 Mask) {
+  if (!Write (C, DALI_UFS_HCI + 0x20, Mask)) { return FALSE; }
   C->InterruptStatus = Read (C, DALI_UFS_HCI + 0x20);
+  // Cover status arriving between the final completion poll and this W1C,
+  // including unrelated bits outside the generic transport error mask.
+  if ((C->Stage == Mt6991UfsLinkStartup || (Mask & UFS_UIC_ERROR)) &&
+      C->InterruptStatus != 0) { return Fail (C, Mt6991UfsHardwareError); }
   return !(C->InterruptStatus & (UFS_ERROR_MASK | UFS_UCCS)) || Fail (C, Mt6991UfsHardwareError);
 }
 
@@ -173,16 +177,16 @@ STATIC BOOLEAN EmptyQueues (MT6991_UFS_CONTROLLER *C) {
 }
 
 STATIC BOOLEAN LinkResetEvent (MT6991_UFS_CONTROLLER *C) {
-  // Fixed Linux ufshci.h:233-237 and ufshcd.c:4957-4958,6675-6679:
-  // LINK_STARTUP can report PA generic/LINERESET before command completion.
-  // Accept only one exact, isolated indication after this opcode was submitted.
-  // The caller still requires real UCCS, result=0 and DEVICE_PRESENT; no retry.
+  // Linux enables UCCS, not UIC_ERROR, during startup (ufshcd.c:4788-4789).
+  // The ISR acknowledges the full IS when completion arrives (:6948-6955),
+  // and UECPA is cleared after POST_CHANGE (:4957-4958). This serial adapter
+  // classifies all layers at real completion, before any post-link command.
+  // Never clear/read-clear the indication while LINK_STARTUP is in progress.
   if (C->Stage != Mt6991UfsLinkStartup || C->UicOpcode != 0x16 || C->LinkResetEvent.Captured ||
-      (C->InterruptStatus & ~(UFS_UIC_ERROR | UFS_UCCS)) != 0) { return Fail (C, Mt6991UfsHardwareError); }
+      C->InterruptStatus != (UFS_UIC_ERROR | UFS_UCCS)) { return Fail (C, Mt6991UfsHardwareError); }
   MT6991_UFS_UIC_SNAPSHOT *S = &C->LinkResetEvent;
   ReadUicSnapshot (C, S);
-  BOOLEAN Isolated = (S->InterruptStatus & UFS_UIC_ERROR) != 0 &&
-    (S->InterruptStatus & ~(UFS_UIC_ERROR | UFS_UCCS)) == 0 &&
+  BOOLEAN Isolated = S->InterruptStatus == (UFS_UIC_ERROR | UFS_UCCS) &&
     S->HostEnable == 1 && S->HostStatus != 0xFFFFFFFFU && (S->HostStatus & 0x38) == 8 &&
     S->LayerErrors[0] == 0x80000010U;
   for (UINTN I = 1; I < 5; I++) { Isolated = Isolated && S->LayerErrors[I] == 0; }
@@ -192,9 +196,6 @@ STATIC BOOLEAN LinkResetEvent (MT6991_UFS_CONTROLLER *C) {
     return Fail (C, Mt6991UfsHardwareError);
   }
   C->LinkResetAccepted = TRUE;
-  // IS is W1C. Leave a simultaneous UCCS pending for the normal result path.
-  if (!Write (C, DALI_UFS_HCI + 0x20, UFS_UIC_ERROR)) { return FALSE; }
-  C->LinkResetAcked = TRUE;
   return TRUE;
 }
 
@@ -206,30 +207,40 @@ STATIC BOOLEAN Uic (MT6991_UFS_CONTROLLER *C, UINT32 Opcode, UINT32 Attribute, U
   C->UicOpcode = Opcode; C->UicResult = 0xFFFFFFFFU;
   // Clear ONLY an old command-completion bit (IS is W1C), then order arguments
   // before the command. IE stays zero: completion is polled without IRQs.
-  if (!AckUic (C) ||
+  if (!AckUic (C, UFS_UCCS) ||
       !Write (C, DALI_UFS_HCI + 0x94, Attribute << 16) ||
       !Write (C, DALI_UFS_HCI + 0x98, 0) ||
       !Write (C, DALI_UFS_HCI + 0x9C, *Value) ||
       !Write (C, DALI_UFS_HCI + 0x90, Opcode)) { return FALSE; }
+  BOOLEAN LinkStartup = C->Stage == Mt6991UfsLinkStartup && Opcode == 0x16;
   for (UINT32 Elapsed = 0; ; Elapsed += 10) {
     C->InterruptStatus = Read (C, DALI_UFS_HCI + 0x20);
-    if (C->InterruptStatus & UFS_ERROR_MASK) {
-      if (!LinkResetEvent (C)) { return FALSE; }
-      // Recheck after acknowledgement; sticky/repeated/fatal events fail closed.
-      C->InterruptStatus = Read (C, DALI_UFS_HCI + 0x20);
-    }
-    if (C->InterruptStatus & UFS_ERROR_MASK) { return Fail (C, Mt6991UfsHardwareError); }
+    if (LinkStartup) {
+      // A latched UIC_ERROR is not a new event on each poll. Fatal/reserved or
+      // unrelated bits still fail immediately, without extending the deadline.
+      if (C->InterruptStatus & ~(UFS_UIC_ERROR | UFS_UCCS)) { return Fail (C, Mt6991UfsHardwareError); }
+      if (C->InterruptStatus & UFS_UIC_ERROR) {
+        if (!C->LinkResetPending) { C->LinkResetFirstIs = C->InterruptStatus; }
+        C->LinkResetPending = TRUE; ++C->LinkResetPolls;
+      }
+    } else if (C->InterruptStatus & UFS_ERROR_MASK) { return Fail (C, Mt6991UfsHardwareError); }
     if (C->InterruptStatus & UFS_UCCS) { break; }
     if (Elapsed >= 500000) { return Fail (C, Mt6991UfsTimeout); }
     C->Io.Stall (10, C->Io.Context);
   }
+  if (LinkStartup && C->LinkResetPending && !LinkResetEvent (C)) { return FALSE; }
   UINT32 Result = Read (C, DALI_UFS_HCI + 0x98);
   C->UicResult = Result & 0xFF;
   if (Result == 0xFFFFFFFFU) { return Fail (C, Mt6991UfsHardwareError); }
   if (C->UicResult != 0) { return Fail (C, Mt6991UfsUicError); }
   *Value = Read (C, DALI_UFS_HCI + 0x9C);
   if (*Value == 0xFFFFFFFFU) { return Fail (C, Mt6991UfsHardwareError); }
-  return AckUic (C);
+  // Only after actual UCCS, isolated PA classification and a successful result
+  // acknowledge the latched indication together with completion. No early W1C4.
+  UINT32 Ack = UFS_UCCS | ((LinkStartup && C->LinkResetPending) ? UFS_UIC_ERROR : 0);
+  if (!AckUic (C, Ack)) { return FALSE; }
+  if (Ack & UFS_UIC_ERROR) { C->LinkResetAcked = TRUE; }
+  return TRUE;
 }
 
 STATIC BOOLEAN DmeSet (MT6991_UFS_CONTROLLER *C, UINT32 Attribute, UINT32 Value) {
