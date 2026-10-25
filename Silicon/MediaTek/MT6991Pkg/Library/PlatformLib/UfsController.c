@@ -10,6 +10,7 @@
 #define UFS_SIP 0xC2000276U
 #define UFS_ERROR_MASK 0x70884U
 #define UFS_UCCS 0x400U
+#define UFS_UIC_ERROR 4U
 
 STATIC BOOLEAN Bindings (CONST VOID *Fdt) {
   INT32 Length, Hci, Soc, Reset;
@@ -55,6 +56,18 @@ STATIC BOOLEAN Bindings (CONST VOID *Fdt) {
   return TRUE;
 }
 
+STATIC VOID ReadUicSnapshot (MT6991_UFS_CONTROLLER *C, MT6991_UFS_UIC_SNAPSHOT *S) {
+  C->Io.Fence (C->Io.Context);
+  // Direct callback reads preserve LastAddress/Value and the original fault.
+  S->InterruptStatus = C->Io.Read32 (DALI_UFS_HCI + 0x20, C->Io.Context);
+  S->HostStatus = C->Io.Read32 (DALI_UFS_HCI + 0x30, C->Io.Context);
+  S->HostEnable = C->Io.Read32 (DALI_UFS_HCI + 0x34, C->Io.Context);
+  for (UINTN I = 0; I < 3; I++) { S->Arguments[I] = C->Io.Read32 (DALI_UFS_HCI + 0x94 + I * 4, C->Io.Context); }
+  for (UINTN I = 0; I < 5; I++) { S->LayerErrors[I] = C->Io.Read32 (DALI_UFS_HCI + 0x38 + I * 4, C->Io.Context); }
+  C->Io.Fence (C->Io.Context);
+  S->Captured = TRUE;
+}
+
 STATIC BOOLEAN RecordFailure (MT6991_UFS_CONTROLLER *C, MT6991_UFS_RESULT Result, BOOLEAN CaptureUic) {
   if (!C->Failed) {
     C->Result = Result; C->FaultStage = C->Stage;
@@ -63,16 +76,7 @@ STATIC BOOLEAN RecordFailure (MT6991_UFS_CONTROLLER *C, MT6991_UFS_RESULT Result
     // particular, skip early power/reset failures and Stop's temporary context.
     if (CaptureUic && C->Attempted && C->Touched && C->Io.Read32 != NULL && !C->UicFailure.Captured &&
         (C->Stage == Mt6991UfsPreLink || C->Stage == Mt6991UfsLinkStartup || C->Stage == Mt6991UfsPostLink)) {
-      MT6991_UFS_UIC_FAILURE *S = &C->UicFailure;
-      C->Io.Fence (C->Io.Context);
-      // Direct callback reads preserve LastAddress/Value and the original fault.
-      S->InterruptStatus = C->Io.Read32 (DALI_UFS_HCI + 0x20, C->Io.Context);
-      S->HostStatus = C->Io.Read32 (DALI_UFS_HCI + 0x30, C->Io.Context);
-      S->HostEnable = C->Io.Read32 (DALI_UFS_HCI + 0x34, C->Io.Context);
-      for (UINTN I = 0; I < 3; I++) { S->Arguments[I] = C->Io.Read32 (DALI_UFS_HCI + 0x94 + I * 4, C->Io.Context); }
-      for (UINTN I = 0; I < 5; I++) { S->LayerErrors[I] = C->Io.Read32 (DALI_UFS_HCI + 0x38 + I * 4, C->Io.Context); }
-      C->Io.Fence (C->Io.Context);
-      S->Captured = TRUE;
+      ReadUicSnapshot (C, &C->UicFailure);
     }
   }
   C->Failed = TRUE; C->Ready = FALSE;
@@ -168,6 +172,32 @@ STATIC BOOLEAN EmptyQueues (MT6991_UFS_CONTROLLER *C) {
   return TRUE;
 }
 
+STATIC BOOLEAN LinkResetEvent (MT6991_UFS_CONTROLLER *C) {
+  // Fixed Linux ufshci.h:233-237 and ufshcd.c:4957-4958,6675-6679:
+  // LINK_STARTUP can report PA generic/LINERESET before command completion.
+  // Accept only one exact, isolated indication after this opcode was submitted.
+  // The caller still requires real UCCS, result=0 and DEVICE_PRESENT; no retry.
+  if (C->Stage != Mt6991UfsLinkStartup || C->UicOpcode != 0x16 || C->LinkResetEvent.Captured ||
+      (C->InterruptStatus & ~(UFS_UIC_ERROR | UFS_UCCS)) != 0) { return Fail (C, Mt6991UfsHardwareError); }
+  MT6991_UFS_UIC_SNAPSHOT *S = &C->LinkResetEvent;
+  ReadUicSnapshot (C, S);
+  BOOLEAN Isolated = (S->InterruptStatus & UFS_UIC_ERROR) != 0 &&
+    (S->InterruptStatus & ~(UFS_UIC_ERROR | UFS_UCCS)) == 0 &&
+    S->HostEnable == 1 && S->HostStatus != 0xFFFFFFFFU && (S->HostStatus & 0x38) == 8 &&
+    S->LayerErrors[0] == 0x80000010U;
+  for (UINTN I = 1; I < 5; I++) { Isolated = Isolated && S->LayerErrors[I] == 0; }
+  if (!Isolated) {
+    // Preserve the first read-clear codes; Fail must not resample them as zero.
+    C->UicFailure = *S;
+    return Fail (C, Mt6991UfsHardwareError);
+  }
+  C->LinkResetAccepted = TRUE;
+  // IS is W1C. Leave a simultaneous UCCS pending for the normal result path.
+  if (!Write (C, DALI_UFS_HCI + 0x20, UFS_UIC_ERROR)) { return FALSE; }
+  C->LinkResetAcked = TRUE;
+  return TRUE;
+}
+
 STATIC BOOLEAN Uic (MT6991_UFS_CONTROLLER *C, UINT32 Opcode, UINT32 Attribute, UINT32 *Value) {
   if (C->Failed || !Wait (C, 0x30, 8, 8, 500000)) { return FALSE; }
   if (C->LastValue & 0x30) { return Fail (C, Mt6991UfsHardwareError); }
@@ -183,6 +213,11 @@ STATIC BOOLEAN Uic (MT6991_UFS_CONTROLLER *C, UINT32 Opcode, UINT32 Attribute, U
       !Write (C, DALI_UFS_HCI + 0x90, Opcode)) { return FALSE; }
   for (UINT32 Elapsed = 0; ; Elapsed += 10) {
     C->InterruptStatus = Read (C, DALI_UFS_HCI + 0x20);
+    if (C->InterruptStatus & UFS_ERROR_MASK) {
+      if (!LinkResetEvent (C)) { return FALSE; }
+      // Recheck after acknowledgement; sticky/repeated/fatal events fail closed.
+      C->InterruptStatus = Read (C, DALI_UFS_HCI + 0x20);
+    }
     if (C->InterruptStatus & UFS_ERROR_MASK) { return Fail (C, Mt6991UfsHardwareError); }
     if (C->InterruptStatus & UFS_UCCS) { break; }
     if (Elapsed >= 500000) { return Fail (C, Mt6991UfsTimeout); }

@@ -27,13 +27,13 @@ typedef enum {
   Mt6991UfsDeviceReset // Appended to preserve existing diagnostic stage values.
 } MT6991_UFS_STAGE;
 
-// Captured once on a startup UIC-path failure, before cleanup. LayerErrors can
-// clear hardware status; stop/retry paths use the saved copy and never resample.
+// Each event/failure snapshot is captured once before its acknowledgement or
+// cleanup. LayerErrors can clear status; later logs/stop paths use saved copies.
 typedef struct {
   UINT32 InterruptStatus, HostStatus, HostEnable;
   UINT32 Arguments[3], LayerErrors[5];
   BOOLEAN Captured;
-} MT6991_UFS_UIC_FAILURE;
+} MT6991_UFS_UIC_SNAPSHOT;
 
 // Initialize to zero ONCE for a new boot. Failure poisons this instance;
 // neither Start nor Stop permits automatic resubmission after an uncertain UIC.
@@ -45,7 +45,8 @@ typedef struct {
   UINT32 LastValue, FaultValue, InterruptStatus, UicOpcode, UicResult, LocalVersion;
   UINT64 SipStatus, RefClockCleanupStatus;
   BOOLEAN Attempted, Touched, Failed, Ready, Stopped;
-  MT6991_UFS_UIC_FAILURE UicFailure;
+  MT6991_UFS_UIC_SNAPSHOT UicFailure, LinkResetEvent;
+  BOOLEAN LinkResetAccepted, LinkResetAcked;
   UINT32 SipSelector, SipArg1, SipArg2;
   UINT64 DeviceResetCleanupStatus;
   BOOLEAN DeviceResetAsserted, DeviceResetReleaseAttempted, DeviceResetReleased, DeviceResetCleanupAttempted;

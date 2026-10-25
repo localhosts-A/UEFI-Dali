@@ -100,6 +100,23 @@ unchanged. Native tests cover pulse/settle order, failed release, cleanup,
 read-clear register ordering and first-fault preservation; hardware validation
 of this revision is pending.
 
+The reset/snapshot revision was then tested on hardware: reset succeeded, but
+LINK_STARTUP stopped with IS=4/HCS=8/HCE=1 and layer errors
+`80000010/0/0/0/0`, before DMA. Original Android B/root/all 18 hashes were
+restored. The pinned Linux source identifies that exact PA generic code as
+LINERESET and independently waits for UIC completion during link startup.
+
+The next controller revision handles one isolated exact LINERESET indication
+only after submitting LINK_STARTUP. It saves all layer codes and acknowledges
+only IS bit 2, preserving simultaneous UCCS. The same 500 ms deadline still
+requires actual UCCS and a zero UIC result, followed by DEVICE_PRESENT. Repeated
+or sticky indications, other layer/lane/reserved/fatal bits, preexisting or
+non-link events, failed acknowledgements, nonzero results and missing completion
+or device presence fail closed. Transport error handling remains unchanged.
+Twenty-two controller tests execute the production C, including completion
+exactly at the deadline and refusal of completion 10 us later. This handling
+has no hardware qualification yet.
+
 ## Validated UEFI milestone (2026-10-24)
 
 Run8 passed the strict collector with both `--require-unixnu` and

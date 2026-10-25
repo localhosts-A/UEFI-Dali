@@ -248,12 +248,19 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
     mControl.DeviceResetReleaseAttempted, mControl.DeviceResetReleased, mControl.DeviceResetCleanupAttempted,
     mControl.DeviceResetCleanupStatus, mControl.SipSelector, mControl.SipArg1, mControl.SipArg2, mControl.SipStatus));
   if (mControl.UicFailure.Captured) {
-    MT6991_UFS_UIC_FAILURE *S = &mControl.UicFailure;
+    MT6991_UFS_UIC_SNAPSHOT *S = &mControl.UicFailure;
     DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a first-failure stage=%u opcode=%x is=%x hcs=%x hce=%x arg=%x/%x/%x\n",
       (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mControl.FaultStage, mControl.UicOpcode,
       S->InterruptStatus, S->HostStatus, S->HostEnable, S->Arguments[0], S->Arguments[1], S->Arguments[2]));
     DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a ue=%x/%x/%x/%x/%x\n",
       (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), S->LayerErrors[0], S->LayerErrors[1],
+      S->LayerErrors[2], S->LayerErrors[3], S->LayerErrors[4]));
+  }
+  if (mControl.LinkResetEvent.Captured) {
+    MT6991_UFS_UIC_SNAPSHOT *S = &mControl.LinkResetEvent;
+    DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a linereset accepted=%u acked=%u is=%x hcs=%x hce=%x ue=%x/%x/%x/%x/%x\n",
+      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mControl.LinkResetAccepted, mControl.LinkResetAcked,
+      S->InterruptStatus, S->HostStatus, S->HostEnable, S->LayerErrors[0], S->LayerErrors[1],
       S->LayerErrors[2], S->LayerErrors[3], S->LayerErrors[4]));
   }
   if (Result != Mt6991UfsLinkReady) { return EFI_DEVICE_ERROR; }
