@@ -9,6 +9,7 @@
   PlatformLib.c
   UfsProbe.c
   UfsProbe.h
+  UfsController.c
   MemoryWindow.h
   MemoryWindowFdt.h
 [Packages]
