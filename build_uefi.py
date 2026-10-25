@@ -30,6 +30,18 @@ RESOURCE_CONFIGS_PATH = Path ("Resources/Configs")
 RESOURCE_DTBS_PATH    = Path ("Resources/DTBs")
 RESOURCE_PATCHES_PATH = Path ("Resources/MuPatches")
 RESOURCE_SCRIPTS_PATH = Path ("Resources/Scripts")
+MU_PATCHES            = (
+    "AsmMacroLib.patch",
+    "Auth-Service.patch",
+    "Boot-Manager.patch",
+    "ExitBootServices-Trace.patch",
+    "Timer.patch",
+    "Usb-Bus.patch",
+    "Xhci-Native-Safety.patch",
+    "Xhci-Native-Short-Event.patch",
+    "Xhci-Native-MTK-Scheduler.patch",
+    "UsbHub-MultiTT.patch",
+)
 
 #
 # MU Submodule Paths
@@ -485,7 +497,7 @@ def main ():
     cleanup_old_build (ctx.device, ctx.device_model, ctx.cleanup)
 
     # Remove Mu_Basecore Patches
-    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "ExitBootServices-Trace.patch", "Timer.patch", "Usb-Bus.patch", "Xhci-Native-Safety.patch", "Xhci-Native-Short-Event.patch", "Xhci-Native-MTK-Scheduler.patch", "UsbHub-MultiTT.patch"]:
+    for patch_name in reversed (MU_PATCHES):
         handle_git_patch (MU_BASECORE_PATH, patch_name, True)
 
     # Update Local Repo
@@ -506,7 +518,7 @@ def main ():
         sys.exit (1)
 
     # Apply Mu_Basecore Patches
-    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "ExitBootServices-Trace.patch", "Timer.patch", "Usb-Bus.patch", "Xhci-Native-Safety.patch", "Xhci-Native-Short-Event.patch", "Xhci-Native-MTK-Scheduler.patch", "UsbHub-MultiTT.patch"]:
+    for patch_name in MU_PATCHES:
         if not handle_git_patch (MU_BASECORE_PATH, patch_name, False):
             logger.error (f"Failed to Apply \"{patch_name}\" Git Patch!")
             sys.exit (1)
