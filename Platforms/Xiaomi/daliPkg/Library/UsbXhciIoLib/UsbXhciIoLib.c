@@ -273,6 +273,19 @@ EFI_STATUS DaliUsbXhciIoQuiesce(DALI_USB_XHCI_IO *C, UINT32 TimeoutUs) {
     if (C->Closed) { return Fail(C,EFI_UNSUPPORTED); }
   }
 }
+EFI_STATUS DaliUsbXhciIoRearm(DALI_USB_XHCI_IO *C) {
+  if (C==NULL || !C->Initialized || !C->Owned || !C->Quiescing || !C->HaltProven) { return EFI_INVALID_PARAMETER; }
+  if (C->Closed) { return EFI_UNSUPPORTED; }
+  if (C->Faulted) { return EFI_DEVICE_ERROR; }
+  UINT32 Cmd=0,Sts=0;
+  for (UINTN N=0; N<2; N++) {
+    EFI_STATUS Status=Read(C,C->OpOffset,4,&Cmd);
+    if (!EFI_ERROR(Status)) { Status=Read(C,C->OpOffset+4,4,&Sts); }
+    if (EFI_ERROR(Status)) { return Status; }
+    if ((Cmd&3) || !(Sts&1) || (Sts&0x804)) { return Fail(C,EFI_NOT_READY); }
+  }
+  C->Quiescing=FALSE; return EFI_SUCCESS;
+}
 EFI_STATUS DaliUsbXhciIoClose(DALI_USB_XHCI_IO *C) {
   if (C==NULL || !C->Initialized) { return EFI_INVALID_PARAMETER; }
   if (C->Closed) { return EFI_UNSUPPORTED; }

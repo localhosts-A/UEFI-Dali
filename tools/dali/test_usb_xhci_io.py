@@ -29,7 +29,7 @@ class UsbXhciIoTests(unittest.TestCase):
             for n, source in enumerate(sources):
                 obj = base / f'{n}.o'
                 # The production adapter and fixture enforce conversion checks;
-                # pinned Mu memory code is compiled unchanged with its own ABI.
+                # reviewed pinned Mu code is compiled with its actual ABI.
                 subprocess.run(flags + (['-Wextra', '-Wconversion'] if n < 2 else []) +
                                ['-c', str(source), '-o', str(obj)], check=True, timeout=60)
                 objects.append(str(obj))

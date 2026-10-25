@@ -66,4 +66,7 @@ typedef struct {
 EFI_STATUS DaliUsbXhciIoOpen(DALI_USB_XHCI_IO *, UINTN Base, UINTN Size,
   CONST DALI_USB_XHCI_DMA_OPS *, DALI_USB_XHCI_IO_GUARD, VOID *);
 EFI_STATUS DaliUsbXhciIoQuiesce(DALI_USB_XHCI_IO *, UINT32 TimeoutUs);
+// Resume source register access only after a fresh halted observation. Does
+// not run the HC or clear faults; only a nonfaulted owner may rebuild schedules.
+EFI_STATUS DaliUsbXhciIoRearm(DALI_USB_XHCI_IO *);
 EFI_STATUS DaliUsbXhciIoClose(DALI_USB_XHCI_IO *);

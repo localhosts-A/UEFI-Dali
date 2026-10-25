@@ -1,4 +1,4 @@
-// Real native adapter + unchanged Mu UsbHcMem, with modeled MMIO/DMA/cache/holds.
+// Real native adapter + reviewed Mu source, with modeled MMIO/DMA/cache/holds.
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +18,8 @@ static DALI_USB_XHCI_IO c;
 static struct {
   UINT32 regs[0x1000/4];
   UINTN ops,ebs_at,allocs,frees,syncs,reads,writes,guards,delays,fail_allocate,fail_sync,fail_free;
-  BOOLEAN applied,hold,release,halt_timeout,bad_address,noncoherent,alias,partial;
+  BOOLEAN applied,hold,release,halt_timeout,bad_address,noncoherent,alias,partial,hc_autoreset;
+  UINTN pool_ops,fail_pool,doorbells;
   UINT64 next_address;
   struct {VOID *cpu;UINT64 address;UINTN size;BOOLEAN live,partial,coherent; } dma[64];
   struct {DALI_USB_XHCI_DMA_DIRECTION direction;BOOLEAN device;UINTN offset,bytes;} sync_trace[128];
@@ -31,11 +32,12 @@ static BOOLEAN before(void) {
 }
 static void after(void) {if(m.ebs_at==m.ops && m.applied)c.Closed=TRUE;}
 VOID *EFIAPI AllocatePool(UINTN size) {
+  if (++m.pool_ops==m.fail_pool) { return NULL; }
   void *p=malloc((size_t)size);assert(p);
   for(unsigned n=0;n<4096;n++) if(!m.pool[n]) {m.pool[n]=p;return p;}
   abort();
 }
-VOID *EFIAPI AllocateZeroPool(UINTN size) {void *p=AllocatePool(size);memset(p,0,(size_t)size);return p;}
+VOID *EFIAPI AllocateZeroPool(UINTN size) {void *p=AllocatePool(size);if(p)memset(p,0,(size_t)size);return p;}
 VOID EFIAPI FreePool(VOID *p) {
   for(unsigned n=0;n<4096;n++) if(m.pool[n]==p) {m.pool[n]=NULL;free(p);return;}
   abort();
@@ -60,7 +62,9 @@ UINT8 EFIAPI MmioWrite8(UINTN address,UINT8 value) {
 UINT32 EFIAPI MmioWrite32(UINTN address,UINT32 value) {
   assert(address>=0x16700000 && address<=0x16700ffc && !(address&3));if(!before())return value;
   m.writes++;m.regs[(address-0x16700000)/4]=value;
+  if(address>=0x16700800 && address<0x16700900)m.doorbells++;
   if(address==0x16700040) {
+    if(m.hc_autoreset && (value&2)) {m.regs[0x40/4]=value&~2U; m.regs[0x44/4]=1;}
     if(value&1)m.regs[0x44/4]&=~1U;
     else if(!m.halt_timeout)m.regs[0x44/4]|=1;
   }
@@ -219,6 +223,7 @@ static void setup(unsigned phase) {
     // Failed cleanup must not later dereference this deliberately expired host.
     assert(c.Io.Map(&c.Io,EfiPciIoOperationBusMasterWrite,host,&bytes,&address,&mapping)==EFI_SUCCESS);
   }
+  if(phase==4)assert(DaliUsbXhciIoQuiesce(&c,10)==EFI_SUCCESS);
 }
 static EFI_STATUS run(unsigned phase) {
   if(phase==0)return open_io();
@@ -228,10 +233,11 @@ static EFI_STATUS run(unsigned phase) {
     return status;
   }
   if(phase==2)return DaliUsbXhciIoQuiesce(&c,10);
+  if(phase==4)return DaliUsbXhciIoRearm(&c);
   return DaliUsbXhciIoClose(&c);
 }
 static void ebs(void) {
-  for(unsigned phase=0;phase<4;phase++) {
+  for(unsigned phase=0;phase<5;phase++) {
     setup(phase);UINTN base=m.ops;assert(run(phase)==EFI_SUCCESS);UINTN total=m.ops-base;
     for(UINTN at=1;at<=total;at++)for(unsigned applied=0;applied<2;applied++) {
       setup(phase);m.ebs_at=m.ops+at;m.applied=(BOOLEAN)applied;

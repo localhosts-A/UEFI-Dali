@@ -1,0 +1,782 @@
+diff --git a/MdeModulePkg/Bus/Pci/XhciDxe/UsbHcMem.c b/MdeModulePkg/Bus/Pci/XhciDxe/UsbHcMem.c
+index b54187ec22..2f4b77a65b 100644
+--- a/MdeModulePkg/Bus/Pci/XhciDxe/UsbHcMem.c
++++ b/MdeModulePkg/Bus/Pci/XhciDxe/UsbHcMem.c
+@@ -694,7 +694,7 @@ UsbHcAllocateAlignedPages (
+       // Free first unaligned page(s).
+       //
+       Status = PciIo->FreeBuffer (PciIo, UnalignedPages, Memory);
+-      ASSERT_EFI_ERROR (Status);
++      if (EFI_ERROR (Status)) { return Status; }
+     }
+ 
+     Memory         = (VOID *)(UINTN)(AlignedMemory + EFI_PAGES_TO_SIZE (Pages));
+@@ -704,7 +704,7 @@ UsbHcAllocateAlignedPages (
+       // Free last unaligned page(s).
+       //
+       Status = PciIo->FreeBuffer (PciIo, UnalignedPages, Memory);
+-      ASSERT_EFI_ERROR (Status);
++      if (EFI_ERROR (Status)) { return Status; }
+     }
+   } else {
+     //
+@@ -767,12 +767,13 @@ UsbHcFreeAlignedPages (
+   ASSERT (Pages != 0);
+ 
+   Status = PciIo->Unmap (PciIo, Mapping);
+-  ASSERT_EFI_ERROR (Status);
++  if (EFI_ERROR (Status)) { return; }
+ 
+   Status = PciIo->FreeBuffer (
+                     PciIo,
+                     Pages,
+                     HostAddress
+                     );
+-  ASSERT_EFI_ERROR (Status);
++  // The native adapter retains independent ownership when FreeBuffer fails.
++  (VOID)Status;
+ }
+diff --git a/MdeModulePkg/Bus/Pci/XhciDxe/Xhci.c b/MdeModulePkg/Bus/Pci/XhciDxe/Xhci.c
+index c337f15118..243d7b253a 100644
+--- a/MdeModulePkg/Bus/Pci/XhciDxe/Xhci.c
++++ b/MdeModulePkg/Bus/Pci/XhciDxe/Xhci.c
+@@ -8,6 +8,9 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ **/
+ 
+ #include "Xhci.h"
++#ifdef DALI_NATIVE_XHCI
++VOID DaliNativeXhciCommandFailed (USB_XHCI_INSTANCE *Xhc, EFI_STATUS Status);
++#endif
+ 
+ //
+ // Two arrays used to translate the XHCI port state (change)
+@@ -56,6 +59,7 @@ USB_CLEAR_PORT_MAP  mUsbHubClearPortChangeMap[] = {
+   { XHC_HUB_PORTSC_BHRC, Usb3PortBHPortResetChange   }
+ };
+ 
++#ifndef DALI_NATIVE_XHCI
+ EFI_DRIVER_BINDING_PROTOCOL  gXhciDriverBinding = {
+   XhcDriverBindingSupported,
+   XhcDriverBindingStart,
+@@ -64,6 +68,7 @@ EFI_DRIVER_BINDING_PROTOCOL  gXhciDriverBinding = {
+   NULL,
+   NULL
+ };
++#endif
+ 
+ //
+ // Template for Xhci's Usb2 Host Controller Protocol Instance.
+@@ -91,6 +96,46 @@ static UINT64   mXhciPerformanceCounterEndValue;
+ static UINT64   mXhciPerformanceCounterFrequency;
+ static BOOLEAN  mXhciPerformanceCounterValuesCached = FALSE;
+ 
++// Cached descriptors are later walked by the endpoint/context parser. Check
++// the complete byte graph before publishing it, including each interface's
++// endpoint count and the distinct alternate-zero interface count.
++STATIC BOOLEAN
++XhcValidateConfigDescriptor (CONST VOID *Data, UINTN Bytes)
++{
++  CONST UINT8 *P = Data;
++  BOOLEAN Seen[256] = { FALSE };
++  UINTN Offset, Interfaces = 0, Expected = 0, Endpoints = 0;
++  BOOLEAN HaveInterface = FALSE;
++  if (Bytes < sizeof (EFI_USB_CONFIG_DESCRIPTOR) || P[0] < sizeof (EFI_USB_CONFIG_DESCRIPTOR) ||
++      P[1] != USB_DESC_TYPE_CONFIG || P[0] > Bytes || P[5] == 0) { return FALSE; }
++  for (Offset = P[0]; Offset < Bytes; Offset += P[Offset]) {
++    if (Bytes - Offset < 2 || P[Offset] < 2 || P[Offset] > Bytes - Offset) { return FALSE; }
++    if (P[Offset + 1] == USB_DESC_TYPE_INTERFACE) {
++      if (P[Offset] < sizeof (USB_INTERFACE_DESCRIPTOR) || (HaveInterface && Endpoints != Expected)) { return FALSE; }
++      UINT8 Number = P[Offset + 2];
++      if (P[Offset + 3] == 0) {
++        if (Seen[Number]) { return FALSE; }
++        Seen[Number] = TRUE; Interfaces++;
++      }
++      HaveInterface = TRUE; Expected = P[Offset + 4]; Endpoints = 0;
++    } else if (P[Offset + 1] == USB_DESC_TYPE_ENDPOINT) {
++      if (!HaveInterface || P[Offset] < sizeof (USB_ENDPOINT_DESCRIPTOR) ||
++          !(P[Offset + 2] & 15) || (P[Offset + 2] & 0x70) || ++Endpoints > Expected) { return FALSE; }
++    }
++  }
++  return HaveInterface && Endpoints == Expected && Interfaces == P[4];
++}
++
++STATIC EFI_USB_CONFIG_DESCRIPTOR *
++XhcCachedConfig (USB_DEV_CONTEXT *Device, UINT8 Value)
++{
++  if (Device->ConfDesc == NULL) { return NULL; }
++  for (UINTN Index = 0; Index < Device->DevDesc.NumConfigurations; Index++) {
++    if (Device->ConfDesc[Index] != NULL && Device->ConfDesc[Index]->ConfigurationValue == Value) { return Device->ConfDesc[Index]; }
++  }
++  return NULL;
++}
++
+ /**
+   Retrieves the capability of root hub ports.
+ 
+@@ -837,6 +882,12 @@ XhcTransfer (
+   }
+ 
+   Xhc->PciIo->Flush (Xhc->PciIo);
++#ifdef DALI_NATIVE_XHCI
++  // An incomplete failed transfer cannot authorize returning DMA ownership.
++  if (EFI_ERROR (Status) && !Urb->Finished) {
++    DaliNativeXhciCommandFailed (Xhc, Status);
++  }
++#endif
+   //
+   // Do not free URB data, since it is passed in as an external argument
+   // and allocated and managed by the caller.
+@@ -905,7 +956,7 @@ XhcControlTransfer (
+   //
+   // Validate parameters
+   //
+-  if ((Request == NULL) || (TransferResult == NULL)) {
++  if ((Request == NULL) || (TransferResult == NULL) || (DataLength == NULL)) {
+     return EFI_INVALID_PARAMETER;
+   }
+ 
+@@ -1039,11 +1090,23 @@ XhcControlTransfer (
+     DescriptorType = (UINT8)(Request->Value >> 8);
+     if ((DescriptorType == USB_DESC_TYPE_DEVICE) && ((*DataLength == sizeof (EFI_USB_DEVICE_DESCRIPTOR)) || ((DeviceSpeed == EFI_USB_SPEED_FULL) && (*DataLength == 8)))) {
+       ASSERT (Data != NULL);
++      if (*DataLength == sizeof (EFI_USB_DEVICE_DESCRIPTOR)) {
++        if (((EFI_USB_DEVICE_DESCRIPTOR *)Data)->NumConfigurations == 0 ||
++            (Xhc->UsbDevContext[SlotId].ConfDesc != NULL &&
++             Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations != ((EFI_USB_DEVICE_DESCRIPTOR *)Data)->NumConfigurations)) {
++          Status = EFI_DEVICE_ERROR;
++          goto ON_EXIT;
++        }
++      }
+       //
+       // Store a copy of device scriptor as hub device need this info to configure endpoint.
+       //
+       CopyMem (&Xhc->UsbDevContext[SlotId].DevDesc, Data, *DataLength);
+       if (Xhc->UsbDevContext[SlotId].DevDesc.BcdUSB >= 0x0300) {
++        if (Xhc->UsbDevContext[SlotId].DevDesc.MaxPacketSize0 > 9) {
++          Status = EFI_DEVICE_ERROR;
++          goto ON_EXIT;
++        }
+         //
+         // If it's a usb3.0 device, then its max packet size is a 2^n.
+         //
+@@ -1052,7 +1115,13 @@ XhcControlTransfer (
+         MaxPacket0 = Xhc->UsbDevContext[SlotId].DevDesc.MaxPacketSize0;
+       }
+ 
+-      Xhc->UsbDevContext[SlotId].ConfDesc = AllocateZeroPool (Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations * sizeof (EFI_USB_CONFIG_DESCRIPTOR *));
++      if (*DataLength == sizeof (EFI_USB_DEVICE_DESCRIPTOR) && Xhc->UsbDevContext[SlotId].ConfDesc == NULL) {
++        Xhc->UsbDevContext[SlotId].ConfDesc = AllocateZeroPool (Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations * sizeof (EFI_USB_CONFIG_DESCRIPTOR *));
++        if (Xhc->UsbDevContext[SlotId].ConfDesc == NULL) {
++          Status = EFI_OUT_OF_RESOURCES;
++          goto ON_EXIT;
++        }
++      }
+       if (Xhc->HcCParams.Data.Csz == 0) {
+         Status = XhcEvaluateContext (Xhc, SlotId, MaxPacket0);
+       } else {
+@@ -1060,25 +1129,51 @@ XhcControlTransfer (
+       }
+     } else if (DescriptorType == USB_DESC_TYPE_CONFIG) {
+       ASSERT (Data != NULL);
+-      if (*DataLength == ((UINT16 *)Data)[1]) {
++      if (*DataLength >= sizeof (EFI_USB_CONFIG_DESCRIPTOR) && *DataLength == ((UINT16 *)Data)[1]) {
++        if (!XhcValidateConfigDescriptor (Data, *DataLength)) {
++          Status = EFI_DEVICE_ERROR;
++          goto ON_EXIT;
++        }
+         //
+         // Get configuration value from request, Store the configuration descriptor for Configure_Endpoint cmd.
+         //
+         Index = (UINT8)Request->Value;
+-        ASSERT (Index < Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations);
+-        Xhc->UsbDevContext[SlotId].ConfDesc[Index] = AllocateZeroPool (*DataLength);
++        if (Xhc->UsbDevContext[SlotId].ConfDesc == NULL || Index >= Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations) {
++          Status = EFI_DEVICE_ERROR;
++          goto ON_EXIT;
++        }
++        if (Xhc->UsbDevContext[SlotId].ConfDesc[Index] == NULL) {
++          Xhc->UsbDevContext[SlotId].ConfDesc[Index] = AllocateZeroPool (*DataLength);
++        } else if (Xhc->UsbDevContext[SlotId].ConfDesc[Index]->TotalLength != *DataLength) {
++          Status = EFI_DEVICE_ERROR;
++          goto ON_EXIT;
++        }
++        if (Xhc->UsbDevContext[SlotId].ConfDesc[Index] == NULL) {
++          Status = EFI_OUT_OF_RESOURCES;
++          goto ON_EXIT;
++        }
+         CopyMem (Xhc->UsbDevContext[SlotId].ConfDesc[Index], Data, *DataLength);
+         //
+         // Default to use AlternateSetting 0 for all interfaces.
+         //
+-        Xhc->UsbDevContext[SlotId].ActiveAlternateSetting = AllocateZeroPool (Xhc->UsbDevContext[SlotId].ConfDesc[Index]->NumInterfaces * sizeof (UINT8));
++        if (Xhc->UsbDevContext[SlotId].ActiveAlternateSetting == NULL) {
++          // Interface numbers are UINT8 and need not be contiguous.
++          Xhc->UsbDevContext[SlotId].ActiveAlternateSetting = AllocateZeroPool (256 * sizeof (UINT8));
++          if (Xhc->UsbDevContext[SlotId].ActiveAlternateSetting == NULL) {
++            Status = EFI_OUT_OF_RESOURCES;
++            goto ON_EXIT;
++          }
++        }
+       }
+     } else if (((DescriptorType == USB_DESC_TYPE_HUB) ||
+-                (DescriptorType == USB_DESC_TYPE_HUB_SUPER_SPEED)) && (*DataLength > 2))
++                (DescriptorType == USB_DESC_TYPE_HUB_SUPER_SPEED)) && (*DataLength >= 7))
+     {
+       ASSERT (Data != NULL);
+       HubDesc = (EFI_USB_HUB_DESCRIPTOR *)Data;
+-      ASSERT (HubDesc->NumPorts <= 15);
++      if (HubDesc->NumPorts == 0 || HubDesc->NumPorts > 15) {
++        Status = EFI_UNSUPPORTED;
++        goto ON_EXIT;
++      }
+       //
+       // The bit 5,6 of HubCharacter field of Hub Descriptor is TTT.
+       //
+@@ -1105,16 +1200,12 @@ XhcControlTransfer (
+     //
+     // Hook Set_Config request from UsbBus as we need configure device endpoint.
+     //
+-    for (Index = 0; Index < Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations; Index++) {
+-      if (Xhc->UsbDevContext[SlotId].ConfDesc[Index]->ConfigurationValue == (UINT8)Request->Value) {
+-        if (Xhc->HcCParams.Data.Csz == 0) {
+-          Status = XhcSetConfigCmd (Xhc, SlotId, DeviceSpeed, Xhc->UsbDevContext[SlotId].ConfDesc[Index]);
+-        } else {
+-          Status = XhcSetConfigCmd64 (Xhc, SlotId, DeviceSpeed, Xhc->UsbDevContext[SlotId].ConfDesc[Index]);
+-        }
+-
+-        break;
+-      }
++    EFI_USB_CONFIG_DESCRIPTOR *Config = XhcCachedConfig (&Xhc->UsbDevContext[SlotId], (UINT8)Request->Value);
++    if (Config == NULL) { Status = EFI_UNSUPPORTED; goto ON_EXIT; }
++    if (Xhc->HcCParams.Data.Csz == 0) {
++      Status = XhcSetConfigCmd (Xhc, SlotId, DeviceSpeed, Config);
++    } else {
++      Status = XhcSetConfigCmd64 (Xhc, SlotId, DeviceSpeed, Config);
+     }
+   } else if ((Request->Request     == USB_REQ_SET_INTERFACE) &&
+              (Request->RequestType == USB_REQUEST_TYPE (EfiUsbNoData, USB_REQ_TYPE_STANDARD, USB_TARGET_INTERFACE)))
+@@ -1124,17 +1215,26 @@ XhcControlTransfer (
+     // Request->Value indicates AlterlateSetting to set
+     // Request->Index indicates Interface to set
+     //
++    EFI_USB_CONFIG_DESCRIPTOR *Config = XhcCachedConfig (&Xhc->UsbDevContext[SlotId], Xhc->UsbDevContext[SlotId].ActiveConfiguration);
++    BOOLEAN Found = FALSE;
++    if (Config == NULL || Xhc->UsbDevContext[SlotId].ActiveAlternateSetting == NULL ||
++        Request->Index > 255 || Request->Value > 255) { Status = EFI_UNSUPPORTED; goto ON_EXIT; }
++    for (UINTN Offset = Config->Length; Offset < Config->TotalLength; Offset += ((UINT8 *)Config)[Offset]) {
++      UINT8 *Desc = (UINT8 *)Config + Offset;
++      if (Desc[1] == USB_DESC_TYPE_INTERFACE && Desc[2] == (UINT8)Request->Index && Desc[3] == (UINT8)Request->Value) { Found = TRUE; break; }
++    }
++    if (!Found) { Status = EFI_UNSUPPORTED; goto ON_EXIT; }
+     if (Xhc->UsbDevContext[SlotId].ActiveAlternateSetting[(UINT8)Request->Index] != (UINT8)Request->Value) {
+       if (Xhc->HcCParams.Data.Csz == 0) {
+-        Status = XhcSetInterface (Xhc, SlotId, DeviceSpeed, Xhc->UsbDevContext[SlotId].ConfDesc[Xhc->UsbDevContext[SlotId].ActiveConfiguration - 1], Request);
++        Status = XhcSetInterface (Xhc, SlotId, DeviceSpeed, Config, Request);
+       } else {
+-        Status = XhcSetInterface64 (Xhc, SlotId, DeviceSpeed, Xhc->UsbDevContext[SlotId].ConfDesc[Xhc->UsbDevContext[SlotId].ActiveConfiguration - 1], Request);
++        Status = XhcSetInterface64 (Xhc, SlotId, DeviceSpeed, Config, Request);
+       }
+     }
+   } else if ((Request->Request     == USB_REQ_GET_STATUS) &&
+              (Request->RequestType == USB_REQUEST_TYPE (EfiUsbDataIn, USB_REQ_TYPE_CLASS, USB_TARGET_OTHER)))
+   {
+-    ASSERT (Data != NULL);
++    if (Data == NULL || *DataLength < sizeof (UINT32)) { Status = EFI_DEVICE_ERROR; goto ON_EXIT; }
+     //
+     // Hook Get_Status request from UsbBus to keep track of the port status change.
+     //
+@@ -1685,6 +1785,7 @@ XhcAsyncIsochronousTransfer (
+   return EFI_UNSUPPORTED;
+ }
+ 
++#ifndef DALI_NATIVE_XHCI
+ /**
+   Entry point for EFI drivers.
+ 
+@@ -2314,6 +2415,7 @@ XhcDriverBindingStop (
+   return EFI_SUCCESS;
+ }
+ 
++#endif
+ /**
+   Converts a time in nanoseconds to a performance counter tick count.
+ 
+diff --git a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
+index 6997c96a38..a174bdeb4e 100644
+--- a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
++++ b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
+@@ -13,6 +13,13 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ 
+ #include "Xhci.h"
+ 
++#ifdef DALI_NATIVE_XHCI
++// Native transport retains failed commands and stops DMA before ignored
++// command errors can authorize source cleanup. No PCI behavior is changed.
++VOID DaliNativeXhciCommandFailed (USB_XHCI_INSTANCE *Xhc, EFI_STATUS Status);
++EFI_STATUS DaliNativeXhciCheck (USB_XHCI_INSTANCE *Xhc);
++#endif
++
+ /**
+   Create a command transfer TRB to support XHCI command interfaces.
+ 
+@@ -30,6 +37,9 @@ XhcCreateCmdTrb (
+ {
+   URB  *Urb;
+ 
++#ifdef DALI_NATIVE_XHCI
++  if (EFI_ERROR (DaliNativeXhciCheck (Xhc))) { return NULL; }
++#endif
+   Urb = AllocateZeroPool (sizeof (URB));
+   if (Urb == NULL) {
+     return NULL;
+@@ -82,6 +92,12 @@ XhcCmdTransfer (
+     return EFI_INVALID_PARAMETER;
+   }
+ 
++#ifdef DALI_NATIVE_XHCI
++  Status = DaliNativeXhciCheck (Xhc);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++#endif
+   Status = EFI_DEVICE_ERROR;
+ 
+   if (XhcIsHalt (Xhc) || XhcIsSysError (Xhc)) {
+@@ -114,6 +130,11 @@ XhcCmdTransfer (
+   XhcFreeUrb (Xhc, Urb);
+ 
+ ON_EXIT:
++#ifdef DALI_NATIVE_XHCI
++  if (EFI_ERROR (Status)) {
++    DaliNativeXhciCommandFailed (Xhc, Status);
++  }
++#endif
+   return Status;
+ }
+ 
+@@ -242,6 +263,12 @@ XhcCreateTransferTrb (
+   VOID                           *Map;
+   EFI_STATUS                     Status;
+ 
++#ifdef DALI_NATIVE_XHCI
++  Status = DaliNativeXhciCheck (Xhc);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++#endif
+   SlotId = XhcBusDevAddrToSlotId (Xhc, Urb->Ep.BusAddr);
+   if (SlotId == 0) {
+     return EFI_DEVICE_ERROR;
+@@ -502,7 +529,9 @@ XhcInitSched (
+   // Initialize memory management.
+   //
+   Xhc->MemPool = UsbHcInitMemPool (Xhc->PciIo);
+-  ASSERT (Xhc->MemPool != NULL);
++  if (Xhc->MemPool == NULL) {
++    return;
++  }
+ 
+   //
+   // Program the Max Device Slots Enabled (MaxSlotsEn) field in the CONFIG register (5.4.7)
+@@ -520,7 +549,7 @@ XhcInitSched (
+   //
+   Entries = (Xhc->MaxSlotsEn + 1) * sizeof (UINT64);
+   Dcbaa   = UsbHcAllocateMem (Xhc->MemPool, Entries, FALSE);
+-  ASSERT (Dcbaa != NULL);
++  Xhc->DCBAA = Dcbaa;
+   if (Dcbaa != NULL) {
+     ZeroMem (Dcbaa, Entries);
+   } else {
+@@ -540,15 +569,19 @@ XhcInitSched (
+     // Allocate the buffer to record the Mapping for each scratch buffer in order to Unmap them
+     //
+     ScratchEntryMap = AllocateZeroPool (sizeof (UINTN) * MaxScratchpadBufs);
+-    ASSERT (ScratchEntryMap != NULL);
+     Xhc->ScratchEntryMap = ScratchEntryMap;
++    if (ScratchEntryMap == NULL) {
++      return;
++    }
+ 
+     //
+     // Allocate the buffer to record the host address for each entry
+     //
+     ScratchEntry = AllocateZeroPool (sizeof (UINT64) * MaxScratchpadBufs);
+-    ASSERT (ScratchEntry != NULL);
+     Xhc->ScratchEntry = ScratchEntry;
++    if (ScratchEntry == NULL) {
++      return;
++    }
+ 
+     ScratchPhy = 0;
+     Status     = UsbHcAllocateAlignedPages (
+@@ -559,8 +592,9 @@ XhcInitSched (
+                    &ScratchPhy,
+                    &Xhc->ScratchMap
+                    );
+-    ASSERT_EFI_ERROR (Status);
+-
++    if (EFI_ERROR (Status)) {
++      return;
++    }
+     ZeroMem (ScratchBuf, MaxScratchpadBufs * sizeof (UINT64));
+     Xhc->ScratchBuf = ScratchBuf;
+ 
+@@ -577,7 +611,9 @@ XhcInitSched (
+                           &ScratchEntryPhy,
+                           (VOID **)&ScratchEntryMap[Index]
+                           );
+-      ASSERT_EFI_ERROR (Status);
++      if (EFI_ERROR (Status)) {
++        return;
++      }
+       ZeroMem ((VOID *)(UINTN)ScratchEntry[Index], Xhc->PageSize);
+       //
+       // Fill with the PCI device address
+@@ -614,6 +650,9 @@ XhcInitSched (
+   // always be '0'.
+   //
+   CreateTransferRing (Xhc, CMD_RING_TRB_NUMBER, &Xhc->CmdRing);
++  if (Xhc->CmdRing.RingSeg0 == NULL) {
++    return;
++  }
+   //
+   // The xHC uses the Enqueue Pointer to determine when a Transfer Ring is empty. As it fetches TRBs from a
+   // Transfer Ring it checks for a Cycle bit transition. If a transition detected, the ring is empty.
+@@ -814,7 +853,6 @@ CreateEventRing (
+   Size = sizeof (TRB_TEMPLATE) * EVENT_RING_TRB_NUMBER;
+   Buf  = UsbHcAllocateMem (Xhc->MemPool, Size, TRUE);
+   if (Buf == NULL) {
+-    ASSERT (Buf != NULL);
+     return;
+   }
+ 
+@@ -838,7 +876,6 @@ CreateEventRing (
+   Size = sizeof (EVENT_RING_SEG_TABLE_ENTRY) * ERST_NUMBER;
+   Buf  = UsbHcAllocateMem (Xhc->MemPool, Size, FALSE);
+   if (Buf == NULL) {
+-    ASSERT (Buf != NULL);
+     return;
+   }
+ 
+@@ -919,12 +956,14 @@ CreateTransferRing (
+   LINK_TRB              *EndTrb;
+   EFI_PHYSICAL_ADDRESS  PhyAddr;
+ 
++  if (TransferRing == NULL) {
++    return;
++  }
+   Buf = UsbHcAllocateMem (Xhc->MemPool, sizeof (TRB_TEMPLATE) * TrbNum, TRUE);
+-  ASSERT (Buf != NULL);
+-  ASSERT (((UINTN)Buf & 0x3F) == 0);
+   if (Buf == NULL) {
+     return;
+   }
++  ASSERT (((UINTN)Buf & 0x3F) == 0);
+ 
+   ZeroMem (Buf, sizeof (TRB_TEMPLATE) * TrbNum);
+ 
+@@ -967,19 +1006,21 @@ XhcFreeEventRing (
+   IN  EVENT_RING         *EventRing
+   )
+ {
+-  if (EventRing->EventRingSeg0 == NULL) {
+-    return EFI_SUCCESS;
+-  }
+-
+   //
+   // Free EventRing Segment 0
+   //
+-  UsbHcFreeMem (Xhc->MemPool, EventRing->EventRingSeg0, sizeof (TRB_TEMPLATE) * EVENT_RING_TRB_NUMBER);
++  if (EventRing->EventRingSeg0 != NULL) {
++    UsbHcFreeMem (Xhc->MemPool, EventRing->EventRingSeg0, sizeof (TRB_TEMPLATE) * EVENT_RING_TRB_NUMBER);
++    EventRing->EventRingSeg0 = NULL;
++  }
+ 
+   //
+   // Free ESRT table
+   //
+-  UsbHcFreeMem (Xhc->MemPool, EventRing->ERSTBase, sizeof (EVENT_RING_SEG_TABLE_ENTRY) * ERST_NUMBER);
++  if (EventRing->ERSTBase != NULL) {
++    UsbHcFreeMem (Xhc->MemPool, EventRing->ERSTBase, sizeof (EVENT_RING_SEG_TABLE_ENTRY) * ERST_NUMBER);
++    EventRing->ERSTBase = NULL;
++  }
+   return EFI_SUCCESS;
+ }
+ 
+@@ -997,22 +1038,30 @@ XhcFreeSched (
+   UINT32  Index;
+   UINT64  *ScratchEntry;
+ 
+-  if (Xhc->ScratchBuf != NULL) {
++  if (Xhc->ScratchEntry != NULL && Xhc->ScratchEntryMap != NULL) {
+     ScratchEntry = Xhc->ScratchEntry;
+     for (Index = 0; Index < Xhc->MaxScratchpadBufs; Index++) {
+       //
+       // Free Scratchpad Buffers
+       //
+-      UsbHcFreeAlignedPages (Xhc->PciIo, (VOID *)(UINTN)ScratchEntry[Index], EFI_SIZE_TO_PAGES (Xhc->PageSize), (VOID *)Xhc->ScratchEntryMap[Index]);
++      if (ScratchEntry[Index] != 0 && Xhc->ScratchEntryMap[Index] != 0) {
++        UsbHcFreeAlignedPages (Xhc->PciIo, (VOID *)(UINTN)ScratchEntry[Index], EFI_SIZE_TO_PAGES (Xhc->PageSize), (VOID *)Xhc->ScratchEntryMap[Index]);
++        ScratchEntry[Index] = 0;
++        Xhc->ScratchEntryMap[Index] = 0;
++      }
+     }
+ 
+     //
+     // Free Scratchpad Buffer Array
+     //
++  }
++  if (Xhc->ScratchBuf != NULL) {
+     UsbHcFreeAlignedPages (Xhc->PciIo, Xhc->ScratchBuf, EFI_SIZE_TO_PAGES (Xhc->MaxScratchpadBufs * sizeof (UINT64)), Xhc->ScratchMap);
+-    FreePool (Xhc->ScratchEntryMap);
+-    FreePool (Xhc->ScratchEntry);
++    Xhc->ScratchBuf = NULL;
++    Xhc->ScratchMap = NULL;
+   }
++  if (Xhc->ScratchEntryMap != NULL) { FreePool (Xhc->ScratchEntryMap); Xhc->ScratchEntryMap = NULL; }
++  if (Xhc->ScratchEntry != NULL) { FreePool (Xhc->ScratchEntry); Xhc->ScratchEntry = NULL; }
+ 
+   if (Xhc->CmdRing.RingSeg0 != NULL) {
+     UsbHcFreeMem (Xhc->MemPool, Xhc->CmdRing.RingSeg0, sizeof (TRB_TEMPLATE) * CMD_RING_TRB_NUMBER);
+@@ -1350,6 +1399,11 @@ XhcExecTransfer (
+   Finished          = FALSE;
+   IndefiniteTimeout = FALSE;
+ 
++#ifdef DALI_NATIVE_XHCI
++  Status = DaliNativeXhciCheck (Xhc);
++  if (EFI_ERROR (Status)) { return Status; }
++  if (Timeout == 0 || Timeout > 10000) { Timeout = 10000; }
++#endif
+   if (CmdTransfer) {
+     SlotId = 0;
+     Dci    = 0;
+@@ -1378,6 +1432,13 @@ XhcExecTransfer (
+   CurrentTick  = GetPerformanceCounter ();
+ 
+   do {
++#ifdef DALI_NATIVE_XHCI
++    Status = DaliNativeXhciCheck (Xhc);
++    if (EFI_ERROR (Status)) {
++      Urb->Result = EFI_USB_ERR_SYSTEM;
++      return Status;
++    }
++#endif
+     Finished = XhcCheckUrbResult (Xhc, Urb);
+     if (Finished) {
+       break;
+@@ -2275,7 +2336,6 @@ XhcInitializeDeviceSlot (
+   // 1) Allocate an Input Context data structure (6.2.5) and initialize all fields to '0'.
+   //
+   InputContext = UsbHcAllocateMem (Xhc->MemPool, sizeof (INPUT_CONTEXT), FALSE);
+-  ASSERT (InputContext != NULL);
+   ASSERT (((UINTN)InputContext & 0x3F) == 0);
+   if (InputContext == NULL) {
+     return RETURN_OUT_OF_RESOURCES;
+@@ -2340,8 +2400,10 @@ XhcInitializeDeviceSlot (
+   // 4) Allocate and initialize the Transfer Ring for the Default Control Endpoint.
+   //
+   EndpointTransferRing                               = AllocateZeroPool (sizeof (TRANSFER_RING));
++  if (EndpointTransferRing == NULL) { return EFI_OUT_OF_RESOURCES; }
+   Xhc->UsbDevContext[SlotId].EndpointTransferRing[0] = EndpointTransferRing;
+   CreateTransferRing (Xhc, TR_RING_TRB_NUMBER, (TRANSFER_RING *)Xhc->UsbDevContext[SlotId].EndpointTransferRing[0]);
++  if (EndpointTransferRing->RingSeg0 == NULL) { return EFI_OUT_OF_RESOURCES; }
+   //
+   // 5) Initialize the Input default control Endpoint 0 Context (6.2.3).
+   //
+@@ -2382,7 +2444,6 @@ XhcInitializeDeviceSlot (
+   // 6) Allocate the Output Device Context data structure (6.2.1) and initialize it to '0'.
+   //
+   OutputContext = UsbHcAllocateMem (Xhc->MemPool, sizeof (DEVICE_CONTEXT), FALSE);
+-  ASSERT (OutputContext != NULL);
+   ASSERT (((UINTN)OutputContext & 0x3F) == 0);
+   if (OutputContext == NULL) {
+     return EFI_OUT_OF_RESOURCES;
+@@ -2509,7 +2570,6 @@ XhcInitializeDeviceSlot64 (
+   // 1) Allocate an Input Context data structure (6.2.5) and initialize all fields to '0'.
+   //
+   InputContext = UsbHcAllocateMem (Xhc->MemPool, sizeof (INPUT_CONTEXT_64), FALSE);
+-  ASSERT (InputContext != NULL);
+   ASSERT (((UINTN)InputContext & 0x3F) == 0);
+   if (InputContext == NULL) {
+     return EFI_OUT_OF_RESOURCES;
+@@ -2574,8 +2634,10 @@ XhcInitializeDeviceSlot64 (
+   // 4) Allocate and initialize the Transfer Ring for the Default Control Endpoint.
+   //
+   EndpointTransferRing                               = AllocateZeroPool (sizeof (TRANSFER_RING));
++  if (EndpointTransferRing == NULL) { return EFI_OUT_OF_RESOURCES; }
+   Xhc->UsbDevContext[SlotId].EndpointTransferRing[0] = EndpointTransferRing;
+   CreateTransferRing (Xhc, TR_RING_TRB_NUMBER, (TRANSFER_RING *)Xhc->UsbDevContext[SlotId].EndpointTransferRing[0]);
++  if (EndpointTransferRing->RingSeg0 == NULL) { return EFI_OUT_OF_RESOURCES; }
+   //
+   // 5) Initialize the Input default control Endpoint 0 Context (6.2.3).
+   //
+@@ -2616,7 +2678,6 @@ XhcInitializeDeviceSlot64 (
+   // 6) Allocate the Output Device Context data structure (6.2.1) and initialize it to '0'.
+   //
+   OutputContext = UsbHcAllocateMem (Xhc->MemPool, sizeof (DEVICE_CONTEXT_64), FALSE);
+-  ASSERT (OutputContext != NULL);
+   ASSERT (((UINTN)OutputContext & 0x3F) == 0);
+   if (OutputContext == NULL) {
+     return EFI_OUT_OF_RESOURCES;
+@@ -2715,8 +2776,7 @@ XhcDisableSlotCmd (
+     Status = XhcDisableSlotCmd (Xhc, Xhc->UsbDevContext[Index + 1].SlotId);
+ 
+     if (EFI_ERROR (Status)) {
+-      DEBUG ((DEBUG_ERROR, "XhcDisableSlotCmd: failed to disable child, ignore error\n"));
+-      Xhc->UsbDevContext[Index + 1].SlotId = 0;
++      return Status;
+     }
+   }
+ 
+@@ -2760,22 +2820,29 @@ XhcDisableSlotCmd (
+     }
+   }
+ 
+-  for (Index = 0; Index < Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations; Index++) {
+-    if (Xhc->UsbDevContext[SlotId].ConfDesc[Index] != NULL) {
+-      FreePool (Xhc->UsbDevContext[SlotId].ConfDesc[Index]);
++  if (Xhc->UsbDevContext[SlotId].ConfDesc != NULL) {
++    for (Index = 0; Index < Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations; Index++) {
++      if (Xhc->UsbDevContext[SlotId].ConfDesc[Index] != NULL) {
++        FreePool (Xhc->UsbDevContext[SlotId].ConfDesc[Index]);
++      }
+     }
++    FreePool (Xhc->UsbDevContext[SlotId].ConfDesc);
++    Xhc->UsbDevContext[SlotId].ConfDesc = NULL;
+   }
+ 
+   if (Xhc->UsbDevContext[SlotId].ActiveAlternateSetting != NULL) {
+     FreePool (Xhc->UsbDevContext[SlotId].ActiveAlternateSetting);
++    Xhc->UsbDevContext[SlotId].ActiveAlternateSetting = NULL;
+   }
+ 
+   if (Xhc->UsbDevContext[SlotId].InputContext != NULL) {
+     UsbHcFreeMem (Xhc->MemPool, Xhc->UsbDevContext[SlotId].InputContext, sizeof (INPUT_CONTEXT));
++    Xhc->UsbDevContext[SlotId].InputContext = NULL;
+   }
+ 
+   if (Xhc->UsbDevContext[SlotId].OutputContext != NULL) {
+     UsbHcFreeMem (Xhc->MemPool, Xhc->UsbDevContext[SlotId].OutputContext, sizeof (DEVICE_CONTEXT));
++    Xhc->UsbDevContext[SlotId].OutputContext = NULL;
+   }
+ 
+   //
+@@ -2828,8 +2895,7 @@ XhcDisableSlotCmd64 (
+     Status = XhcDisableSlotCmd64 (Xhc, Xhc->UsbDevContext[Index + 1].SlotId);
+ 
+     if (EFI_ERROR (Status)) {
+-      DEBUG ((DEBUG_ERROR, "XhcDisableSlotCmd: failed to disable child, ignore error\n"));
+-      Xhc->UsbDevContext[Index + 1].SlotId = 0;
++      return Status;
+     }
+   }
+ 
+@@ -2873,22 +2939,29 @@ XhcDisableSlotCmd64 (
+     }
+   }
+ 
+-  for (Index = 0; Index < Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations; Index++) {
+-    if (Xhc->UsbDevContext[SlotId].ConfDesc[Index] != NULL) {
+-      FreePool (Xhc->UsbDevContext[SlotId].ConfDesc[Index]);
++  if (Xhc->UsbDevContext[SlotId].ConfDesc != NULL) {
++    for (Index = 0; Index < Xhc->UsbDevContext[SlotId].DevDesc.NumConfigurations; Index++) {
++      if (Xhc->UsbDevContext[SlotId].ConfDesc[Index] != NULL) {
++        FreePool (Xhc->UsbDevContext[SlotId].ConfDesc[Index]);
++      }
+     }
++    FreePool (Xhc->UsbDevContext[SlotId].ConfDesc);
++    Xhc->UsbDevContext[SlotId].ConfDesc = NULL;
+   }
+ 
+   if (Xhc->UsbDevContext[SlotId].ActiveAlternateSetting != NULL) {
+     FreePool (Xhc->UsbDevContext[SlotId].ActiveAlternateSetting);
++    Xhc->UsbDevContext[SlotId].ActiveAlternateSetting = NULL;
+   }
+ 
+   if (Xhc->UsbDevContext[SlotId].InputContext != NULL) {
+     UsbHcFreeMem (Xhc->MemPool, Xhc->UsbDevContext[SlotId].InputContext, sizeof (INPUT_CONTEXT_64));
++    Xhc->UsbDevContext[SlotId].InputContext = NULL;
+   }
+ 
+   if (Xhc->UsbDevContext[SlotId].OutputContext != NULL) {
+     UsbHcFreeMem (Xhc->MemPool, Xhc->UsbDevContext[SlotId].OutputContext, sizeof (DEVICE_CONTEXT_64));
++    Xhc->UsbDevContext[SlotId].OutputContext = NULL;
+   }
+ 
+   //
+@@ -3040,8 +3113,10 @@ XhcInitializeEndpointContext (
+         InputContext->EP[Dci-1].AverageTRBLength = 0x1000;
+         if (Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] == NULL) {
+           EndpointTransferRing                                   = AllocateZeroPool (sizeof (TRANSFER_RING));
++          if (EndpointTransferRing == NULL) { return 0; }
+           Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] = (VOID *)EndpointTransferRing;
+           CreateTransferRing (Xhc, TR_RING_TRB_NUMBER, (TRANSFER_RING *)Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1]);
++          if (EndpointTransferRing->RingSeg0 == NULL) { return 0; }
+           DEBUG ((
+             DEBUG_INFO,
+             "Endpoint[%x]: Created BULK ring [%p~%p)\n",
+@@ -3091,8 +3166,10 @@ XhcInitializeEndpointContext (
+ 
+         if (Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] == NULL) {
+           EndpointTransferRing                                   = AllocateZeroPool (sizeof (TRANSFER_RING));
++          if (EndpointTransferRing == NULL) { return 0; }
+           Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] = (VOID *)EndpointTransferRing;
+           CreateTransferRing (Xhc, TR_RING_TRB_NUMBER, (TRANSFER_RING *)Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1]);
++          if (EndpointTransferRing->RingSeg0 == NULL) { return 0; }
+           DEBUG ((
+             DEBUG_INFO,
+             "Endpoint[%x]: Created INT ring [%p~%p)\n",
+@@ -3216,8 +3293,10 @@ XhcInitializeEndpointContext64 (
+         InputContext->EP[Dci-1].AverageTRBLength = 0x1000;
+         if (Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] == NULL) {
+           EndpointTransferRing                                   = AllocateZeroPool (sizeof (TRANSFER_RING));
++          if (EndpointTransferRing == NULL) { return 0; }
+           Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] = (VOID *)EndpointTransferRing;
+           CreateTransferRing (Xhc, TR_RING_TRB_NUMBER, (TRANSFER_RING *)Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1]);
++          if (EndpointTransferRing->RingSeg0 == NULL) { return 0; }
+           DEBUG ((
+             DEBUG_INFO,
+             "Endpoint64[%x]: Created BULK ring [%p~%p)\n",
+@@ -3267,8 +3346,10 @@ XhcInitializeEndpointContext64 (
+ 
+         if (Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] == NULL) {
+           EndpointTransferRing                                   = AllocateZeroPool (sizeof (TRANSFER_RING));
++          if (EndpointTransferRing == NULL) { return 0; }
+           Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1] = (VOID *)EndpointTransferRing;
+           CreateTransferRing (Xhc, TR_RING_TRB_NUMBER, (TRANSFER_RING *)Xhc->UsbDevContext[SlotId].EndpointTransferRing[Dci-1]);
++          if (EndpointTransferRing->RingSeg0 == NULL) { return 0; }
+           DEBUG ((
+             DEBUG_INFO,
+             "Endpoint64[%x]: Created INT ring [%p~%p)\n",
+@@ -3366,6 +3447,7 @@ XhcSetConfigCmd (
+     }
+ 
+     Dci = XhcInitializeEndpointContext (Xhc, SlotId, DeviceSpeed, InputContext, IfDesc);
++    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }
+@@ -3459,6 +3541,7 @@ XhcSetConfigCmd64 (
+     }
+ 
+     Dci = XhcInitializeEndpointContext64 (Xhc, SlotId, DeviceSpeed, InputContext, IfDesc);
++    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }
+@@ -3848,6 +3931,7 @@ XhcSetInterface (
+     //   c. Initialize the Endpoint Context data structure.
+     //
+     Dci = XhcInitializeEndpointContext (Xhc, SlotId, DeviceSpeed, InputContext, IfDescSet);
++    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }
+@@ -4055,6 +4139,7 @@ XhcSetInterface64 (
+     //   c. Initialize the Endpoint Context data structure.
+     //
+     Dci = XhcInitializeEndpointContext64 (Xhc, SlotId, DeviceSpeed, InputContext, IfDescSet);
++    if (Dci == 0) { return EFI_OUT_OF_RESOURCES; }
+     if (Dci > MaxDci) {
+       MaxDci = Dci;
+     }

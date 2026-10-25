@@ -12,6 +12,7 @@
   DaliUsbPlatformLib|Include/Library/DaliUsbPlatformLib.h
   DaliUsbI2cLib|Include/Library/DaliUsbI2cLib.h
   DaliUsbXhciIoLib|Include/Library/DaliUsbXhciIoLib.h
+  DaliUsbNativeHostLib|Include/Library/DaliUsbNativeHostLib.h
 
 [Guids]
   gDaliPayloadFileGuid = {0x073E16DA, 0x8776, 0x4FBA, {0x96, 0xC4, 0x35, 0xBB, 0xE0, 0x6A, 0x41, 0xDF}}

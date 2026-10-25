@@ -18,6 +18,7 @@
   DaliUsbPlatformLib|daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
   DaliUsbI2cLib|daliPkg/Library/UsbI2cLib/UsbI2cLib.inf
   DaliUsbXhciIoLib|daliPkg/Library/UsbXhciIoLib/UsbXhciIoLib.inf
+  DaliUsbNativeHostLib|daliPkg/Library/UsbNativeHostLib/UsbNativeHostLib.inf
   BaseLib|MdePkg/Library/BaseLib/BaseLib.inf
   BaseMemoryLib|MdePkg/Library/BaseMemoryLib/BaseMemoryLib.inf
   DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
@@ -34,4 +35,5 @@
   daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
   daliPkg/Library/UsbI2cLib/UsbI2cLib.inf
   daliPkg/Library/UsbXhciIoLib/UsbXhciIoLib.inf
+  daliPkg/Library/UsbNativeHostLib/UsbNativeHostLib.inf
   MdePkg/Library/BaseFdtLib/BaseFdtLib.inf

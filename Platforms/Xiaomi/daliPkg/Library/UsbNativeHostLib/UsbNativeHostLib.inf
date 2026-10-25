@@ -1,0 +1,34 @@
+[Defines]
+  INF_VERSION = 0x0001001B
+  BASE_NAME = DaliUsbNativeHostLib
+  FILE_GUID = 6bc8f3af-7077-4e65-b7d6-c2864a1b602a
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS = DaliUsbNativeHostLib|DXE_DRIVER UEFI_APPLICATION
+[Sources]
+  UsbNativeHostLib.c
+  MuEngine.c
+  MuSchedule.c
+  MuRegister.c
+  MuMemory.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  daliPkg/dali.dec
+[LibraryClasses]
+  BaseLib
+  SynchronizationLib
+  BaseMemoryLib
+  DebugLib
+  MemoryAllocationLib
+  PcdLib
+  TimerLib
+  UefiBootServicesTableLib
+  ReportStatusCodeLib
+  DaliUsbXhciIoLib
+[Protocols]
+  gEfiUsb2HcProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiPciIoProtocolGuid
+[Pcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdDelayXhciHCReset

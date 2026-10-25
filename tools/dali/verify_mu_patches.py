@@ -15,6 +15,7 @@ PATCH_NAMES = (
     "ExitBootServices-Trace.patch",
     "Timer.patch",
     "Usb-Bus.patch",
+    "Xhci-Native-Safety.patch",
 )
 
 
