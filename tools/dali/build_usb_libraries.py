@@ -46,8 +46,10 @@ def main():
     subprocess.run(command, cwd=output, env=env, check=True)
     artifacts, members, definitions = {}, {}, {}
     required = {
-        'UsbCoreLib': (('UsbCore', 'UsbMtu3Qmu', 'UsbMtu3Ep0', 'UsbMtu3Endpoints', 'UsbMtu3Device'),
-                       ('usb_cdc_control', 'usb_bot_command', 'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init', 'usb_mtu3_device_init')),
+        'UsbCoreLib': (('UsbCore', 'UsbHost', 'UsbMtu3Qmu', 'UsbMtu3Ep0', 'UsbMtu3Endpoints', 'UsbMtu3Device'),
+                       ('usb_cdc_control', 'usb_host_enumerate', 'usb_host_start_storage',
+                        'usb_host_poll_input', 'usb_host_disconnect', 'usb_bot_command',
+                        'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init', 'usb_mtu3_device_init')),
         'DaliUsbLib': (('DaliUsbPmif', 'DaliUsbVusb', 'DaliUsbTypec', 'DaliUsbMt6379Repeater', 'DaliUsbNxpRepeater', 'DaliUsbGpio', 'DaliUsbI2c', 'DaliUsbI2cPins', 'DaliUsbI2cClocks', 'DaliUsbPhy', 'DaliUsbDomains', 'DaliUsbResources', 'DaliUsbIppc', 'DaliUsbCalibration', 'DaliUsbClockRates'),
                        ('dali_usb_pmif_init', 'dali_mt6379_read', 'dali_usb_typec_start', 'dali_usb_vbus_enable',
                         'dali_mt6379_repeater_power_on', 'dali_nxp_repeater_probe', 'dali_usb_gpio72_set',
