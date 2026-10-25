@@ -42,7 +42,22 @@ TPL, HCE, disconnect, release, sticky-error and reentry rules. These are separat
 software checks, not an end-to-end hardware qualification.
 
 The earlier `ea82d126` hardware run qualified physical UEFI named-LUN read-only,
-real device sync and the previous diagnostic stop. It did not exercise this new
-private shutdown command path. A new source-bound candidate and raw evidence
-are required for that path; XNU physical ownership, scratch writes and reboot
-persistence remain unqualified. Media writes remain disabled.
+real device sync and the previous diagnostic stop. The subsequent
+`run-20261025T134202Z-4d77705d` exercised this provider through BDS with firmware
+`cffefda`, device `38ab920` and generic `b54db17` / DarwinBoot `fb0e77f`.
+The source-bound 49,877-byte raw console SHA256 is
+`f82f14dd814205d8990cfe49c519f1e1315f9c2efbf3caeb5ac822dc1f75fca2`.
+It records `closed=1 drained-synced=1 mask=7 commands=3 result=Success`, followed
+by successful quiesce with HCE=0, RAM menu and firmware return. LUN-2 known
+blocks, all 96 partition paths/GUIDs and ordinary LUN-0/1/2 syncs also passed.
+
+The 96 partition-driver teardown flushes were refused after admission closed;
+they are not successful device syncs. The private provider sync completed before
+stop/disconnect, without reopening public submission. The original complete
+boot_b, Android B/root and all 18 original hashes were restored; an independent
+audit rehashed backup bytes, checked candidate/baseline/raw bindings and verified
+the cleared pending record and consumed token.
+
+This qualifies the BDS-invoked provider's private sync/stop/DMA cleanup path.
+DarwinBoot-to-XNU physical ownership, scratch writes and reboot persistence
+remain unqualified. Media writes remain disabled.
