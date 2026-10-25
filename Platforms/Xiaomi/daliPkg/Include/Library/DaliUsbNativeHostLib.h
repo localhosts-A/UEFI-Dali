@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 #include <Library/DaliUsbXhciIoLib.h>
+#include <Protocol/DaliUsbNativeHostHandoff.h>
 #include <Protocol/Usb2HostController.h>
 #include <Protocol/DevicePath.h>
 
 typedef struct {
   EFI_USB2_HC_PROTOCOL Protocol;
+  DALI_USB_NATIVE_HOST_HANDOFF_PROTOCOL HandoffProtocol;
   DALI_USB_XHCI_IO *Io;
   VOID *Engine;
   EFI_HANDLE Handle;
@@ -31,8 +33,10 @@ typedef struct {
  * still must select alternate setting 1 before multi-TT routing is active. No
  * hardware qualification is asserted.
  * PrepareHandoff irreversibly rejects submissions and freshly proves halt,
- * without allocation/free. Call it before the final GetMemoryMap. EBS is only
- * a last shutdown latch; it cannot approve a failed OS handoff.
+ * without allocation/free. Start publishes this callback through the shared
+ * DaliUsbNativeHostHandoff protocol; DarwinBoot calls it before the final
+ * GetMemoryMap. Repeated calls are safe. EBS is only a last shutdown latch; it
+ * cannot approve a failed OS handoff.
  * Stop disconnects class drivers, halts, uninstalls the public USB2/path pair,
  * destroys source users, and leaves IO available for its separate Close. */
 EFI_STATUS DaliUsbNativeHostStart(DALI_USB_NATIVE_HOST *, DALI_USB_XHCI_IO *,

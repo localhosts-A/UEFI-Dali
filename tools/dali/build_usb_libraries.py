@@ -38,7 +38,7 @@ def main():
     env.update(WORKSPACE=str(output), CONF_PATH=str(conf), EDK_TOOLS_PATH=str(tools),
                PACKAGES_PATH=os.pathsep.join(map(str, (root / 'Platforms/Xiaomi',
                    root / 'Silicon/MediaTek', root / 'Silicon/Silicium',
-                   generic / 'drivers', device / 'drivers', edk))),
+                   generic / 'package', generic / 'drivers', device / 'drivers', edk))),
                CLANG_BIN=str(Path(clang).parent) + '/', PYTHON_COMMAND=sys.executable)
     env['PATH'] = os.pathsep.join((str(tools / 'BinWrappers/PosixLike'), str(tools / 'Source/C/bin'), env.get('PATH', '')))
     command = [str(tools / 'BinWrappers/PosixLike/build'), '-p', 'daliPkg/UsbLibraries.dsc',

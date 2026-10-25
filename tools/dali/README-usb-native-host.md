@@ -29,11 +29,16 @@ after a successfully disabled slot. CallbackDepth prevents callback-triggered
 Stop from freeing its own executing context.
 
 PrepareHandoff refuses submissions and freshly proves halt without changing
-the memory map. The platform loader must call it before the final
-GetMemoryMap and refuse a failed proof. Its repeated call is safe. The EBS
-event is a permanent last shutdown latch, not permission to proceed after a
-failed handoff. This host owns IO's EBS latch; other events may not close IO
-or release providers before its halt.
+the memory map. Start publishes it through the shared
+DaliUsbNativeHostHandoff protocol. DarwinBoot enumerates every USB2 HC after
+closing its input files and before the final GetMemoryMap; it calls this stronger
+callback for native hosts and uses standard SetState(Halt) for other published
+USB2 controllers. Any missing method or failed halt proof refuses the boot.
+The call is outside both the map-buffer allocation loop and the EBS retry loop,
+and repeated native callbacks are safe. The EBS event is a permanent last
+shutdown latch, not permission to proceed after a failed handoff. This host
+owns IO's EBS latch; other events may not close IO or release providers before
+its halt.
 
 Resources/MuPatches/Xhci-Native-Safety.patch reproduces checked source
 allocation failures, partial scheduler cleanup, bounded configuration-cache
@@ -93,8 +98,11 @@ python tools/dali/test_usb_xhci_io.py
 python tools/dali/build_usb_libraries.py --output ../.outputs/usb-libraries-native-host
 ```
 
-This is a callable engine and library checkpoint. It is not a ready MT6991
+This is a callable engine, library and pre-final-map protocol checkpoint. QEMU
+tests exercise DarwinBoot with a one-shot mock native provider and with no
+native provider; the latter uses QEMU's standard USB2 host-controller protocol.
+Neither run emulates the native Dali controller. It is not a ready MT6991
 hardware backend: no Dali production worker currently supplies its qualified
-board policy/DMA provider or calls Start. Native-path QEMU and DarwinBoot
-pre-final-map wiring remain required. The existing PCI/source QEMU gate is
-separate. These files remain outside the default FV and hardware_qualified=false.
+board policy/DMA provider or calls Start. Native-path QEMU remains required.
+The existing PCI/source USB-storage QEMU gate is separate. These files remain
+outside the default FV and hardware_qualified=false.

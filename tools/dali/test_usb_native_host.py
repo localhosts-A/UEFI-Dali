@@ -23,7 +23,8 @@ class NativeHostTests(unittest.TestCase):
                      '-I' + str(edk / 'MdePkg/Include'), '-I' + str(edk / 'MdePkg/Include/X64'),
                      '-I' + str(edk / 'MdeModulePkg/Include'),
                      '-I' + str(edk / 'MdeModulePkg/Bus/Pci/XhciDxe'),
-                     '-I' + str(ROOT / 'Platforms/Xiaomi/daliPkg/Include')]
+                     '-I' + str(ROOT / 'Platforms/Xiaomi/daliPkg/Include'),
+                     '-I' + str(ROOT.parent / 'UniXNU/package/UniXNUPkg/Include')]
             library = ROOT / 'Platforms/Xiaomi/daliPkg/Library'
             sources = [ROOT / 'tools/dali/fixtures/usb_native_host_test.c',
                        library / 'UsbNativeHostLib/UsbNativeHostLib.c',

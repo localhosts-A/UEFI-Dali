@@ -26,6 +26,7 @@ static UINTN callbacks,short_callbacks;
 static BOOLEAN cancel_in_callback;
 static EFI_DEVICE_PATH_PROTOCOL path={END_DEVICE_PATH_TYPE,END_ENTIRE_DEVICE_PATH_SUBTYPE,{4,0}};
 EFI_GUID gEfiUsb2HcProtocolGuid={0},gEfiDevicePathProtocolGuid={1};
+EFI_GUID gDaliUsbNativeHostHandoffProtocolGuid=DALI_USB_NATIVE_HOST_HANDOFF_PROTOCOL_GUID;
 VOID EFIAPI DebugAssert(CONST CHAR8 *file,UINTN line,CONST CHAR8 *description) {
   fprintf(stderr,"DEBUG ASSERT %s:%llu %s\n",file,(unsigned long long)line,description);abort();
 }
@@ -80,10 +81,30 @@ static EFI_STATUS EFIAPI timer(EFI_EVENT event,EFI_TIMER_DELAY delay,UINT64 trig
   (void)event;assert(delay==TimerPeriodic && trigger==10000);return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI install(EFI_HANDLE *handle,...) {
-  installs++;if(fail_install)return EFI_DEVICE_ERROR;*handle=&host;return EFI_SUCCESS;
+  installs++;if(fail_install)return EFI_DEVICE_ERROR;
+  va_list args;va_start(args,handle);BOOLEAN hc=FALSE,path_present=FALSE,handoff=FALSE;EFI_GUID *guid;
+  while((guid=va_arg(args,EFI_GUID *))!=NULL) {
+    VOID *interface=va_arg(args,VOID *);
+    if(guid==&gEfiUsb2HcProtocolGuid) {assert(interface==&host.Protocol);hc=TRUE;}
+    else if(guid==&gEfiDevicePathProtocolGuid) {assert(interface==&path);path_present=TRUE;}
+    else if(guid==&gDaliUsbNativeHostHandoffProtocolGuid) {
+      assert(interface==&host.HandoffProtocol && host.HandoffProtocol.Revision==DALI_USB_NATIVE_HOST_HANDOFF_PROTOCOL_REVISION &&
+        host.HandoffProtocol.PrepareHandoff!=NULL);handoff=TRUE;
+    } else {assert(0);}
+  }
+  va_end(args);assert(hc && path_present && handoff);*handle=&host;return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI uninstall(EFI_HANDLE handle,...) {
-  assert(handle==&host);uninstalls++;return fail_uninstall?EFI_ACCESS_DENIED:EFI_SUCCESS;
+  assert(handle==&host);uninstalls++;
+  va_list args;va_start(args,handle);BOOLEAN hc=FALSE,path_present=FALSE,handoff=FALSE;EFI_GUID *guid;
+  while((guid=va_arg(args,EFI_GUID *))!=NULL) {
+    VOID *interface=va_arg(args,VOID *);
+    if(guid==&gEfiUsb2HcProtocolGuid) {assert(interface==&host.Protocol);hc=TRUE;}
+    else if(guid==&gEfiDevicePathProtocolGuid) {assert(interface==&path);path_present=TRUE;}
+    else if(guid==&gDaliUsbNativeHostHandoffProtocolGuid) {assert(interface==&host.HandoffProtocol);handoff=TRUE;}
+    else {assert(0);}
+  }
+  va_end(args);assert(hc && path_present && handoff);return fail_uninstall?EFI_ACCESS_DENIED:EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI disconnect(EFI_HANDLE handle,EFI_HANDLE driver,EFI_HANDLE child) {
   assert(handle==&host && !driver && !child && tpl==TPL_APPLICATION);disconnects++;return EFI_SUCCESS;
@@ -121,9 +142,10 @@ static void lifecycle(void) {
   UINTN writes=m.writes;
   assert(host.Protocol.GetRootHubPortStatus(&host.Protocol,2,(EFI_USB_PORT_STATUS *)&state)==EFI_INVALID_PARAMETER && m.writes==writes);
   UINTN pool_ops=m.pool_ops,frees=m.frees;
-  assert(DaliUsbNativeHostPrepareHandoff(&host)==EFI_SUCCESS && host.Prepared && c.HaltProven);
+  assert(host.HandoffProtocol.Revision==DALI_USB_NATIVE_HOST_HANDOFF_PROTOCOL_REVISION);
+  assert(host.HandoffProtocol.PrepareHandoff(&host.HandoffProtocol)==EFI_SUCCESS && host.Prepared && c.HaltProven);
   assert(m.pool_ops==pool_ops && m.frees==frees);
-  assert(DaliUsbNativeHostPrepareHandoff(&host)==EFI_SUCCESS);
+  assert(host.HandoffProtocol.PrepareHandoff(&host.HandoffProtocol)==EFI_SUCCESS);
   assert(host.Protocol.SetState(&host.Protocol,EfiUsbHcStateOperational)==EFI_DEVICE_ERROR);
   finish();assert(uninstalls==1 && disconnects==1);
 }

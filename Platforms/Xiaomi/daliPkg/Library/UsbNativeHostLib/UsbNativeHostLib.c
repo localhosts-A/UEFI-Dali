@@ -673,6 +673,14 @@ EFI_STATUS DaliUsbNativeHostPoll(DALI_USB_NATIVE_HOST *H) {
   return Leave(H,T,EFI_SUCCESS);
 }
 STATIC VOID EFIAPI PollEvent(EFI_EVENT Event, VOID *Context) { (VOID)Event; DaliUsbNativeHostPoll(Context); }
+STATIC EFI_STATUS EFIAPI HandoffProtocolPrepare(DALI_USB_NATIVE_HOST_HANDOFF_PROTOCOL *This) {
+  if (This == NULL) { return EFI_INVALID_PARAMETER; }
+  DALI_USB_NATIVE_HOST *H=BASE_CR(This,DALI_USB_NATIVE_HOST,HandoffProtocol);
+  if (H->HandoffProtocol.PrepareHandoff!=HandoffProtocolPrepare || H->Engine==NULL || H->Closed) {
+    return EFI_UNSUPPORTED;
+  }
+  return DaliUsbNativeHostPrepareHandoff(H);
+}
 STATIC VOID EFIAPI ExitEvent(EFI_EVENT Event, VOID *Context) {
   (VOID)Event; DALI_USB_NATIVE_HOST *H=Context;
   H->Accepting=FALSE;
@@ -700,6 +708,8 @@ EFI_STATUS DaliUsbNativeHostStart(DALI_USB_NATIVE_HOST *H, DALI_USB_XHCI_IO *Io,
   H->Protocol.ControlTransfer=Control; H->Protocol.BulkTransfer=Bulk; H->Protocol.SyncInterruptTransfer=Interrupt;
   H->Protocol.AsyncInterruptTransfer=Async; H->Protocol.GetRootHubPortStatus=PortStatus;
   H->Protocol.SetRootHubPortFeature=SetPort; H->Protocol.ClearRootHubPortFeature=ClearPort;
+  H->HandoffProtocol.Revision=DALI_USB_NATIVE_HOST_HANDOFF_PROTOCOL_REVISION;
+  H->HandoffProtocol.PrepareHandoff=HandoffProtocolPrepare;
   EFI_TPL T; EFI_STATUS S=Enter(H,FALSE,&T); if (EFI_ERROR(S)) { return S; }
   S=Capabilities(H);
   if (!EFI_ERROR(S)) { S=Initialize(H,TRUE); }
@@ -710,7 +720,7 @@ EFI_STATUS DaliUsbNativeHostStart(DALI_USB_NATIVE_HOST *H, DALI_USB_XHCI_IO *Io,
   if (!EFI_ERROR(S)) { S=gBS->SetTimer(H->Timer,TimerPeriodic,EFI_TIMER_PERIOD_MILLISECONDS(1)); }
   if (!EFI_ERROR(S)) {
     S=gBS->InstallMultipleProtocolInterfaces(&H->Handle,&gEfiUsb2HcProtocolGuid,&H->Protocol,
-      &gEfiDevicePathProtocolGuid,Path,NULL);
+      &gEfiDevicePathProtocolGuid,Path,&gDaliUsbNativeHostHandoffProtocolGuid,&H->HandoffProtocol,NULL);
     if (!EFI_ERROR(S)) { H->Published=TRUE; }
   }
   return EFI_ERROR(S) ? Fault(H,S) : EFI_SUCCESS;
@@ -739,7 +749,7 @@ EFI_STATUS DaliUsbNativeHostStop(DALI_USB_NATIVE_HOST *H) {
   H->Busy=0; gBS->RestoreTPL(T); if (EFI_ERROR(S)) { return Fault(H,S); }
   if (H->Published) {
     S=gBS->UninstallMultipleProtocolInterfaces(H->Handle,&gEfiUsb2HcProtocolGuid,&H->Protocol,
-      &gEfiDevicePathProtocolGuid,H->DevicePath,NULL);
+      &gEfiDevicePathProtocolGuid,H->DevicePath,&gDaliUsbNativeHostHandoffProtocolGuid,&H->HandoffProtocol,NULL);
     if (EFI_ERROR(S)) { return S; }
     H->Published=FALSE; H->Handle=NULL;
   }
