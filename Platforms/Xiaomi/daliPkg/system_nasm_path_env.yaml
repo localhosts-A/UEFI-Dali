@@ -1,0 +1,6 @@
+{
+  "id": "dali-system-nasm",
+  "override_id": "nasm-1",
+  "scope": "dali-system-nasm",
+  "flags": []
+}

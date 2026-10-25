@@ -195,6 +195,10 @@ current runtime FDT. The reviewed UniXNU commit is
 The build uses the system `clang`, `lld`, `llvm-objcopy`, legacy-capable `lz4`,
 `mtools` and the Mu build dependencies. Mu's nasm dependency may require the
 system-nasm workaround described by upstream on hosts without Mono.
+Set `DALI_SYSTEM_NASM=true` explicitly to use NASM already on PATH instead of
+the Mu NuGet NASM dependency. The Dali-scoped descriptor overrides only that
+dependency, and the build refuses this option when NASM is absent. Record
+`nasm -v` with the build toolchain; the default dependency path is unchanged.
 Host memory-window tests also require `dtc` and libfdt development headers/library.
 
 Outputs are local under `out/`: `UniXNU-dali-uefi-boot.img`, `manifest.json`,

@@ -7,6 +7,7 @@ import datetime
 import logging
 import os
 import re
+import shutil
 import uuid
 
 from io import StringIO
@@ -28,7 +29,8 @@ class CommonPlatform ():
     PackagesSupported = ("daliPkg",)
     ArchSupported = ("AARCH64")
     TargetsSupported = ("DEBUG", "RELEASE")
-    Scopes = ('dali', 'gcc_aarch64_linux', 'edk2-build')
+    Scopes = ('dali', 'gcc_aarch64_linux', 'edk2-build') + (
+        ('dali-system-nasm',) if os.environ.get('DALI_SYSTEM_NASM') == 'true' else ())
     WorkspaceRoot = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     PackagesPath = (
         "Platforms/Xiaomi",
@@ -145,6 +147,10 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
 
     def SetPlatformEnv (self):
         logging.debug ("PlatformBuilder SetPlatformEnv")
+        if os.environ.get('DALI_SYSTEM_NASM', 'false') not in ('true', 'false'):
+            raise ValueError('DALI_SYSTEM_NASM must be true or false')
+        if os.environ.get('DALI_SYSTEM_NASM') == 'true' and shutil.which('nasm') is None:
+            raise ValueError('DALI_SYSTEM_NASM=true requires nasm on PATH')
 
         self.env.SetValue ("PRODUCT_NAME", "dali", "Platform Hardcoded")
         self.env.SetValue ("ACTIVE_PLATFORM", "daliPkg/dali.dsc", "Platform Hardcoded")
