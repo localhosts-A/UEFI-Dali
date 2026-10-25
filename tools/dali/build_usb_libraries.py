@@ -50,7 +50,7 @@ def main():
                        ('usb_cdc_control', 'usb_host_enumerate', 'usb_host_start_storage',
                         'usb_host_poll_input', 'usb_host_disconnect', 'usb_host_hub_start',
                         'usb_host_hub_poll', 'usb_host_hub_child_route', 'usb_host_hub_stop',
-                        'usb_bot_command', 'usb_block_io_init', 'usb_block_io_transfer',
+                        'usb_bot_command', 'usb_bot_read_only', 'usb_block_io_init', 'usb_block_io_transfer',
                         'usb_block_io_sync', 'usb_block_io_quiesce', 'usb_block_io_detach',
                         'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init', 'usb_mtu3_device_init')),
         'DaliUsbLib': (('DaliUsbPmif', 'DaliUsbVusb', 'DaliUsbTypec', 'DaliUsbMt6379Repeater', 'DaliUsbNxpRepeater', 'DaliUsbGpio', 'DaliUsbI2c', 'DaliUsbI2cPins', 'DaliUsbI2cClocks', 'DaliUsbPhy', 'DaliUsbDomains', 'DaliUsbResources', 'DaliUsbIppc', 'DaliUsbCalibration', 'DaliUsbClockRates'),
