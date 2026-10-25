@@ -89,13 +89,11 @@ STATIC BOOLEAN ValidateFdt (CONST VOID *Fdt, UINT16 *Mask) {
   if (Values == NULL || Length != 8 || Fdt32ToCpu (Values[0]) != 14 || Values[1] != 0) { return FALSE; }
   *Mask = (UINT16)Route; return TRUE;
 }
-EFI_STATUS DaliUsbPmicOpen (DALI_USB_PMIC *Context, CONST VOID *Fdt) {
+STATIC EFI_STATUS OpenTransport (DALI_USB_PMIC *Context, UINT16 Mask, BOOLEAN Vusb) {
   if (Context == NULL) { return EFI_INVALID_PARAMETER; }
   if (Context->Bus != NULL || Context->Transport.initialized || Context->Token.Active || Context->Faulted) {
     return EFI_ALREADY_STARTED;
   }
-  UINT16 Mask;
-  if (!ValidateFdt (Fdt, &Mask)) { return EFI_UNSUPPORTED; }
   EFI_STATUS Status = gBS->LocateProtocol (&gDaliPmicBusProtocolGuid, NULL, (VOID **)&Context->Bus);
   if (EFI_ERROR (Status)) { Context->Bus = NULL; return Status; }
   if (Context->Bus->Revision != DALI_PMIC_BUS_REVISION || Context->Bus->TryAcquire == NULL || Context->Bus->Release == NULL) {
@@ -103,13 +101,30 @@ EFI_STATUS DaliUsbPmicOpen (DALI_USB_PMIC *Context, CONST VOID *Fdt) {
   }
   struct usb_mmio Mmio = {Context, 0x8ff, Read32, Write32, Barrier, Delay};
   struct dali_pmif_lock Lock = {Context, BusAcquire, BusRelease};
-  int Result = dali_usb_pmif_init (&Context->Transport, &Mmio, &Lock, Mask, true);
-  if (!Result) { Result = dali_mt6379_identify (&Context->Transport); }
+  int Result = Vusb ? dali_usb_pmif_init_vusb (&Context->Transport, &Mmio, &Lock, Mask, true) :
+    dali_usb_pmif_init (&Context->Transport, &Mmio, &Lock, Mask, true);
+  if (!Result) { Result = Vusb ? dali_mt6373_vusb_identify (&Context->Transport) : dali_mt6379_identify (&Context->Transport); }
+  if (!Result && Context->Faulted) { Result = USB_IO; }
   if (!Result) { Context->Ready = TRUE; }
   else if (!Context->Transport.initialized && !Context->Token.Active && !Context->Faulted) {
     ZeroMem (Context, sizeof *Context);
   }
   return UsbStatus (Result);
+}
+EFI_STATUS DaliUsbPmicOpen (DALI_USB_PMIC *Context, CONST VOID *Fdt) {
+  if (Context == NULL) { return EFI_INVALID_PARAMETER; }
+  if (Context->Bus != NULL || Context->Transport.initialized || Context->Token.Active || Context->Faulted) {
+    return EFI_ALREADY_STARTED;
+  }
+  UINT16 Mask;
+  if (!ValidateFdt (Fdt, &Mask)) { return EFI_UNSUPPORTED; }
+  return OpenTransport (Context, Mask, FALSE);
+}
+EFI_STATUS DaliUsbVusbPmicOpen (DALI_USB_PMIC *Context, CONST DALI_USB_VUSB_RESOURCES *Resources) {
+  if (Context == NULL || Resources == NULL) { return EFI_INVALID_PARAMETER; }
+  if ((Resources->SpmiDeviceMask & (1U << 5)) || Resources->MinMicrovolt != 1200000 ||
+      Resources->MaxMicrovolt != 3500000 || Resources->EnableRampMicroseconds != 720) { return EFI_UNSUPPORTED; }
+  return OpenTransport (Context, Resources->SpmiDeviceMask, TRUE);
 }
 EFI_STATUS DaliUsbPmicClose (DALI_USB_PMIC *Context) {
   if (Context == NULL) { return EFI_INVALID_PARAMETER; }

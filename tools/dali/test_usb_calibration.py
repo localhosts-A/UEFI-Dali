@@ -20,6 +20,10 @@ class UsbCalibrationTests(unittest.TestCase):
         self.check_fixture('usb_clock_fdt_test.c', 'production UEFI clock resource graph',
                            'saved Dali FDT clock resource acquisition')
 
+    def test_actual_fdt_vusb_resources(self):
+        self.check_fixture('usb_vusb_fdt_test.c', 'production UEFI MT6373 VUSB FDT graph',
+                           'saved Dali FDT MT6373 VUSB supply acquisition')
+
     def check_fixture(self, fixture, marker, saved_marker):
         cc = shutil.which(os.environ.get('CC', 'clang'))
         self.assertIsNotNone(cc)
@@ -33,7 +37,7 @@ class UsbCalibrationTests(unittest.TestCase):
 #include <stddef.h>
 typedef void VOID; typedef char CHAR8; typedef uint32_t UINT32;
 typedef int32_t INT32; typedef size_t UINTN; typedef uint8_t BOOLEAN;
-typedef uint64_t EFI_STATUS;
+typedef uint64_t EFI_STATUS; typedef uint16_t UINT16;
 #define STATIC static
 #define CONST const
 #define IN
@@ -44,6 +48,7 @@ typedef uint64_t EFI_STATUS;
 #define EFI_INVALID_PARAMETER 2
 #define EFI_UNSUPPORTED 3
 #define EFI_COMPROMISED_DATA 33
+#define EFI_ERROR(Value) ((Value) != EFI_SUCCESS)
 ''')
             names = {'CheckHeader': 'check_header', 'TotalSize': 'totalsize',
                      'GetProp': 'getprop', 'PathOffset': 'path_offset',
@@ -70,6 +75,7 @@ typedef uint64_t EFI_STATUS;
                               '-I', str(GENERIC / 'drivers/UsbCore/include'),
                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbCalibration.c'),
                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbClockResources.c'),
+                              str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbVusbResources.c'),
                               str(DEVICE / 'drivers/DaliUsb/DaliUsbCalibration.c'),
                               str(ROOT / 'tools/dali/fixtures' / fixture),
                               *objects, '-o', str(binary)]

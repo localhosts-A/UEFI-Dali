@@ -4,6 +4,7 @@
 #include <Uefi.h>
 #include <Protocol/DaliPmicBus.h>
 #include <DaliUsbPmif.h>
+#include <Library/DaliUsbPlatformLib.h>
 
 typedef struct {
   struct dali_usb_pmif Transport;
@@ -19,6 +20,11 @@ typedef struct {
 // or clock/route change. An error may retain a pending owned command/context;
 // close it before retrying. A release-invariant fault retains it permanently.
 EFI_STATUS DaliUsbPmicOpen (DALI_USB_PMIC *Context, CONST VOID *Fdt);
+// Same persistent/shared-channel contract, using only a descriptor acquired by
+// DaliUsbReadVusbResources from the native immutable snapshot. CID high73 at9,
+// CID low8 and nonzero SWCIDb are read before allowing the sole enable operation.
+// It does not enable the rail or claim a voltage/source/power-good qualification.
+EFI_STATUS DaliUsbVusbPmicOpen (DALI_USB_PMIC *Context, CONST DALI_USB_VUSB_RESOURCES *Resources);
 // First destroy all dependent TCPC/VBUS/USB objects after their real shutdown.
 // This only recovers/releases transport ownership; it does NOT turn power off
 // or stop USB DMA. Failed close retains the context/token for explicit recovery.

@@ -8,6 +8,7 @@
 [Sources]
   UsbCalibration.c
   UsbClockResources.c
+  UsbVusbResources.c
 [Packages]
   MdePkg/MdePkg.dec
   daliPkg/dali.dec

@@ -21,7 +21,8 @@ class UsbResourceContextTests(unittest.TestCase):
             base = Path(directory)
             (base / 'Library').mkdir()
             (base / 'Library/Mt6991PlatformLib.h').write_text(
-                '#define DALI_FDT_BASE ((UINTN)tree)\n#define DALI_FDT_SIZE sizeof tree\n')
+                '#define DALI_FDT_BASE ((UINTN)tree)\n#define DALI_FDT_SIZE sizeof tree\n'
+                '#define DALI_PMIF_BASE 0x1c01a000U\n')
             names = {'CheckHeader': 'check_header', 'TotalSize': 'totalsize',
                      'GetProp': 'getprop', 'PathOffset': 'path_offset',
                      'StringListSearch': 'stringlist_search', 'StringListCount': 'stringlist_count',
@@ -63,6 +64,11 @@ class UsbResourceContextTests(unittest.TestCase):
                                '-I' + str(GENERIC / 'drivers/UsbCore/include'),
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbCalibration.c'),
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbClockResources.c'),
+                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbVusbResources.c'),
+                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPmicLib/UsbPmicLib.c'),
+                               str(GENERIC / 'drivers/UsbCore/UsbCore.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbPmif.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbVusb.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbCalibration.c'),
                                str(ROOT / 'tools/dali/fixtures/usb_resource_context_test.c'),
                                *objects, '-o', str(target)]

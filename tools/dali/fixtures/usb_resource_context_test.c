@@ -1,8 +1,11 @@
 // Production context included to exercise its private failure/lifetime state.
 // GCD/ARM mappings are a model; FDT validation uses real pinned libfdt.
+#include <Uefi.h>
+#include <Library/BaseLib.h>
 #define main ClockGraphMain
 #include "usb_clock_fdt_test.c"
 #undef main
+#include "usb_vusb_fdt_fixture.h"
 #include "../../../Platforms/Xiaomi/daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.c"
 #include <stdarg.h>
 
@@ -23,6 +26,9 @@ static EFI_EVENT_NOTIFY ebs;
 static VOID *ebs_context;
 static DALI_USB_RESOURCE_CONTEXT_PROTOCOL *published;
 static EFI_HANDLE image = (EFI_HANDLE)(UINTN)0x1234;
+static void reset(void);
+static void entry(EFI_STATUS expected);
+#include "usb_resource_power_fixture.h"
 
 static UINTN index_of(UINT64 page) {
   for (UINTN i=0;i<5;i++) { if (pages[i]==page) { return i; } }
@@ -37,9 +43,10 @@ VOID *EFIAPI CopyMem(VOID *to,CONST VOID *from,UINTN size) {
   if (mutate_copy && from==tree) { tree[sizeof tree-1]^=1; }
   return to;
 }
+VOID *EFIAPI ZeroMem(VOID *value,UINTN size) { return memset(value,0,size); }
 INTN EFIAPI CompareMem(CONST VOID *a,CONST VOID *b,UINTN size) { return memcmp(a,b,size); }
 static EFI_TPL EFIAPI raise_tpl(EFI_TPL tpl) { EFI_TPL old=current_tpl; current_tpl=tpl; return old; }
-static VOID EFIAPI restore_tpl(EFI_TPL tpl) { current_tpl=tpl; }
+static VOID EFIAPI restore_tpl(EFI_TPL tpl) { current_tpl=tpl; power_on_restore(); }
 static EFI_STATUS EFIAPI get_desc(EFI_PHYSICAL_ADDRESS page,EFI_GCD_MEMORY_SPACE_DESCRIPTOR *out) {
   if (before()) { return EFI_DEVICE_ERROR; }
   *out=desc[index_of(page)];
@@ -98,6 +105,7 @@ static EFI_STATUS EFIAPI publish(EFI_HANDLE *handle,...) {
 static void reset(void) {
   // Test process cleanup only; firmware deliberately never frees this context.
   free(mContext.Snapshot); memset(&mContext,0,sizeof mContext);
+  power_reset();
   memset(desc,0,sizeof desc); memset(cpu_mapped,0,sizeof cpu_mapped);
   memset(cpu_cached,0,sizeof cpu_cached); gcd_sync_shortcut=FALSE;
   for (UINTN i=0;i<5;i++) { desc[i].BaseAddress=pages[i]; desc[i].Length=4096; }
@@ -107,10 +115,11 @@ static void reset(void) {
   memset(&bs,0,sizeof bs); memset(&ds,0,sizeof ds); gBS=&bs; gDS=&ds;
   bs.RaiseTPL=raise_tpl; bs.RestoreTPL=restore_tpl; bs.CreateEventEx=create_event;
   bs.InstallMultipleProtocolInterfaces=publish;
+  bs.LocateProtocol=power_locate_bus;
   ds.GetMemorySpaceDescriptor=get_desc; ds.AddMemorySpace=add_space;
   ds.AllocateMemorySpace=allocate_space; ds.SetMemorySpaceAttributes=set_attrs;
   // FreeMemorySpace/RemoveMemorySpace intentionally absent: calling them faults.
-  clocks_fixture();
+  vusb_fixture();
 }
 static void unchanged(EFI_STATUS expected) {
   DALI_USB_CLOCK_RESOURCES out,old; memset(&out,0xa5,sizeof out); old=out;
@@ -166,6 +175,7 @@ static void refusals(void) {
   reset(); no_pool=TRUE; entry(EFI_OUT_OF_RESOURCES); assert(operation==0 && !mContext.Status.SnapshotValid);
   reset(); mutate_copy=TRUE; entry(EFI_COMPROMISED_DATA); assert(operation==0 && !mContext.Status.SnapshotValid);
   reset(); text(paths[0],"status","disabled"); entry(EFI_UNSUPPORTED); assert(operation==0);
+  reset(); cell(RAIL,"regulator-always-on",1); entry(EFI_UNSUPPORTED); assert(operation==0 && power_commands==0);
   reset(); fdt_set_magic(tree,0); entry(EFI_COMPROMISED_DATA); assert(operation==0);
   reset(); fdt_set_totalsize(tree,sizeof tree+1); entry(EFI_COMPROMISED_DATA); assert(operation==0);
   reset(); assert(Prepare(tree,39)==EFI_COMPROMISED_DATA && operation==0);
@@ -173,7 +183,9 @@ static void refusals(void) {
     published==NULL && install_calls==0 && mContext.Status.InitializationStatus==EFI_OUT_OF_RESOURCES && arm_calls==5 && freed==0);
   no_event=FALSE; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_ALREADY_STARTED && install_calls==0);
   reset(); no_publish=TRUE; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_SUCCESS &&
-    published==NULL && ebs && arm_calls==5 && freed==0); ebs(NULL,NULL); assert(mContext.Status.BootServicesClosed);
+    published==NULL && ebs && arm_calls==5 && freed==0 && mContext.Status.InitializationStatus==EFI_OUT_OF_RESOURCES);
+  no_publish=FALSE; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_ALREADY_STARTED && install_calls==1);
+  ebs(NULL,NULL); assert(mContext.Status.BootServicesClosed);
   reset(); current_tpl=TPL_CALLBACK; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_SUCCESS &&
     current_tpl==TPL_CALLBACK && published==NULL && event_calls==0 && operation==0);
   current_tpl=TPL_APPLICATION; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_ALREADY_STARTED && event_calls==0);
@@ -196,7 +208,7 @@ static void inherited(void) {
   for (UINTN i=0;i<5;i++) { assert(cpu_mapped[i]); }
 }
 int main(int argc,char **argv) {
-  assert(ClockGraphMain(argc,argv)==0); success(); refusals(); inherited(); reset();
+  assert(ClockGraphMain(argc,argv)==0); success(); refusals(); inherited(); power_protocol_tests(); reset();
   if (argc==2) {
     FILE *f=fopen(argv[1],"rb"); assert(f && fseek(f,0,SEEK_END)==0); long length=ftell(f); assert(length>40);
     rewind(f); void *saved=malloc((size_t)length); assert(saved && fread(saved,1,(size_t)length,f)==(size_t)length); fclose(f);

@@ -26,7 +26,7 @@ struct _DALI_PMIC_BUS_PROTOCOL {
   DALI_PMIC_BUS_RELEASE Release;
 };
 
-// All Dali SWINF2 users (SID4 keypad and SID14 USB) use this same DXE instance.
+// All Dali SWINF2 users (SID4 keypad, SID5 VUSB and SID14 USB) use this instance.
 // TryAcquire never waits: EFI_NOT_READY means contention or EBS shutdown, and
 // leaves the token unchanged. Success holds TPL_HIGH_LEVEL until Release, so
 // transactions must use bounded MMIO/counter delays only: no allocation,

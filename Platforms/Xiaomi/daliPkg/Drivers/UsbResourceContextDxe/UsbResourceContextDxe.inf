@@ -20,6 +20,9 @@
   UefiBootServicesTableLib
   DxeServicesTableLib
   DaliUsbPlatformLib
+  DaliUsbPmicLib
+  DaliUsbLib
+  SynchronizationLib
   ArmMmuLib
   BaseMemoryLib
   MemoryAllocationLib
@@ -28,6 +31,7 @@
 [Protocols]
   gDaliUsbResourceContextProtocolGuid ## PRODUCES
   gEfiCpuArchProtocolGuid ## CONSUMES
+  gDaliPmicBusProtocolGuid ## CONSUMES
 [Guids]
   gEfiEventExitBootServicesGuid
 [Depex]

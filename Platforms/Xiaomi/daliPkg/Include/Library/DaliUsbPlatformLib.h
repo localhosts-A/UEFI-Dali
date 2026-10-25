@@ -39,3 +39,15 @@ EFI_STATUS DaliUsbReadClockResources (
   IN CONST VOID *Fdt, IN UINTN FdtSize,
   OUT DALI_USB_CLOCK_RESOURCES *Out
   );
+
+typedef struct {
+  UINT16 SpmiDeviceMask;
+  UINT32 MinMicrovolt, MaxMicrovolt, EnableRampMicroseconds;
+} DALI_USB_VUSB_RESOURCES;
+/* Full immutable/bounded/calibration FDT contract above. Validate USB0's unique
+ * vusb33 reference to enabled MT6373 SID5/regulators/vusb, native PMIF-M routing,
+ * exact declared CID tuple73,9,8 and always-on/range/ramp policy. Output contains
+ * copied descriptions only: no rail read/enable or power-good qualification. */
+EFI_STATUS DaliUsbReadVusbResources (
+  IN CONST VOID *Fdt, IN UINTN FdtSize, OUT DALI_USB_VUSB_RESOURCES *Out
+  );
