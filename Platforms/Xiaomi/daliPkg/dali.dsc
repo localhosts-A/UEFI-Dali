@@ -10,6 +10,10 @@
   SKUID_IDENTIFIER = DEFAULT
   FLASH_DEFINITION = daliPkg/dali.fdf
   USE_CUSTOM_DISPLAY_DRIVER = 1
+!ifndef DALI_USB_HOST_STACK
+  # Opt-in source host/class stack only; native port/DMA registration is separate.
+  DEFINE DALI_USB_HOST_STACK = FALSE
+!endif
 !ifndef DALI_UFS_PROBE
   DEFINE DALI_UFS_PROBE = FALSE
 !endif
@@ -41,6 +45,10 @@
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosProcessorPartNumber|"MT6991"
 
 [Components]
+!if $(DALI_USB_HOST_STACK) == TRUE
+  MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
+  MdeModulePkg/Bus/Usb/UsbMouseDxe/UsbMouseDxe.inf
+!endif
   daliPkg/Drivers/PmicBusDxe/PmicBusDxe.inf
   daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
   DarwinBootPkg/Driver/DarwinBoot.inf

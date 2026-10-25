@@ -14,7 +14,9 @@ BDS_GUID = uuid.UUID('e7437b10-23c2-4568-9b18-9b1b7a3e0925').bytes_le
 LIMIT = 128 * 1024 * 1024
 
 
-def extract_bds(fd):
+def extract_module(fd, file_guid):
+    if len(file_guid) != 16:
+        raise ValueError('firmware file GUID must be 16 bytes')
     found = []
 
     def sections(data, selected, depth):
@@ -52,7 +54,7 @@ def extract_bds(fd):
                 sections(unpacked, selected, depth + 1)
             elif kind == 0x10 and selected:  # EFI_SECTION_PE32
                 if not body.startswith(b'MZ'):
-                    raise ValueError('BDS section is not PE32')
+                    raise ValueError('selected section is not PE32')
                 found.append(body)
             elif kind == 1:
                 raise ValueError('unsupported standard firmware compression')
@@ -83,12 +85,16 @@ def extract_bds(fd):
             state = raw[23] ^ (0xff if attributes & 0x800 else 0)
             highest = 1 << (state.bit_length() - 1) if state else 0
             if highest in (4, 8) and raw[18] != 0xf0:  # valid/update, not PAD
-                sections(data[at + fh:at + size], raw[:16] == BDS_GUID, depth + 1)
+                sections(data[at + fh:at + size], raw[:16] == file_guid, depth + 1)
             at = (at + size + 7) & ~7
 
     if len(fd) > LIMIT:
         raise ValueError('firmware exceeds verifier bound')
     volume(fd, 0)
     if len(found) != 1:
-        raise ValueError('final FD must contain exactly one BDS PE32 module')
+        raise ValueError('final FD must contain exactly one selected PE32 module')
     return found[0]
+
+
+def extract_bds(fd):
+    return extract_module(fd, BDS_GUID)

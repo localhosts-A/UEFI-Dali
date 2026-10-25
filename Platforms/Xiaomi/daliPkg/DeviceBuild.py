@@ -169,6 +169,10 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         self.env.SetValue ("BLD_*_FD_SIZE", self.env.GetValue("FD_SIZE"), "Default")
         self.env.SetValue ("BLD_*_FD_BLOCKS", self.env.GetValue("FD_BLOCKS"), "Default")
         self.env.SetValue ("BLD_*_DALI_PAYLOAD_IMAGE", os.environ.get("DALI_PAYLOAD_IMAGE", os.path.join(CommonPlatform.WorkspaceRoot, "out/payload.img")), "Dali RAM FAT")
+        usb_stack = os.environ.get("DALI_USB_HOST_STACK", "false")
+        if usb_stack not in ("true", "false"):
+            raise ValueError("DALI_USB_HOST_STACK must be true or false")
+        self.env.SetValue ("BLD_*_DALI_USB_HOST_STACK", "TRUE" if usb_stack == "true" else "FALSE", "Opt-in USB host/class FV stack")
         ufs_probe = os.environ.get("DALI_UFS_PROBE", "false")
         if ufs_probe not in ("true", "false"):
             raise ValueError("DALI_UFS_PROBE must be true or false")

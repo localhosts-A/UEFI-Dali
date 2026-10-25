@@ -1,0 +1,31 @@
+[Defines]
+  INF_VERSION = 0x00010019
+  BASE_NAME = UsbQemuTest
+  FILE_GUID = 1072C828-B503-4CAA-A3EE-5C154DCB87ED
+  MODULE_TYPE = UEFI_APPLICATION
+  VERSION_STRING = 0.1
+  ENTRY_POINT = UsbQemuTestMain
+[Sources]
+  UsbQemuTest.c
+[Packages]
+  MdePkg/MdePkg.dec
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  UefiLib
+  DevicePathLib
+  MemoryAllocationLib
+  BaseMemoryLib
+  BaseLib
+  PrintLib
+[Protocols]
+  gEfiLoadedImageProtocolGuid
+  gEfiPciIoProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiUsbIoProtocolGuid
+  gEfiSimpleTextInProtocolGuid
+  gEfiSimplePointerProtocolGuid
+[Guids]
+  gEfiFileInfoGuid
