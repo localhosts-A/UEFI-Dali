@@ -15,7 +15,7 @@ UFS_HOST_GUID = uuid.UUID('071ca928-9d14-41f2-9a35-d01287493376').bytes_le
 LIMIT = 128 * 1024 * 1024
 
 
-def extract_module(fd, target_guid, name='module'):
+def extract_module(fd, target_guid, name='module', *, section_type=0x10, expected_file_type=None):
     found = []
 
     def sections(data, selected, depth):
@@ -51,8 +51,8 @@ def extract_module(fd, target_guid, name='module'):
                 if len(unpacked) > LIMIT or not decoder.eof or decoder.unused_data:
                     raise ValueError('unbounded/truncated LZMA firmware section')
                 sections(unpacked, selected, depth + 1)
-            elif kind == 0x10 and selected:  # EFI_SECTION_PE32
-                if not body.startswith(b'MZ'):
+            elif kind == section_type and selected:
+                if section_type == 0x10 and not body.startswith(b'MZ'):  # EFI_SECTION_PE32
                     raise ValueError(name + ' section is not PE32')
                 found.append(body)
             elif kind == 1:
@@ -84,6 +84,8 @@ def extract_module(fd, target_guid, name='module'):
             state = raw[23] ^ (0xff if attributes & 0x800 else 0)
             highest = 1 << (state.bit_length() - 1) if state else 0
             if highest in (4, 8) and raw[18] != 0xf0:  # valid/update, not PAD
+                if raw[:16] == target_guid and expected_file_type is not None and raw[18] != expected_file_type:
+                    raise ValueError(name + ' firmware file has the wrong FFS file type')
                 sections(data[at + fh:at + size], raw[:16] == target_guid, depth + 1)
             at = (at + size + 7) & ~7
 
@@ -91,7 +93,7 @@ def extract_module(fd, target_guid, name='module'):
         raise ValueError('firmware exceeds verifier bound')
     volume(fd, 0)
     if len(found) != 1:
-        raise ValueError('final FD must contain exactly one ' + name + ' PE32 module')
+        raise ValueError('final FD must contain exactly one ' + name + ' section')
     return found[0]
 
 

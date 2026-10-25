@@ -21,6 +21,7 @@ PHYSICAL_UFS_MODULES = {
     'ScsiDisk': uuid.UUID('0a66e322-3740-4cce-ad62-bd172cecca35').bytes_le,
     'PartitionDxe': uuid.UUID('1fa1f39e-feff-4aae-bd7b-38a070a3b609').bytes_le,
 }
+XNU_UFS_PAYLOAD_GUID = uuid.UUID('073e16da-8776-4fba-96c4-35bbe06a41df').bytes_le
 
 
 def _probe_record(module, source, token):
@@ -138,6 +139,23 @@ def validate_diagnostic_payload(payload):
         raise ValueError('UFS diagnostic requires a UEFI-only payload with automatic recovery disabled')
 
 
+def validate_xnu_ufs_payload(payload, token):
+    if (not isinstance(payload, dict) or not isinstance(payload.get('recovery'), dict) or
+            payload.get('xnu_kernel_sha256') is None or payload.get('xnu_adt_sha256') is None or
+            payload.get('xnu_ramdisk_sha256') is not None or payload.get('xnu_trust_cache_sha256') is not None or
+            payload.get('xnu_run_token') != token or
+            payload['recovery'].get('auto_fastboot') is not False or
+            payload['recovery'].get('reset_method') is not None):
+        raise ValueError('XNU UFS diagnostic needs a source kernel, no PID1/reset and manual recovery')
+    profile = payload.get('xnu_ufs_read_only')
+    if (not isinstance(profile, dict) or profile.get('enabled') is not True or
+            profile.get('run_token') != token or profile.get('write_authorized') is not False or
+            profile.get('physical_ufs_qualified') is not False or
+            not re.fullmatch(r'[0-9a-f]{64}', profile.get('live_fdt_sha256', '')) or
+            profile.get('resources_fdt_sha256') != profile.get('live_fdt_sha256')):
+        raise ValueError('XNU UFS read-only profile/token/FDT binding mismatch')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--backup", type=Path, required=True)
@@ -149,6 +167,8 @@ def main():
     profile = p.add_mutually_exclusive_group()
     profile.add_argument("--ufs-probe-token", help="bind opt-in read-only firmware register snapshot")
     profile.add_argument("--ufs-read-only-token", help="bind the explicit physical read-only BlockIo diagnostic")
+    profile.add_argument("--ufs-xnu-read-only-token", help="bind the combined firmware/XNU read-only ownership trial")
+    p.add_argument("--ufs-xnu-live-fdt", type=Path, help="live raw FDT used to validate the XNU UFS ADT node")
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
     mu = args.mu.resolve()
@@ -190,7 +210,9 @@ def main():
     if fd.stat().st_size != fd_size:
         raise SystemExit("Unexpected dali FD size")
     try:
-        if args.ufs_read_only_token is not None:
+        if args.ufs_xnu_read_only_token is not None:
+            probe, host = ufs_read_only_metadata(fd.parent.parent / "AARCH64", args.ufs_xnu_read_only_token, fd=fd.read_bytes())
+        elif args.ufs_read_only_token is not None:
             probe, host = ufs_read_only_metadata(fd.parent.parent / "AARCH64", args.ufs_read_only_token, fd=fd.read_bytes())
         else:
             probe = ufs_probe_metadata(fd.parent.parent / "AARCH64", args.ufs_probe_token, fd=fd.read_bytes())
@@ -198,9 +220,36 @@ def main():
     except (OSError, ValueError) as error:
         raise SystemExit("UFS probe build verification failed: " + str(error)) from None
     payload = json.loads((out / "payload.json").read_text())
+    if args.ufs_xnu_read_only_token is not None:
+        try:
+            validate_xnu_ufs_payload(payload, args.ufs_xnu_read_only_token)
+            if args.ufs_xnu_live_fdt is None:
+                raise ValueError('XNU UFS package requires the candidate live FDT')
+            live_fdt = args.ufs_xnu_live_fdt.read_bytes()
+            if hashlib.sha256(live_fdt).hexdigest() != payload['xnu_ufs_read_only']['live_fdt_sha256']:
+                raise ValueError('candidate live FDT differs from the payload binding')
+            raw_payload = extract_module(fd.read_bytes(), XNU_UFS_PAYLOAD_GUID,
+                                         'XNU UFS payload', section_type=0x19, expected_file_type=0x02)
+            payload_image = (out / 'payload.img').read_bytes()
+            if (raw_payload != payload_image or len(raw_payload) != payload.get('bytes') or
+                    hashlib.sha256(raw_payload).hexdigest() != payload.get('sha256')):
+                raise ValueError('actual final FD RAW payload differs from the staged payload image')
+            config_bytes = subprocess.check_output(['mtype', '-i', str(out / 'payload.img'), '::/EFI/UniXNU/unixnu.toml'])
+            recovery_bytes = subprocess.check_output(['mtype', '-i', str(out / 'payload.img'), '::/EFI/UniXNU/dali-boot.conf'])
+            adt_bytes = subprocess.check_output(['mtype', '-i', str(out / 'payload.img'), '::/EFI/UniXNU/Payloads/kernel.macho.adt'])
+            kernel_bytes = subprocess.check_output(['mtype', '-i', str(out / 'payload.img'), '::/EFI/UniXNU/Payloads/kernel.macho'])
+            sys.path.insert(0, str(root / 'tools'))
+            from make_payload import validate_xnu_ufs_bundle
+            validate_xnu_ufs_bundle(payload, args.ufs_xnu_read_only_token, adt_bytes, live_fdt,
+                                    config_bytes, recovery_bytes, kernel_bytes)
+        except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as error:
+            raise SystemExit('XNU UFS payload verification failed: ' + str(error)) from None
+    elif args.ufs_xnu_live_fdt is not None:
+        raise SystemExit('--ufs-xnu-live-fdt requires --ufs-xnu-read-only-token')
     if probe['enabled'] or host['enabled']:
         try:
-            validate_diagnostic_payload(payload)
+            if args.ufs_xnu_read_only_token is None:
+                validate_diagnostic_payload(payload)
         except ValueError as error:
             raise SystemExit(str(error)) from None
     shim_obj, shim_elf, shim = out / "DaliShim.o", out / "DaliShim.elf", out / "DaliShim.bin"
@@ -240,7 +289,12 @@ def main():
               "device_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=device_repo, text=True).strip(),
               "uefi_commit": uefi_commit,
               "mu_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
-              "payload": payload, "ufs_probe": probe, "ufs_host": host}
+              "payload": payload, "ufs_probe": probe, "ufs_host": host,
+              "ufs_xnu": ({"enabled": True, "run_token": args.ufs_xnu_read_only_token,
+                           "live_fdt_sha256": payload['xnu_ufs_read_only']['live_fdt_sha256'],
+                           "write_authorized": False, "physical_ufs_qualified": False}
+                          if args.ufs_xnu_read_only_token is not None else
+                          {"enabled": False, "write_authorized": False, "physical_ufs_qualified": False})}
     (out / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))
 

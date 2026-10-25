@@ -14,7 +14,21 @@ PORT_PYTHON=${MU_PYTHON:-python3}
 PORT_XNU_KERNEL=
 PORT_XNU_ADT=
 PORT_PROBE_PACKAGE_ARGS=()
-if [[ "${DALI_UFS_READ_ONLY:-false}" == true ]]; then
+PORT_XNU_UFS_READ_ONLY=${DALI_XNU_UFS_READ_ONLY:-false}
+PORT_XNU_UFS_FDT=
+if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
+  [[ $# == 5 && "${DALI_UFS_READ_ONLY:-false}" == true &&
+     "${DALI_UFS_PROFILE:-off}" == read-only-blockio && "${DALI_UFS_PROBE:-false}" == false &&
+     "${DALI_AUTO_FASTBOOT:-true}" == false && -z "${DALI_RESET_METHOD:-}" &&
+     "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ && -n "${DALI_XNU_UFS_LIVE_FDT:-}" &&
+     -f "${DALI_XNU_UFS_LIVE_FDT}" ]] || {
+    echo "Combined firmware/XNU UFS read-only needs five source-XNU inputs, a fresh token, live FDT, manual recovery and no reset" >&2; exit 2;
+  }
+  PORT_XNU_UFS_FDT=$(realpath "$DALI_XNU_UFS_LIVE_FDT")
+  PORT_PROBE_PACKAGE_ARGS+=(--ufs-xnu-read-only-token "$DALI_RUN_TOKEN" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
+elif [[ "$PORT_XNU_UFS_READ_ONLY" != false ]]; then
+  echo "DALI_XNU_UFS_READ_ONLY must be true or false" >&2; exit 2
+elif [[ "${DALI_UFS_READ_ONLY:-false}" == true ]]; then
   [[ "${DALI_UFS_PROFILE:-off}" == read-only-blockio && $# == 3 &&
      "${DALI_UFS_PROBE:-false}" == false && "${DALI_AUTO_FASTBOOT:-true}" == false &&
      -z "${DALI_RESET_METHOD:-}" && "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]] || {
@@ -103,6 +117,9 @@ if [[ -n "$PORT_XNU_KERNEL" ]]; then
   PAYLOAD_ARGS+=(--xnu-kernel "$PORT_XNU_KERNEL" --xnu-adt "$PORT_XNU_ADT" --size-mib 24)
   if [[ -n "${DALI_RUN_TOKEN:-}" ]]; then
     PAYLOAD_ARGS+=(--run-token "$DALI_RUN_TOKEN")
+  fi
+  if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
+    PAYLOAD_ARGS+=(--xnu-ufs-readonly --xnu-ufs-live-fdt "$PORT_XNU_UFS_FDT")
   fi
   if [[ $# == 7 ]]; then
     [[ "${DALI_AUTO_FASTBOOT:-true}" == false ]] || {
