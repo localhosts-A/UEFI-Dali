@@ -26,6 +26,9 @@
   UefiLib
   TimerLib
   DevicePathLib
+  PcdLib
+[FixedPcd]
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
 [Protocols]
   gEfiBdsArchProtocolGuid ## PRODUCES
   gEfiTimerArchProtocolGuid ## CONSUMES

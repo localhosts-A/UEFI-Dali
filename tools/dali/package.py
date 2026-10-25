@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import struct
 import subprocess
@@ -10,6 +11,36 @@ import sys
 import tomllib
 
 from fdt import Fdt
+from firmware_volume import extract_bds
+
+
+def ufs_probe_metadata(build, token=None, *, fd):
+    """Refuse stale enabled/token build products before packaging a candidate."""
+    if token is not None and not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise ValueError("invalid UFS probe token")
+    auto = build / "daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG"
+    header = (auto / "AutoGen.h").read_text()
+    source = (auto / "AutoGen.c").read_text()
+    flag = re.search(r"^#define _PCD_VALUE_PcdDaliUfsProbeEnabled\s+([01])U\s*$", header, re.M)
+    value = re.search(r"_gPcd_FixedAtBuild_PcdDaliUfsProbeToken\[(\d+)\]\s*=\s*\{([^}]+)\}", source)
+    if not flag or not value or int(flag[1]) != int(token is not None):
+        raise ValueError("compiled UFS probe enable state differs from packaging request")
+    raw = bytes(int(piece.strip(), 0) for piece in value[2].split(',') if piece.strip())
+    expected = (token or "none").encode() + b"\0"
+    if len(raw) != int(value[1]) or raw != expected:
+        raise ValueError("compiled UFS probe token differs from packaging request")
+    module = (build / "DaliDiagnosticBds.efi").read_bytes()
+    if extract_bds(fd) != module:
+        raise ValueError("final FD BDS differs from validated compiled module")
+    if token is not None and expected not in module:
+        raise ValueError("probe token missing from actual compiled BDS module")
+    return {"enabled": token is not None, "run_token": token,
+            "mode": "read-only-registers" if token else "off",
+            "controller_commands": False, "mmio_writes": False,
+            "physical_storage_qualified": False,
+            "bds_sha256": hashlib.sha256(module).hexdigest(),
+            "bds_verified_in_final_fd": True,
+            "bds_autogen_sha256": hashlib.sha256(source.encode()).hexdigest()}
 
 
 def main():
@@ -20,6 +51,7 @@ def main():
     p.add_argument("--unixnu", type=Path, required=True, help="reviewed generic UniXNU checkout")
     p.add_argument("--device-repo", type=Path, required=True, help="pinned UniXNU-Dali checkout")
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--ufs-probe-token", help="bind opt-in read-only firmware register snapshot")
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
     mu = args.mu.resolve()
@@ -60,6 +92,15 @@ def main():
     fd = mu / f"Build/daliPkg/{args.mode}_CLANGPDB/FV/SILICIUM_UEFI.fd"
     if fd.stat().st_size != fd_size:
         raise SystemExit("Unexpected dali FD size")
+    try:
+        probe = ufs_probe_metadata(fd.parent.parent / "AARCH64", args.ufs_probe_token, fd=fd.read_bytes())
+    except (OSError, ValueError) as error:
+        raise SystemExit("UFS probe build verification failed: " + str(error)) from None
+    payload = json.loads((out / "payload.json").read_text())
+    if probe["enabled"] and (payload.get("xnu_kernel_sha256") is not None or
+                              payload.get("recovery", {}).get("auto_fastboot") is not False or
+                              payload.get("recovery", {}).get("reset_method") is not None):
+        raise SystemExit("UFS probe requires a UEFI-only payload with automatic recovery disabled")
     shim_obj, shim_elf, shim = out / "DaliShim.o", out / "DaliShim.elf", out / "DaliShim.bin"
     subprocess.run(["clang", "--target=aarch64-none-elf", "-c", str(mu / "BootShim/DaliShim.S"),
                     "-o", str(shim_obj), f"-DFD_BASE={fd_base:#x}", f"-DFD_SIZE={fd_size:#x}"], check=True)
@@ -97,7 +138,7 @@ def main():
               "device_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=device_repo, text=True).strip(),
               "uefi_commit": uefi_commit,
               "mu_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
-              "payload": json.loads((out / "payload.json").read_text())}
+              "payload": payload, "ufs_probe": probe}
     (out / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))
 

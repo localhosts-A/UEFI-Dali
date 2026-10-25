@@ -7,6 +7,8 @@
   LIBRARY_CLASS = Mt6991PlatformLib
 [Sources]
   PlatformLib.c
+  UfsProbe.c
+  UfsProbe.h
   MemoryWindow.h
   MemoryWindowFdt.h
 [Packages]
@@ -22,3 +24,7 @@
   PrintLib
   ArmSmcLib
   IoLib
+  PcdLib
+[FixedPcd]
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeToken

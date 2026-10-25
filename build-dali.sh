@@ -13,6 +13,16 @@ PORT_DEVICE=$(realpath "$3")
 PORT_PYTHON=${MU_PYTHON:-python3}
 PORT_XNU_KERNEL=
 PORT_XNU_ADT=
+PORT_PROBE_PACKAGE_ARGS=()
+if [[ "${DALI_UFS_PROBE:-false}" == true ]]; then
+  [[ $# == 3 && "${DALI_AUTO_FASTBOOT:-true}" == false && -z "${DALI_RESET_METHOD:-}" &&
+     "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]] || {
+    echo "UFS probe needs UEFI-only build, fresh token, DALI_AUTO_FASTBOOT=false and no reset method" >&2; exit 2;
+  }
+  PORT_PROBE_PACKAGE_ARGS+=(--ufs-probe-token "$DALI_RUN_TOKEN")
+elif [[ "${DALI_UFS_PROBE:-false}" != false ]]; then
+  echo "DALI_UFS_PROBE must be true or false" >&2; exit 2
+fi
 if [[ $# -ge 5 ]]; then
   PORT_XNU_KERNEL=$(realpath "$4")
   PORT_XNU_ADT=$(realpath "$5")
@@ -128,4 +138,4 @@ if [[ -z "$PORT_DARWINBOOT_FFS" || ! -f "$PORT_DARWINBOOT_FFS" ]]; then
 fi
 echo "PASS: Dali firmware volume contains DarwinBoot FFS: $PORT_DARWINBOOT_FFS"
 python3 "$PORT_ROOT/tools/dali/package.py" --backup "$PORT_BACKUP" --mu "$PORT_MU" \
-  --unixnu "$PORT_UNIXNU" --device-repo "$PORT_DEVICE" --out "$PORT_ROOT/out"
+  --unixnu "$PORT_UNIXNU" --device-repo "$PORT_DEVICE" --out "$PORT_ROOT/out" "${PORT_PROBE_PACKAGE_ARGS[@]}"

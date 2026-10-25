@@ -10,6 +10,12 @@
   SKUID_IDENTIFIER = DEFAULT
   FLASH_DEFINITION = daliPkg/dali.fdf
   USE_CUSTOM_DISPLAY_DRIVER = 1
+!ifndef DALI_UFS_PROBE
+  DEFINE DALI_UFS_PROBE = FALSE
+!endif
+!ifndef DALI_UFS_PROBE_TOKEN
+  DEFINE DALI_UFS_PROBE_TOKEN = "none"
+!endif
 
 !include MT6991Pkg/MT6991Pkg.dsc.inc
 
@@ -20,6 +26,8 @@
   UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
 
 [PcdsFixedAtBuild]
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled|$(DALI_UFS_PROBE)
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|$(DALI_UFS_PROBE_TOKEN)
   gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
   gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC5000000

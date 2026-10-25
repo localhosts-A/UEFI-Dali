@@ -6,6 +6,7 @@
 import datetime
 import logging
 import os
+import re
 import uuid
 
 from io import StringIO
@@ -162,6 +163,15 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         self.env.SetValue ("BLD_*_FD_SIZE", self.env.GetValue("FD_SIZE"), "Default")
         self.env.SetValue ("BLD_*_FD_BLOCKS", self.env.GetValue("FD_BLOCKS"), "Default")
         self.env.SetValue ("BLD_*_DALI_PAYLOAD_IMAGE", os.environ.get("DALI_PAYLOAD_IMAGE", os.path.join(CommonPlatform.WorkspaceRoot, "out/payload.img")), "Dali RAM FAT")
+        ufs_probe = os.environ.get("DALI_UFS_PROBE", "false")
+        if ufs_probe not in ("true", "false"):
+            raise ValueError("DALI_UFS_PROBE must be true or false")
+        ufs_token = os.environ.get("DALI_RUN_TOKEN", "none") if ufs_probe == "true" else "none"
+        if ufs_probe == "true" and (not re.fullmatch(r"[0-9a-f]{32}", ufs_token) or
+                                    os.environ.get("DALI_AUTO_FASTBOOT") != "false"):
+            raise ValueError("UFS probe requires a fresh 32-hex DALI_RUN_TOKEN and DALI_AUTO_FASTBOOT=false")
+        self.env.SetValue ("BLD_*_DALI_UFS_PROBE", "TRUE" if ufs_probe == "true" else "FALSE", "Opt-in UFS snapshot")
+        self.env.SetValue ("BLD_*_DALI_UFS_PROBE_TOKEN", '"' + ufs_token + '"', "Bound UFS snapshot token")
 
         return 0
 

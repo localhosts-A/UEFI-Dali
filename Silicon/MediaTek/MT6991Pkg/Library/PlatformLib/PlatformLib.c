@@ -28,6 +28,10 @@ STATIC EFI_MEMORY_REGION_DESCRIPTOR mMap[] = {
   {"GPIO input probe", DALI_GPIO_BASE, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"Inherited RGU watchdog", DALI_WDT_BASE, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"Inherited PMIF SPMI-M", DALI_PMIF_BASE, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
+  // Mapping alone performs no controller access. The opt-in probe validates
+  // live FDT bindings and inherited clock status before reading the HCI.
+  {"UFS diagnostic HCI", 0x16810000, 0x3000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
+  {"UFS AO clock status", 0x168A0000, 0x1000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"DSI state probe", 0x32490000, 0x30000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"OVL0 state probe", 0x32830000, 0xA0000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
   {"OVL1 state probe", 0x32C50000, 0x80000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},

@@ -19,6 +19,7 @@
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiLib.h>
 #include <Library/TimerLib.h>
+#include <Library/PcdLib.h>
 #include <Configuration/BootDevices.h>
 #include "DaliBootPolicy.h"
 
@@ -277,6 +278,16 @@ STATIC VOID DisplayAndInputProbe (VOID) {
   Status = gBS->LocateProtocol (&gEfiSimpleTextInProtocolGuid, NULL, (VOID **)&In);
   DEBUG ((DEBUG_WARN, "DALI: text input status=%r\n", Status));
   if (PrepareUniXNU ()) {
+    if (FixedPcdGetBool (PcdDaliUfsProbeEnabled)) {
+      // A standalone diagnostic must not race a recovery watchdog/deadline.
+      if (mAutoFastboot || mResetQualification) {
+        DEBUG ((DEBUG_ERROR, "DALI-UFS: refused competing reset policy\n"));
+        DiagnosticHalt ();
+      }
+      EFI_STATUS UfsStatus = gBS->SetWatchdogTimer (0, 0, 0, NULL);
+      if (!EFI_ERROR (UfsStatus)) { UfsStatus = Mt6991ProbeUfs ((VOID *)(UINTN)DALI_FDT_BASE); }
+      DEBUG ((DEBUG_WARN, "DALI-UFS: probe status=%r; no physical storage commands submitted\n", UfsStatus));
+    }
     DEBUG ((DEBUG_WARN, "DALI: UEFI_UNIXNU_READY\n"));
     if (LaunchUniXNU () == EFI_ABORTED) { RecoverAfterExit (Out); }
     if (Out != NULL) {

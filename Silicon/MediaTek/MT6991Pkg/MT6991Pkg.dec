@@ -7,3 +7,8 @@
   Include
 [LibraryClasses]
   Mt6991PlatformLib|Include/Library/Mt6991PlatformLib.h
+[Guids]
+  gDaliTokenSpaceGuid = {0x372d9dc1, 0x7a6e, 0x42d0, {0x81, 0xc4, 0x5c, 0x9d, 0x67, 0x48, 0x21, 0x0f}}
+[PcdsFixedAtBuild]
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled|FALSE|BOOLEAN|0x00000001
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|"none"|VOID*|0x00000002
