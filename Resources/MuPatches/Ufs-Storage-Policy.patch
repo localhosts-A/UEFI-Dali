@@ -491,7 +491,7 @@ index fc7faec..4a9027a 100644
 +EFI_STATUS UfsCommandPolicy (EFI_HANDLE Controller, EDKII_UFS_HC_PLATFORM_CALLBACK_PHASE Phase, VOID *Data);
 +EFI_STATUS UfsReconcileDataTransferBuffer (UFS_PASS_THRU_PRIVATE_DATA *Private, UFS_PASS_THRU_TRANS_REQ *TransReq);
 diff --git a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c
-index c1b71ff..4438ad6 100644
+index c1b71ff..83e13a3 100644
 --- a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c
 +++ b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c
 @@ -10,6 +10,41 @@
@@ -987,7 +987,7 @@ index c1b71ff..4438ad6 100644
      goto Exit;
    }
  
-+  if (Packet->TargetStatus != EFI_SCSI_IO_STATUS_TARGET_GOOD) {
++  if (Packet->TargetStatus != EFI_EXT_SCSI_STATUS_TARGET_GOOD) {
 +    Status = EFI_DEVICE_ERROR;
 +    goto Exit;
 +  }
