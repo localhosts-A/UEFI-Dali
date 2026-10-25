@@ -1,5 +1,5 @@
 diff --git a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c
-index 78fc520..675d023 100644
+index 78fc520..88142d4 100644
 --- a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c
 +++ b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c
 @@ -8,6 +8,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -10,7 +10,7 @@ index 78fc520..675d023 100644
  
  EFI_DRIVER_BINDING_PROTOCOL  gScsiDiskDriverBinding = {
    ScsiDiskDriverBindingSupported,
-@@ -255,6 +256,156 @@ IsWriteProtected (
+@@ -255,6 +256,165 @@ IsWriteProtected (
    return EFI_SUCCESS;
  }
  
@@ -116,7 +116,7 @@ index 78fc520..675d023 100644
 +  EFI_STATUS                          Status;
 +  EFI_SCSI_IO_SCSI_REQUEST_PACKET     Packet;
 +  UINT8                               Cdb[10];
-+  UINT8                               SenseData[32];
++  VOID                                *SenseData;
 +
 +  if ((ScsiDiskDevice == NULL) || !ScsiDiskDevice->UfsPlatformSync) {
 +    return EFI_SUCCESS;
@@ -135,17 +135,26 @@ index 78fc520..675d023 100644
 +    return EFI_NOT_READY;
 +  }
 +
++  SenseData = AllocateAlignedPages (
++                 EFI_SIZE_TO_PAGES (32),
++                 ScsiDiskDevice->ScsiIo->IoAlign
++                 );
++  if (SenseData == NULL) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
 +  ZeroMem (&Packet, sizeof (Packet));
 +  ZeroMem (Cdb, sizeof (Cdb));
-+  ZeroMem (&SenseData, sizeof (SenseData));
++  ZeroMem (SenseData, 32);
 +  Cdb[0] = 0x35; // SYNCHRONIZE CACHE(10), no immediate bit and no payload.
 +  Packet.Cdb = Cdb;
 +  Packet.CdbLength = sizeof (Cdb);
 +  Packet.DataDirection = EFI_SCSI_IO_DATA_DIRECTION_READ;
 +  Packet.Timeout = ScsiDiskDevice->UfsSyncTimeout;
-+  Packet.SenseData = &SenseData;
-+  Packet.SenseDataLength = sizeof (SenseData);
++  Packet.SenseData = SenseData;
++  Packet.SenseDataLength = 32;
 +  Status = ScsiDiskDevice->ScsiIo->ExecuteScsiCommand (ScsiDiskDevice->ScsiIo, &Packet, NULL);
++  FreeAlignedPages (SenseData, EFI_SIZE_TO_PAGES (32));
 +  if (EFI_ERROR (Status)) {
 +    return Status;
 +  }

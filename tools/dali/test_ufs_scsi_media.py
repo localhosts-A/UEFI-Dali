@@ -60,6 +60,8 @@ typedef void *EFI_HANDLE,*EFI_EVENT;typedef unsigned EFI_TPL;typedef int EFI_GUI
 #define EFI_SCSI_IO_STATUS_HOST_ADAPTER_OK 0
 #define EFI_SCSI_IO_STATUS_TARGET_GOOD 0
 #define ZeroMem(p,n) memset(p,0,n)
+#define EFI_PAGE_SIZE 4096
+#define EFI_SIZE_TO_PAGES(n) (((n)+EFI_PAGE_SIZE-1)/EFI_PAGE_SIZE)
 typedef struct {BOOLEAN MediaPresent,ReadOnly;} EFI_BLOCK_IO_MEDIA;
 typedef struct {EFI_BLOCK_IO_MEDIA *Media;} EFI_BLOCK_IO_PROTOCOL,EFI_BLOCK_IO2_PROTOCOL;
 typedef struct {EFI_EVENT Event;EFI_STATUS TransactionStatus;} EFI_BLOCK_IO2_TOKEN;
@@ -67,7 +69,7 @@ typedef struct {unsigned Count;} LIST_ENTRY;
 typedef struct {UINT64 Timeout;VOID *Cdb,*InDataBuffer,*OutDataBuffer,*SenseData;UINT32 InTransferLength,OutTransferLength;
  UINT8 CdbLength,DataDirection,SenseDataLength,HostAdapterStatus,TargetStatus;} EFI_SCSI_IO_SCSI_REQUEST_PACKET;
 typedef struct IO IO;
-struct IO {EFI_STATUS (*ExecuteScsiCommand)(IO*,EFI_SCSI_IO_SCSI_REQUEST_PACKET*,EFI_EVENT);};
+struct IO {UINT32 IoAlign;EFI_STATUS (*ExecuteScsiCommand)(IO*,EFI_SCSI_IO_SCSI_REQUEST_PACKET*,EFI_EVENT);};
 typedef struct {EFI_HANDLE Handle;EFI_BLOCK_IO_PROTOCOL BlkIo;EFI_BLOCK_IO2_PROTOCOL BlkIo2;EFI_BLOCK_IO_MEDIA Media;
  VOID *EraseBlock,*StorageSecurity;IO *ScsiIo;BOOLEAN UfsPlatformSync,FixedDevice;UINT64 UfsSyncTimeout;LIST_ENTRY AsyncTaskQueue;} SCSI_DISK_DEV;
 #define SCSI_DISK_DEV_FROM_BLKIO(p) ((SCSI_DISK_DEV*)((char*)(p)-offsetof(SCSI_DISK_DEV,BlkIo)))
@@ -77,11 +79,15 @@ typedef struct {BOOLEAN ReadOnly;UINT64 SyncTimeout;} EDKII_UFS_HC_MEDIA_POLICY;
 typedef struct {unsigned Version;EFI_STATUS (*Callback)(EFI_HANDLE,unsigned,void*);} EDKII_UFS_HC_PLATFORM_PROTOCOL;
 static EFI_GUID gEfiExtScsiPassThruProtocolGuid,gEdkiiUfsHcPlatformProtocolGuid,gEfiBlockIoProtocolGuid,gEfiBlockIo2ProtocolGuid,
  gEfiEraseBlockProtocolGuid,gEfiStorageSecurityCommandProtocolGuid;
-static unsigned fault,executed,signals,policy_calls,freed,queue_checks;static UINT64 last_timeout;
+static unsigned fault,executed,signals,policy_calls,freed,queue_checks,sense_aligned,allocation_alignment,aligned_allocations,aligned_frees;static UINT64 last_timeout;
 static unsigned opcode,cdb_size,immed,payload,event_arg,policy_parent;
+_Alignas(4096) static UINT8 aligned_sense_storage[4096];
 static BOOLEAN IsListEmpty(LIST_ENTRY *list){queue_checks++;return list->Count==0;}
+static VOID *AllocateAlignedPages(UINTN pages,UINTN alignment){aligned_allocations++;allocation_alignment=alignment;if(fault==35||pages!=1||!alignment||(alignment&(alignment-1)))return NULL;return aligned_sense_storage;}
+static VOID FreeAlignedPages(VOID *p,UINTN pages){(void)p;(void)pages;aligned_frees++;}
 static EFI_STATUS execute(IO *io,EFI_SCSI_IO_SCSI_REQUEST_PACKET *p,EFI_EVENT event){
  (void)io;executed++;opcode=((UINT8*)p->Cdb)[0];immed=((UINT8*)p->Cdb)[1];cdb_size=p->CdbLength;last_timeout=p->Timeout;
+ sense_aligned=io->IoAlign<=1||((uintptr_t)p->SenseData&(io->IoAlign-1))==0;
  payload=p->InTransferLength|p->OutTransferLength|(p->InDataBuffer!=NULL)|(p->OutDataBuffer!=NULL);event_arg=event!=NULL;
  if(fault==1)return EFI_TIMEOUT;
  p->HostAdapterStatus=fault==2?9:(fault==3?0x7e:0);p->TargetStatus=fault==4?2:0;
@@ -122,8 +128,8 @@ static BOOLEAN DetermineInstallStorageSecurity(SCSI_DISK_DEV *d,EFI_HANDLE h){(v
 '''
         footer = r'''
 void run(unsigned entry,unsigned scenario,UINT64 *out){
- unsigned token_mode=scenario/100;fault=scenario%100;executed=signals=policy_calls=freed=queue_checks=opcode=cdb_size=immed=payload=event_arg=policy_parent=0;last_timeout=0;
- IO io={execute};SCSI_DISK_DEV d={0};d.ScsiIo=&io;d.FixedDevice=true;d.Handle=(void*)9;
+ unsigned token_mode=scenario/100;fault=scenario%100;executed=signals=policy_calls=freed=queue_checks=sense_aligned=allocation_alignment=aligned_allocations=aligned_frees=opcode=cdb_size=immed=payload=event_arg=policy_parent=0;last_timeout=0;
+ IO io={8,execute};SCSI_DISK_DEV d={0};d.ScsiIo=&io;d.FixedDevice=true;d.Handle=(void*)9;
  d.BlkIo.Media=d.BlkIo2.Media=&d.Media;d.Media.MediaPresent=fault!=5;d.Media.ReadOnly=entry<10;
  d.UfsPlatformSync=entry<2;d.UfsSyncTimeout=fault==20?0:30000000;d.AsyncTaskQueue.Count=fault==6;
  platform=(EDKII_UFS_HC_PLATFORM_PROTOCOL){fault==26?3:4,fault==27?NULL:policy};
@@ -133,6 +139,7 @@ void run(unsigned entry,unsigned scenario,UINT64 *out){
  out[1]=executed;out[2]=opcode;out[3]=cdb_size;out[4]=last_timeout;out[5]=payload;out[6]=event_arg;out[7]=immed;
  out[8]=token.TransactionStatus;out[9]=signals;out[10]=d.Media.ReadOnly;out[11]=policy_parent;out[12]=d.UfsPlatformSync;
  out[13]=freed;out[14]=queue_checks;out[15]=policy_calls;
+ out[16]=sense_aligned;out[17]=allocation_alignment;out[18]=aligned_allocations;out[19]=aligned_frees;
 }
 '''
         (base/'test.c').write_text(header + '\n\n'.join(passthru.function(source, name) for name in names) + footer)
@@ -152,6 +159,10 @@ void run(unsigned entry,unsigned scenario,UINT64 *out){
         out = self.case(0)
         self.assertEqual(out[:8], [0, 1, 0x35, 10, 30000000, 0, 0, 0])
         self.assertEqual(out[10], 1)  # readonly policy does not turn sync into a no-op
+        self.assertEqual(out[16:20], [1, 8, 1, 1])  # sense data follows the SCSI IoAlign contract
+
+    def test_aligned_sense_allocation_failure_does_not_submit_sync(self):
+        self.assertEqual(self.case(0, 35)[:2], [9, 0])
 
     def test_command_timeout_unknown_host_status_and_check_condition_are_errors(self):
         for fault, expected in ((1, 18), (2, 18), (3, 7), (4, 7), (9, 7)):

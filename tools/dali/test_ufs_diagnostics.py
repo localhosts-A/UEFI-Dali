@@ -19,7 +19,7 @@ class UfsDiagnosticsTests(unittest.TestCase):
 #include <stdbool.h>
 #include <stddef.h>
 typedef uint8_t UINT8;typedef uint16_t UINT16;typedef uint32_t UINT32;typedef uint64_t UINT64;
-typedef size_t UINTN;typedef char CHAR8;typedef bool BOOLEAN;typedef uint64_t EFI_STATUS,EFI_LBA;
+typedef size_t UINTN;typedef char CHAR8;typedef uint16_t CHAR16;typedef bool BOOLEAN;typedef uint64_t EFI_STATUS,EFI_LBA;
 typedef void *EFI_HANDLE;typedef int EFI_GUID;
 #define VOID void
 #define CONST const
@@ -44,6 +44,7 @@ typedef void *EFI_HANDLE;typedef int EFI_GUID;
         (base/'Library/BaseMemoryLib.h').write_text('#include <string.h>\n#define CompareMem memcmp\n#define CopyMem memcpy\n#define ZeroMem(p,n) memset(p,0,n)\n')
         (base/'Library/BaseCryptLib.h').write_text('#include <Uefi.h>\n#define SHA256_DIGEST_SIZE 32\nBOOLEAN Sha256HashAll(CONST VOID*,UINTN,UINT8*);\n')
         (base/'Library/DebugLib.h').write_text('#define DEBUG_WARN 1\nvoid debug(int,const char*,...);\n#define DEBUG(args) debug args\n')
+        (base/'Library/UefiLib.h').write_text('#include <Uefi.h>\nUINTN Print(CONST CHAR16*,...);\n')
         (base/'Library/MemoryAllocationLib.h').write_text('#include <Uefi.h>\nVOID *AllocateAlignedPages(UINTN,UINTN);\nVOID FreeAlignedPages(VOID*,UINTN);\n')
         (base/'Library/DevicePathLib.h').write_text(r'''#pragma once
 #include <Uefi.h>
@@ -87,12 +88,13 @@ extern BS *gBS;
 #include <Protocol/BlockIo.h>
 #include "UfsHostInternal.h"
 static UINT8 parent[24],paths[4][80];static IO devices[4];static EFI_BLOCK_IO_MEDIA media[4];
-static unsigned fault,reads,hashes,syncs,allocations,frees,freed_pages,token_errors;
+static unsigned fault,reads,hashes,syncs,allocations,frees,freed_pages,token_errors,screen_prints;
 static volatile UINT64 completed[8];
 static UINT64 lbas[16],sizes[16];static const char *run_token="0123456789abcdef0123456789abcdef";
 EFI_GUID gEfiDevicePathProtocolGuid=1,gEfiBlockIoProtocolGuid=2;
 UINTN GetDevicePathSize(CONST VOID *p){return p==parent?24:(p==paths[2]?72:30);}
 void debug(int level,const char *format,...){(void)level;(void)format;}
+UINTN Print(CONST CHAR16 *format,...){(void)format;screen_prints++;return 0;}
 VOID *AllocateAlignedPages(UINTN pages,UINTN alignment){void *p=NULL;allocations++;return posix_memalign(&p,alignment,pages*4096)?NULL:p;}
 VOID FreeAlignedPages(VOID *p,UINTN pages){frees++;freed_pages+=pages;free(p);}
 BOOLEAN Sha256HashAll(CONST VOID *data,UINTN bytes,UINT8 *digest){
@@ -118,7 +120,7 @@ static EFI_STATUS locate(unsigned type,EFI_GUID *g,VOID *key,UINTN *count,EFI_HA
 static EFI_STATUS release(VOID *p){(void)p;return 0;}
 static BS services={handle,locate,release};BS *gBS=&services;
 void run(unsigned which,UINT64 *out){
- fault=which;reads=hashes=syncs=allocations=frees=freed_pages=token_errors=0;memset(lbas,0,sizeof lbas);memset(sizes,0,sizeof sizes);
+ fault=which;reads=hashes=syncs=allocations=frees=freed_pages=token_errors=screen_prints=0;memset(lbas,0,sizeof lbas);memset(sizes,0,sizeof sizes);
  for(unsigned i=0;i<8;i++)completed[i]=0;
  memset(parent,0,sizeof parent);parent[0]=1;parent[1]=4;parent[2]=20;parent[4]=0xa5;parent[20]=0x7f;parent[21]=0xff;parent[22]=4;
  for(unsigned i=0;i<4;i++){
@@ -141,10 +143,11 @@ void run(unsigned which,UINT64 *out){
  out[0]=DaliUfsReadOnlyDiagnostics((void*)99,run_token,completed);out[1]=reads;out[2]=hashes;out[3]=syncs;
  out[4]=allocations;out[5]=frees;out[6]=freed_pages;
  for(unsigned i=0;i<8;i++){out[8+i]=lbas[i];out[16+i]=sizes[i];}
+ out[24]=screen_prints;
 }
 ''')
         pkg = Path(__file__).resolve().parents[2] / 'Silicon/MediaTek/MT6991Pkg/Drivers/UfsHostDxe'
-        subprocess.run([compiler, '-shared', '-fPIC', '-std=c11', '-Wall', '-Wextra', '-Werror',
+        subprocess.run([compiler, '-shared', '-fPIC', '-std=c11', '-fshort-wchar', '-Wall', '-Wextra', '-Werror',
                         '-I', str(base), '-I', str(pkg), str(pkg/'UfsDiagnostics.c'), str(base/'harness.c'),
                         '-o', str(base/'test.so')], check=True)
         cls.lib = ctypes.CDLL(str(base/'test.so'))
@@ -176,6 +179,8 @@ void run(unsigned which,UINT64 *out){
     def test_read_error_and_sync_failure_are_not_retried(self):
         self.assertEqual(self.case(4)[:6], [7, 2, 1, 0, 1, 1])
         self.assertEqual(self.case(5)[:6], [18, 4, 4, 1, 1, 1])
+        self.assertEqual(self.case(4)[24], 2)  # the failing read sample is visible on-screen
+        self.assertEqual(self.case(5)[24], 3)  # the failing sync stage is visible on-screen
 
     def test_hash_failure_and_media_change_never_hash_stale_or_wrong_sized_data(self):
         self.assertEqual(self.case(6)[:7], [7, 1, 1, 0, 1, 1, 1])

@@ -4,6 +4,7 @@
 #include <Library/DebugLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/UefiLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Protocol/BlockIo.h>
 #include "UfsHostInternal.h"
@@ -120,9 +121,13 @@ EFI_STATUS DaliUfsReadOnlyDiagnostics (EFI_HANDLE Controller, CONST CHAR8 *Token
     if (Buffer == NULL) { Status = EFI_OUT_OF_RESOURCES; break; }
     ++Roots;
     EFI_LBA Lbas[3] = { 0, 1, Snapshot.LastBlock };
+    Print (L"UFS: BlockIo read LUN=%u\r\n", Lun);
     for (UINTN Sample = 0; Sample < 3; Sample++) {
       Status = ReadSample (Io, Buffer, &Snapshot, Lun, Lbas[Sample], Token);
-      if (EFI_ERROR (Status)) { break; }
+      if (EFI_ERROR (Status)) {
+        Print (L"UFS: BlockIo read LUN=%u sample=%u result=%r\r\n", Lun, Sample, Status);
+        break;
+      }
       ++Samples;
     }
     if (!EFI_ERROR (Status) && Lun == BASELINE_LUN && Snapshot.BlockSize == BASELINE_BLOCK_SIZE && Snapshot.LastBlock == BASELINE_LAST_LBA) {
@@ -131,9 +136,11 @@ EFI_STATUS DaliUfsReadOnlyDiagnostics (EFI_HANDLE Controller, CONST CHAR8 *Token
     }
     if (!EFI_ERROR (Status)) {
       UINT64 Before = CompletedSync[Lun];
+      Print (L"UFS: BlockIo sync LUN=%u\r\n", Lun);
       Status = SameMedia (Io, &Snapshot) ? Io->FlushBlocks (Io) : EFI_MEDIA_CHANGED;
       if (!EFI_ERROR (Status) && !SameMedia (Io, &Snapshot)) { Status = EFI_MEDIA_CHANGED; }
       if (!EFI_ERROR (Status) && (Before == MAX_UINT64 || CompletedSync[Lun] != Before + 1)) { Status = EFI_DEVICE_ERROR; }
+      Print (L"UFS: BlockIo sync LUN=%u result=%r\r\n", Lun, Status);
       DEBUG ((DEBUG_WARN, "DALI-UFS-RO: run=%a SYNC lun=%u status=%lx\n", Token, Lun, (UINT64)Status));
     }
     FreeAlignedPages (Buffer, EFI_SIZE_TO_PAGES (Snapshot.BlockSize));
