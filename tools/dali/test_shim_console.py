@@ -80,7 +80,17 @@ class ShimConsoleTests(unittest.TestCase):
                                         self.fail(str(response['error']))
                             qmp('qmp_capabilities')
                             qmp('cont')
-                            time.sleep(0.1)
+                            # Wait for the payload's actual ABI store after
+                            # relocation; a fixed host sleep races TCG startup.
+                            deadline = time.monotonic() + 5
+                            while True:
+                                result = qmp('human-monitor-command', **{'command-line':
+                                    f'pmemsave 0x48201000 8 "{work / "completion"}"'})
+                                self.assertFalse(result, result)
+                                if (work/'completion').read_bytes() == struct.pack('<Q', 0x48300000):
+                                    break
+                                self.assertLess(time.monotonic(), deadline, 'payload did not complete relocation')
+                                time.sleep(0.01)
                             qmp('stop')
                             for address, length, name in ((0xaec0eff0, len(before), 'actual'),
                                                           (0x50000000, 4096, 'relocated'), (0x48201000, 8, 'abi')):
