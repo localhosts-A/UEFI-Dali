@@ -48,9 +48,9 @@ def main():
     required = {
         'UsbCoreLib': (('UsbCore', 'UsbMtu3Qmu', 'UsbMtu3Ep0', 'UsbMtu3Endpoints', 'UsbMtu3Device'),
                        ('usb_cdc_control', 'usb_bot_command', 'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init', 'usb_mtu3_device_init')),
-        'DaliUsbLib': (('DaliUsbPmif', 'DaliUsbTypec', 'DaliUsbMt6379Repeater', 'DaliUsbNxpRepeater'),
+        'DaliUsbLib': (('DaliUsbPmif', 'DaliUsbTypec', 'DaliUsbMt6379Repeater', 'DaliUsbNxpRepeater', 'DaliUsbGpio'),
                        ('dali_usb_pmif_init', 'dali_mt6379_read', 'dali_usb_typec_start', 'dali_usb_vbus_enable',
-                        'dali_mt6379_repeater_power_on', 'dali_nxp_repeater_probe')),
+                        'dali_mt6379_repeater_power_on', 'dali_nxp_repeater_probe', 'dali_usb_gpio72_set')),
         'DaliUsbPmicLib': (('UsbPmicLib',), ('DaliUsbPmicOpen', 'DaliUsbPmicClose')),
     }
     for name, (objects, symbols) in required.items():
