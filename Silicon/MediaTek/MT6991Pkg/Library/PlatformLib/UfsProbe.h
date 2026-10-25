@@ -13,6 +13,7 @@ typedef struct {
   UINT32 UtmrlLo, UtmrlHi, UtmrlDoorbell, UtmrlRun;
   UINT32 McqCap, MemConfig, McqConfig;
   UINT32 IommusBytes;
+  UINT32 MtkIpVersion, RefClock, XoUfs, Options, Outstanding;
   BOOLEAN HciRead, McqRead;
 } DALI_UFS_SNAPSHOT;
 
@@ -71,6 +72,8 @@ STATIC BOOLEAN DaliUfsResources (CONST VOID *Fdt, UINT32 *IommusBytes) {
   if (Property == NULL || Length != 4 || FdtNodeOffsetByPhandle (Fdt, Fdt32ToCpu (*Property)) != Phy) { return FALSE; }
   Property = FdtGetProp (Fdt, Phy, "#phy-cells", &Length);
   if (Property == NULL || Length != 4 || Fdt32ToCpu (*Property) != 0) { return FALSE; }
+  Property = FdtGetProp (Fdt, Phy, "mphy-ver", &Length);
+  if (Property == NULL || Length != 4 || Fdt32ToCpu (*Property) != 1) { return FALSE; }
   Property = FdtGetProp (Fdt, Ao, "#clock-cells", &Length);
   if (Property == NULL || Length != 4 || Fdt32ToCpu (*Property) != 1) { return FALSE; }
   Property = FdtGetProp (Fdt, Cksys, "#clock-cells", &Length);
@@ -136,6 +139,15 @@ STATIC DALI_UFS_PROBE_RESULT DaliUfsSnapshot (
     Out->McqConfig = Read (DALI_UFS_HCI + 0x380, Context);
     Out->McqRead = TRUE;
   }
+  // Pinned device_modules e45c319 drivers/ufs/ufs-mediatek.h:47-63.
+  // Version identifies the MT6991 quirk branch; reference clock and vendor
+  // state must be observed before initialization. These reads perform no UIC,
+  // clock/power/reset writes, queue setup or secure-monitor calls.
+  Out->MtkIpVersion = Read (DALI_UFS_HCI + 0x2240, Context);
+  Out->RefClock = Read (DALI_UFS_HCI + 0x144, Context);
+  Out->XoUfs = Read (DALI_UFS_HCI + 0x140, Context);
+  Out->Options = Read (DALI_UFS_HCI + 0x160, Context);
+  Out->Outstanding = Read (DALI_UFS_HCI + 0x14C, Context);
   // Captured only means reads completed. Active MCQ/doorbells, a disabled HCE,
   // or any particular address never establish safe takeover/direct DMA.
   return DaliUfsProbeCaptured;

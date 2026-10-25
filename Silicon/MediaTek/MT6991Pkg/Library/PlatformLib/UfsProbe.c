@@ -26,7 +26,7 @@ EFI_STATUS Mt6991ProbeUfs (CONST VOID *Fdt) {
   CHAR8 Line[256];
   if (!FixedPcdGetBool (PcdDaliUfsProbeEnabled)) { return EFI_NOT_STARTED; }
   if (!DaliUfsToken (Token)) { return EFI_INVALID_PARAMETER; }
-  AsciiSPrint (Line, sizeof Line, "DALI-UFS: run=%a begin version=1 mode=read-only writes=0\n", Token);
+  AsciiSPrint (Line, sizeof Line, "DALI-UFS: run=%a begin version=2 mode=read-only writes=0\n", Token);
   UfsLog (Line);
   DALI_UFS_PROBE_RESULT Result = DaliUfsSnapshot (Fdt, TRUE, Token, UfsRead32, (VOID *)Token, &Snapshot);
   AsciiSPrint (Line, sizeof Line, "DALI-UFS: run=%a gates=%08x,%08x iommu-property-bytes=%u result=%u\n",
@@ -42,6 +42,9 @@ EFI_STATUS Mt6991ProbeUfs (CONST VOID *Fdt) {
     UfsLog (Line);
     AsciiSPrint (Line, sizeof Line, "DALI-UFS: run=%a mcq-read=%u mcqcap=%08x memcfg=%08x mcqcfg=%08x\n",
       Token, Snapshot.McqRead, Snapshot.McqCap, Snapshot.MemConfig, Snapshot.McqConfig);
+    UfsLog (Line);
+    AsciiSPrint (Line, sizeof Line, "DALI-UFS: run=%a mtk-ip=%08x refclk=%08x xoufs=%08x opt=%08x otsd=%08x mphy-ver=1\n",
+      Token, Snapshot.MtkIpVersion, Snapshot.RefClock, Snapshot.XoUfs, Snapshot.Options, Snapshot.Outstanding);
     UfsLog (Line);
   }
   AsciiSPrint (Line, sizeof Line, "DALI-UFS: run=%a end result=%u dma-qualified=0 media-qualified=0\n", Token, Result);

@@ -11,7 +11,7 @@ TOKEN = b"0123456789abcdef0123456789abcdef"
 
 
 def tree(*, hci_size="0x2a00", clock_id=13, parent_id=42, parent_provider=2, status='status = "okay";', ranges="ranges;",
-         phy_ref=3, iommu="", names=None):
+         phy_ref=3, phy_version=1, iommu="", names=None):
     names = names or ['ufs_sel', 'ufs_sel_min_src', 'ufs_sel_max_src', 'ufs_fde', 'ufs_fde_min_src',
                       'ufs_fde_max_src', 'unipro_tx_sym', 'unipro_rx_sym0', 'unipro_rx_sym1',
                       'unipro_sys', 'unipro_sap', 'ufs_phy_sap', 'ufshci_ufs', 'ufshci_aes']
@@ -26,7 +26,7 @@ def tree(*, hci_size="0x2a00", clock_id=13, parent_id=42, parent_provider=2, sta
         #clock-cells=<1>; phandle=<2>; }};
       soc {{ #address-cells=<2>; #size-cells=<2>; {ranges}
         ufsphy@16800000 {{ compatible="mediatek,mt8183-ufsphy"; reg=<0 0x16800000 0 0x10000>;
-          #phy-cells=<0>; phandle=<3>; }};
+          #phy-cells=<0>; mphy-ver=<{phy_version}>; phandle=<3>; }};
         ufshci@16810000 {{ compatible="mediatek,mt8183-ufshci"; reg=<0 0x16810000 0 {hci_size}>;
           {status} phys=<{phy_ref}>; clocks=<{clocks}>; clock-names={named}; {iommu} }};
       }}; }};'''
@@ -117,7 +117,7 @@ int probe(const void *fdt, int enabled, const char *token, const uint32_t *value
         variants = [tree(hci_size='0x3000'), tree(clock_id=12), tree(parent_id=43), tree(parent_provider=1),
                     tree(status='status="disabled";'),
                     tree(ranges=''), tree(ranges='ranges=<0 0 0 0x1000 0 0x100000>;'),
-                    tree(phy_ref=2), tree(names=['other'] * 14), b'invalid']
+                    tree(phy_ref=2), tree(phy_version=0), tree(phy_version=2), tree(names=['other'] * 14), b'invalid']
         for data in variants:
             with self.subTest(data=data[:24]):
                 self.assertEqual(self.probe(data=data)[:2], (1, []))
@@ -128,12 +128,14 @@ int probe(const void *fdt, int enabled, const char *token, const uint32_t *value
             self.assertIn(result, (2, 3))
             self.assertEqual(addresses, [0x168a0104, 0x168a0004])
 
-    def test_legacy_snapshot_only_reads_exact_standard_registers(self):
+    def test_legacy_snapshot_only_reads_exact_standard_and_pinned_vendor_registers(self):
         result, addresses, fields = self.probe(cap=0x0100001f, version=0x300, gate1=7)
         self.assertEqual(result, 4)
         self.assertEqual(addresses, [0x168a0104, 0x168a0004] + [0x16810000 + at for at in
-                         (0, 8, 0x34, 0x30, 0x20, 0x24, 0x18, 0x50, 0x54, 0x58, 0x60, 0x70, 0x74, 0x78, 0x80)])
+                         (0, 8, 0x34, 0x30, 0x20, 0x24, 0x18, 0x50, 0x54, 0x58, 0x60, 0x70, 0x74, 0x78, 0x80,
+                          0x2240, 0x144, 0x140, 0x160, 0x14c)])
         self.assertEqual(fields[2:4], [0x0100001f, 0x300])
+        self.assertEqual(fields[21:26], [0x16812240, 0x16810144, 0x16810140, 0x16810160, 0x1681014c])
 
     def test_mcq_registers_require_both_capability_and_version(self):
         for cap, version, mcq in ((0x4000001f, 0x400, True), (0x4000001f, 0x300, False), (0x1f, 0x400, False)):
