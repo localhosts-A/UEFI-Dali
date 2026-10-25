@@ -9,7 +9,7 @@ import unittest
 
 
 def function(source, name):
-    match = re.search(r'(?:STATIC )?(?:BOOLEAN|EFI_STATUS)\n' + name + r'\s*\(', source)
+    match = re.search(r'(?m)^(?:STATIC\s+)?(?:BOOLEAN|EFI_STATUS)\s+(?:EFIAPI\s+)?' + name + r'\s*\(', source)
     if not match:
         raise AssertionError('production function missing: ' + name)
     at = source.index('{', match.end())
@@ -31,6 +31,7 @@ class PassThruPolicyTests(unittest.TestCase):
         base = Path(cls.temp.name)
         root = Path(__file__).resolve().parents[2]
         source = (root / 'Mu_Basecore/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c').read_text()
+        interface = (root / 'Mu_Basecore/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c').read_text()
         names = ('UfsHasCommandPolicy', 'UfsCommandPolicy', 'UfsWaitMemSet', 'UfsStartExecCmd',
                  'UfsStopExecCmd', 'UfsFinishCommand', 'UfsSendDmRequestRetry', 'UfsSendDmRequest',
                  'UfsExecNopCmds', 'UfsExecScsiCmds')
@@ -47,6 +48,7 @@ typedef uint64_t EFI_STATUS;typedef unsigned EFI_TPL;typedef void *EFI_EVENT;
 #define IN
 #define OUT
 #define OPTIONAL
+#define EFIAPI
 #define TRUE true
 #define FALSE false
 #define EFI_SUCCESS 0
@@ -60,6 +62,14 @@ typedef uint64_t EFI_STATUS;typedef unsigned EFI_TPL;typedef void *EFI_EVENT;
 #define EFI_ERROR(s) ((s)!=0)
 #define BIT0 1
 #define BIT5 32
+#define BIT7 128
+#define TARGET_MAX_BYTES 16
+#define UFS_MAX_LUNS 8
+#define UFS_WLUN_PREFIX 0xc1
+#define EFI_EXT_SCSI_PASS_THRU_ATTRIBUTES_NONBLOCKIO 4
+#define ADDRESS_IS_ALIGNED(p,n) (((uintptr_t)(p) % (n)) == 0)
+#define SetMem(p,n,v) memset(p,v,n)
+#define CompareMem memcmp
 #define TPL_NOTIFY 16
 #define UFS_TIMEOUT 30
 #define UFS_HC_UTRLDBR_OFFSET 0x58
@@ -68,6 +78,9 @@ typedef uint64_t EFI_STATUS;typedef unsigned EFI_TPL;typedef void *EFI_EVENT;
 #define UFS_HC_UTRLRSR 1
 #define EDKII_UFS_HC_PLATFORM_COMMAND_POLICY_VERSION 4
 #define EFI_EXT_SCSI_DATA_DIRECTION_READ 0
+#define EFI_EXT_SCSI_STATUS_HOST_ADAPTER_OTHER 0x7f
+#define EFI_EXT_SCSI_STATUS_HOST_ADAPTER_OK 0
+#define EFI_EXT_SCSI_STATUS_HOST_ADAPTER_TIMEOUT_COMMAND 9
 #define UFS_PASS_THRU_TRANS_REQ_SIG 123
 #define UfsUtpQueryResponseSuccess 0
 #define UfsUtpQueryResponseInvalidSelector 0xfb
@@ -82,7 +95,7 @@ typedef struct {UINT8 QueryResp;} UTP_QUERY_RESP_UPIU;
 typedef struct {UINT8 Resp;} UTP_NOP_IN_UPIU;
 typedef struct {UINT32 RuO,RuL,PrdtO,PrdtL,Ocs;} UTP_TRD;
 typedef struct {UINT32 Dummy;} UTP_TR_PRD;
-typedef struct {UINT64 Timeout;UINT8 *Cdb,CdbLength,DataDirection,TargetStatus,SenseDataLength;UINT32 InTransferLength,OutTransferLength;void *SenseData;} EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET;
+typedef struct {UINT64 Timeout;UINT8 *Cdb,CdbLength,DataDirection,TargetStatus,SenseDataLength,HostAdapterStatus;UINT32 InTransferLength,OutTransferLength;void *SenseData,*InDataBuffer,*OutDataBuffer;} EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET;
 typedef struct {UINT8 Opcode,DescId,Index,Selector,DataDirection;UINT32 TransferLength;UINT64 Timeout;} UFS_DEVICE_MANAGEMENT_REQUEST_PACKET;
 typedef enum {EdkiiUfsHcValidateScsi,EdkiiUfsHcCompleteScsi,EdkiiUfsHcValidateQuery,EdkiiUfsHcAbort} EDKII_UFS_HC_PLATFORM_CALLBACK_PHASE;
 typedef struct {UINT8 Lun;EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET *Packet;EFI_EVENT Event;} EDKII_UFS_HC_SCSI_POLICY;
@@ -91,7 +104,11 @@ typedef struct {int dummy;} LIST_ENTRY;
 typedef struct HC HC;
 struct HC {EFI_STATUS (*Flush)(HC*);EFI_STATUS (*Unmap)(HC*,void*);EFI_STATUS (*FreeBuffer)(HC*,UINTN,void*);};
 typedef HC EDKII_UFS_HOST_CONTROLLER_PROTOCOL;
-typedef struct {void *Handle;HC *UfsHostController;void *UtpTrlBase;LIST_ENTRY Queue;} UFS_PASS_THRU_PRIVATE_DATA;
+typedef struct {void *Handle;HC *UfsHostController;void *UtpTrlBase;LIST_ENTRY Queue;struct {UINT8 BitMask,Lun[8];} Luns;} UFS_PASS_THRU_PRIVATE_DATA;
+typedef struct {UINT32 IoAlign,Attributes;} EFI_EXT_SCSI_PASS_THRU_MODE;
+typedef struct {EFI_EXT_SCSI_PASS_THRU_MODE *Mode;UFS_PASS_THRU_PRIVATE_DATA *Private;} EFI_EXT_SCSI_PASS_THRU_PROTOCOL;
+#define UFS_PASS_THRU_PRIVATE_DATA_FROM_THIS(p) ((p)->Private)
+static UINT8 mUfsTargetId[TARGET_MAX_BYTES];
 typedef struct {unsigned Signature;UINT64 TimeoutRemain;EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET *Packet;
  UINT8 Slot;UTP_TRD *Trd;void *CmdDescHost,*CmdDescMapping;UINT32 CmdDescSize;EFI_EVENT CallerEvent;LIST_ENTRY TransferList;} UFS_PASS_THRU_TRANS_REQ;
 typedef struct {unsigned Version;EFI_STATUS (*Callback)(void*,EDKII_UFS_HC_PLATFORM_CALLBACK_PHASE,void*);} PLATFORM;
@@ -149,21 +166,28 @@ static void SwapLittleEndianToBigEndian(UINT8 *p,UINT32 n){for(unsigned i=0;i<n/
 '''
         footer = r'''
 void run(unsigned mode,unsigned fault,uint64_t *out){
- kind=mode;scenario=fault;starts=aborts=unmaps=freebufs=reconciles=pools=poolfrees=ctors=querycopies=completes=reads=doorbell=0;pool=NULL;
+ kind=mode>=3?0:mode;scenario=fault;starts=aborts=unmaps=freebufs=reconciles=pools=poolfrees=ctors=querycopies=completes=reads=doorbell=0;pool=NULL;
  platform=(PLATFORM){4,callback};memset(&trd,0,sizeof trd);
  UFS_PASS_THRU_PRIVATE_DATA p={0};p.UfsHostController=&hc;p.UtpTrlBase=&trd;
  unsigned char sense[32]={0},cdb[16]={0};
  EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET packet={0};packet.Timeout=scenario==6?0:10;packet.InTransferLength=8;
  packet.Cdb=cdb;packet.CdbLength=10;packet.DataDirection=0;packet.SenseData=sense;packet.SenseDataLength=32;
  UFS_DEVICE_MANAGEMENT_REQUEST_PACKET query={0};query.Opcode=1;query.Timeout=10;
- out[0]=mode==0?UfsExecScsiCmds(&p,2,&packet,scenario==5?(void*)1:NULL):
+ if(mode>=3){
+  EFI_EXT_SCSI_PASS_THRU_MODE advertised={1,mode==4?EFI_EXT_SCSI_PASS_THRU_ATTRIBUTES_NONBLOCKIO:0};
+  EFI_EXT_SCSI_PASS_THRU_PROTOCOL protocol={&advertised,&p};UINT8 target[TARGET_MAX_BYTES]={0};
+  p.Luns.BitMask=1;p.Luns.Lun[0]=2;
+  out[0]=UfsPassThruPassThru(&protocol,target,0x200,&packet,(void*)1);
+ }else out[0]=mode==0?UfsExecScsiCmds(&p,2,&packet,scenario==5?(void*)1:NULL):
         (mode==1?UfsSendDmRequest(&p,&query):UfsExecNopCmds(&p));
  out[1]=starts;out[2]=aborts;out[3]=unmaps;out[4]=freebufs;out[5]=reconciles;out[6]=pools;out[7]=poolfrees;
  out[8]=ctors;out[9]=packet.InTransferLength;out[10]=completes;out[11]=querycopies;out[12]=reads;out[13]=packet.SenseDataLength;
+ out[14]=packet.HostAdapterStatus;out[15]=packet.TargetStatus;
  if(pool)free(pool);pool=NULL;
 }
 '''
-        (base / 'test.c').write_text(header + '\n\n'.join(function(source, name) for name in names) + footer)
+        (base / 'test.c').write_text(header + '\n\n'.join(function(source, name) for name in names) +
+                                   '\n' + function(interface, 'UfsPassThruPassThru') + footer)
         subprocess.run([compiler, '-shared', '-fPIC', '-std=c11', '-Wall', '-Wextra', '-Werror',
                         str(base / 'test.c'), '-o', str(base / 'test.so')], check=True)
         cls.lib = ctypes.CDLL(str(base / 'test.so'))
@@ -227,3 +251,12 @@ void run(unsigned mode,unsigned fault,uint64_t *out){
 
     def test_nop_ocs_failure_is_an_error(self):
         self.assertEqual(self.run_case(2, 16)[0], 7)
+
+    def test_host_status_is_explicit_for_completion_timeout_and_rejection(self):
+        self.assertEqual(self.run_case(0, 0)[14:16], [0, 0])
+        self.assertEqual(self.run_case(0, 2)[14], 9)
+        self.assertEqual(self.run_case(0, 4)[14:16], [0x7f, 0xff])
+
+    def test_direct_passthru_ignores_event_when_nonblocking_is_not_advertised(self):
+        self.assertEqual(self.run_case(3, 0)[:5], [0, 1, 0, 1, 1])
+        self.assertEqual(self.run_case(4, 0)[:5], [2, 0, 0, 0, 0])

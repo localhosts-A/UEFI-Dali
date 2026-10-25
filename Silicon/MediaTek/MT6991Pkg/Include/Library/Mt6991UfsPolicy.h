@@ -3,11 +3,13 @@
 #include <Library/Mt6991UfsDmaLib.h>
 
 typedef struct { UINT64 Blocks; UINT32 BlockSize; BOOLEAN Valid; } MT6991_UFS_GEOMETRY;
+#define MT6991_UFS_COMMAND_TIMEOUT_100NS 30000000ULL
+EFI_STATUS Mt6991UfsBoundTimeout (UINT64 *Timeout);
 typedef struct {
   UINT8 *Trd, *Request, *Response, *Data;
   UINT32 Expected;
   UINTN ResponseBytes;
-  UINT8 Transaction, Lun, Tag;
+  UINT8 Transaction, Lun, Tag, Opcode;
 } MT6991_UFS_PENDING;
 
 EFI_STATUS Mt6991UfsReadOnlyCommand (CONST MT6991_UFS_GEOMETRY *Geometry,

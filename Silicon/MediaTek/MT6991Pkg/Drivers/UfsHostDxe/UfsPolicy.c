@@ -8,6 +8,12 @@ STATIC UINT64 Be64 (CONST UINT8 *P) { return ((UINT64)Be32 (P) << 32) | Be32 (P 
 STATIC UINT16 Le16 (CONST UINT8 *P) { return (UINT16)(((UINT16)P[1] << 8) | P[0]); }
 STATIC UINT32 Le32 (CONST UINT8 *P) { return ((UINT32)Le16 (P + 2) << 16) | Le16 (P); }
 
+EFI_STATUS Mt6991UfsBoundTimeout (UINT64 *Timeout) {
+  if (Timeout == NULL || *Timeout == 0) { return EFI_INVALID_PARAMETER; }
+  if (*Timeout > MT6991_UFS_COMMAND_TIMEOUT_100NS) { *Timeout = MT6991_UFS_COMMAND_TIMEOUT_100NS; }
+  return EFI_SUCCESS;
+}
+
 EFI_STATUS Mt6991UfsReadOnlyCommand (CONST MT6991_UFS_GEOMETRY *G,
   UINT8 Lun, CONST UINT8 *Cdb, UINTN CdbBytes, UINT32 Bytes) {
   UINTN Length;
@@ -99,7 +105,7 @@ EFI_STATUS Mt6991UfsValidateTransfer (MT6991_UFS_DMA *D, UINT64 Trl,
   P->Transaction = Q[0]; P->Lun = Q[2]; P->Tag = Q[3];
   if (Q[0] == 1) {
     P->Expected = Be32 (Q + 12);
-    UINT8 Op = Q[16];
+    UINT8 Op = Q[16]; P->Opcode = Op;
     UINTN CdbBytes = (Op == 0 || Op == 3 || Op == 0x12 || Op == 0x1A) ? 6 :
                     (Op == 0xA0 ? 12 : (Op == 0x88 || Op == 0x91 || Op == 0x9E ? 16 : 10));
     Status = Mt6991UfsReadOnlyCommand (G, Q[2], Q + 16, CdbBytes, P->Expected);
@@ -144,10 +150,10 @@ EFI_STATUS Mt6991UfsValidateResponse (MT6991_UFS_PENDING *P, MT6991_UFS_GEOMETRY
         (Residual && !(R[1] & 0x20)) || Sense > 18 || Segment > 20 ||
         (Sense && Segment < Sense + 2U)) { return EFI_DEVICE_ERROR; }
     *Valid = R[6] == 0 && R[7] == 0;
-    if (*Valid && P->Data != NULL && !Residual && (Q[16] == 0x25 || Q[16] == 0x9E)) {
-      UINT64 Last = Q[16] == 0x25 ? Be32 (P->Data) : Be64 (P->Data);
-      UINT32 Block = Be32 (P->Data + (Q[16] == 0x25 ? 4 : 8));
-      if (Last == MAX_UINT64 || (Q[16] == 0x25 && Last == 0xFFFFFFFFU)) { return EFI_SUCCESS; }
+    if (*Valid && P->Data != NULL && !Residual && (P->Opcode == 0x25 || P->Opcode == 0x9E)) {
+      UINT64 Last = P->Opcode == 0x25 ? Be32 (P->Data) : Be64 (P->Data);
+      UINT32 Block = Be32 (P->Data + (P->Opcode == 0x25 ? 4 : 8));
+      if (Last == MAX_UINT64 || (P->Opcode == 0x25 && Last == 0xFFFFFFFFU)) { return EFI_SUCCESS; }
       if (Block < 512 || Block > 65536 || (Block & (Block - 1))) { return EFI_DEVICE_ERROR; }
       G[P->Lun].Blocks = Last + 1; G[P->Lun].BlockSize = Block; G[P->Lun].Valid = TRUE;
     }

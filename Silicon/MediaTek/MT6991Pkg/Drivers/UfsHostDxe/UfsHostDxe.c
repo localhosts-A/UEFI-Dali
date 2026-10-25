@@ -12,14 +12,16 @@
 #include <Protocol/DevicePath.h>
 #include <Protocol/DaliUfsDiagnostic.h>
 #include <Protocol/UfsHostControllerPlatform.h>
+#include "UfsHostInternal.h"
 
 #define HCI 0x16810000U
 #define WINDOW 0x2A00U
-#define COMMAND_TIMEOUT 30000000ULL
+#define COMMAND_TIMEOUT MT6991_UFS_COMMAND_TIMEOUT_100NS
 STATIC MT6991_UFS_CONTROLLER mControl;
 STATIC MT6991_UFS_DMA mDma;
 STATIC MT6991_UFS_GEOMETRY mGeometry[8];
 STATIC MT6991_UFS_PENDING mPending;
+STATIC volatile UINT64 mCompletedSync[8];
 STATIC EFI_HANDLE mController;
 STATIC BOOLEAN mAttempted, mClosed = TRUE, mInitUsed, mInitFinished, mDisconnected;
 STATIC UINT32 mTrl, mTmrl;
@@ -115,6 +117,16 @@ STATIC EFI_STATUS Complete (VOID) {
     StopController (); return EFI_DEVICE_ERROR;
   }
   Status = Mt6991UfsDmaComplete (&mDma, DataValid);
+  if (!EFI_ERROR (Status) && DataValid && mPending.Transaction == 1 &&
+      (mPending.Opcode == 0x35 || mPending.Opcode == 0x91)) {
+    if (mCompletedSync[mPending.Lun] == MAX_UINT64) { Status = EFI_DEVICE_ERROR; }
+    else {
+      ++mCompletedSync[mPending.Lun];
+      DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a SYNC_COMPLETE lun=%u tag=%u opcode=%x count=%Lu\n",
+        (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mPending.Lun, mPending.Tag,
+        mPending.Opcode, mCompletedSync[mPending.Lun]));
+    }
+  }
   if (EFI_ERROR (Status)) { StopController (); }
   return Status;
 }
@@ -179,12 +191,18 @@ STATIC EFI_STATUS EFIAPI Callback (EFI_HANDLE Controller, EDKII_UFS_HC_PLATFORM_
   if (Controller != mController) { return EFI_ACCESS_DENIED; }
   if (Phase == EdkiiUfsHcAbort) { return StopController (); }
   if (mClosed) { return EFI_DEVICE_ERROR; }
+  if (Phase == EdkiiUfsHcGetMediaPolicy) {
+    if (Data == NULL) { return EFI_INVALID_PARAMETER; }
+    EDKII_UFS_HC_MEDIA_POLICY *Policy = Data;
+    Policy->ReadOnly = TRUE; Policy->SyncTimeout = COMMAND_TIMEOUT;
+    return EFI_SUCCESS;
+  }
   if (Phase == EdkiiUfsHcValidateScsi || Phase == EdkiiUfsHcCompleteScsi) {
     EDKII_UFS_HC_SCSI_POLICY *Policy = Data;
     if (Policy == NULL || Policy->Packet == NULL) { return EFI_INVALID_PARAMETER; }
     EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET *P = Policy->Packet;
     if (Phase == EdkiiUfsHcValidateScsi) {
-      if (Policy->Event != NULL || !P->Timeout || P->Timeout > COMMAND_TIMEOUT || P->OutTransferLength ||
+      if (Policy->Event != NULL || EFI_ERROR (Mt6991UfsBoundTimeout (&P->Timeout)) || P->OutTransferLength ||
           (P->InTransferLength && (P->DataDirection != EFI_EXT_SCSI_DATA_DIRECTION_READ || P->InDataBuffer == NULL))) { return EFI_ACCESS_DENIED; }
       return Mt6991UfsReadOnlyCommand (mGeometry, Policy->Lun, P->Cdb, P->CdbLength, P->InTransferLength);
     }
@@ -235,6 +253,7 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   if (!EFI_ERROR (Status)) { Status = gBS->ConnectController (mController, NULL, NULL, TRUE); }
   *Controller = mController;
   DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a connect=%r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Status));
+  if (!EFI_ERROR (Status)) { Status = DaliUfsReadOnlyDiagnostics (mController, FixedPcdGetPtr (PcdDaliUfsStorageToken), mCompletedSync); }
   if (EFI_ERROR (Status)) { StopController (); }
   return Status;
 }

@@ -8,10 +8,12 @@
 [Sources]
   UfsHostDxe.c
   UfsPolicy.c
+  UfsDiagnostics.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   ArmPkg/ArmPkg.dec
+  CryptoPkg/CryptoPkg.dec
   MT6991Pkg/MT6991Pkg.dec
 [LibraryClasses]
   UefiDriverEntryPoint
@@ -24,11 +26,15 @@
   PcdLib
   Mt6991PlatformLib
   Mt6991UfsDmaLib
+  BaseCryptLib
+  DevicePathLib
+  MemoryAllocationLib
 [FixedPcd]
   gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled
   gDaliTokenSpaceGuid.PcdDaliUfsStorageToken
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
 [Protocols]
+  gEfiBlockIoProtocolGuid ## CONSUMES
   gEfiExtScsiPassThruProtocolGuid ## SOMETIMES_CONSUMES
   gEfiCpuArchProtocolGuid ## CONSUMES
   gDaliUfsDiagnosticProtocolGuid ## PRODUCES

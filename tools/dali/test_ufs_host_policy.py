@@ -109,6 +109,8 @@ void wire(unsigned which,uint64_t *out) {
         cls.lib.wire.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint64)]
         cls.lib.command.argtypes = [ctypes.c_uint] * 3 + [ctypes.c_uint64] * 2 + [ctypes.c_uint, ctypes.c_uint64] + [ctypes.c_uint] * 3
         cls.lib.command.restype = ctypes.c_uint64
+        cls.lib.Mt6991UfsBoundTimeout.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
+        cls.lib.Mt6991UfsBoundTimeout.restype = ctypes.c_uint64
 
     @classmethod
     def tearDownClass(cls):
@@ -171,3 +173,12 @@ void wire(unsigned which,uint64_t *out) {
             self.assertEqual(self.command(op), 0)
             self.assertNotEqual(self.command(op, immediate=1), 0)
             self.assertNotEqual(self.command(op, size=1), 0)
+
+    def test_generic_scsi_timeout_is_bounded_without_rejecting_valid_reads(self):
+        for supplied, expected in ((1, 1), (30000000, 30000000), (300000000, 30000000), (2**64-1, 30000000)):
+            timeout = ctypes.c_uint64(supplied)
+            self.assertEqual(self.lib.Mt6991UfsBoundTimeout(ctypes.byref(timeout)), 0)
+            self.assertEqual(timeout.value, expected)
+        timeout = ctypes.c_uint64(0)
+        self.assertNotEqual(self.lib.Mt6991UfsBoundTimeout(ctypes.byref(timeout)), 0)
+        self.assertNotEqual(self.lib.Mt6991UfsBoundTimeout(None), 0)

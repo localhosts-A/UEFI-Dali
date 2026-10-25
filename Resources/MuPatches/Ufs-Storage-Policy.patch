@@ -1,8 +1,191 @@
+diff --git a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c
+index 78fc52056a..ce70d9d89d 100644
+--- a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c
++++ b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c
+@@ -255,6 +255,38 @@ IsWriteProtected (
+   return EFI_SUCCESS;
+ }
+ 
++STATIC EFI_STATUS
++ScsiDiskApplyUfsMediaPolicy (SCSI_DISK_DEV *Device)
++{
++  EFI_HANDLE *Handles;
++  UINTN Count;
++  EFI_STATUS Status = gBS->LocateHandleBuffer (
++    ByProtocol, &gEfiExtScsiPassThruProtocolGuid, NULL, &Count, &Handles);
++  if (Status == EFI_NOT_FOUND) { return EFI_SUCCESS; }
++  if (EFI_ERROR (Status)) { return Status; }
++  Status = EFI_SUCCESS;
++  for (UINTN Index = 0; Index < Count; Index++) {
++    if (EFI_ERROR (EfiTestChildHandle (Handles[Index], Device->Handle, &gEfiExtScsiPassThruProtocolGuid))) { continue; }
++    EDKII_UFS_HC_PLATFORM_PROTOCOL *Platform;
++    Status = gBS->HandleProtocol (Handles[Index], &gEdkiiUfsHcPlatformProtocolGuid, (VOID **)&Platform);
++    if ((Status == EFI_UNSUPPORTED) || (Status == EFI_NOT_FOUND)) { Status = EFI_SUCCESS; break; }
++    if (EFI_ERROR (Status)) { break; }
++    if (Platform->Version < EDKII_UFS_HC_PLATFORM_COMMAND_POLICY_VERSION) { break; }
++    if (Platform->Callback == NULL) { Status = EFI_SECURITY_VIOLATION; break; }
++    EDKII_UFS_HC_MEDIA_POLICY Policy;
++    ZeroMem (&Policy, sizeof Policy);
++    Status = Platform->Callback (Handles[Index], EdkiiUfsHcGetMediaPolicy, &Policy);
++    if (EFI_ERROR (Status)) { break; }
++    if (!Policy.SyncTimeout || Policy.SyncTimeout > SCSI_DISK_TIMEOUT) { Status = EFI_INVALID_PARAMETER; break; }
++    Device->UfsPlatformSync = TRUE;
++    Device->UfsSyncTimeout = Policy.SyncTimeout;
++    if (Policy.ReadOnly) { Device->BlkIo.Media->ReadOnly = TRUE; }
++    break;
++  }
++  gBS->FreePool (Handles);
++  return Status;
++}
++
+ /**
+   Start this driver on ControllerHandle.
+ 
+@@ -358,6 +390,13 @@ ScsiDiskDriverBindingStart (
+       break;
+   }
+ 
++  Status = ScsiDiskApplyUfsMediaPolicy (ScsiDiskDevice);
++  if (EFI_ERROR (Status)) {
++    gBS->CloseProtocol (Controller, &gEfiScsiIoProtocolGuid, This->DriverBindingHandle, Controller);
++    FreePool (ScsiDiskDevice);
++    return Status;
++  }
++
+   if (ScsiDiskDevice->DeviceType == EFI_SCSI_TYPE_DISK) {
+     Status = IsWriteProtected (ScsiDiskDevice, &WriteProtectionEnabled);
+     if (EFI_ERROR (Status)) {
+@@ -974,10 +1013,37 @@ Done:
+   return Status;
+ }
+ 
+-/**
+-  Flush Block to Disk.
++STATIC EFI_STATUS
++ScsiDiskUfsSynchronizeCache (SCSI_DISK_DEV *Device)
++{
++  if (!Device->UfsPlatformSync) { return EFI_SUCCESS; }
++  if (!Device->BlkIo.Media->MediaPresent) { return EFI_NO_MEDIA; }
++  // This platform is serial. Never wait in a busy loop at TPL_CALLBACK for an
++  // unrelated async queue, or overtake requests whose completion is unknown.
++  if (!IsListEmpty (&Device->AsyncTaskQueue)) { return EFI_NOT_READY; }
++  if (!Device->UfsSyncTimeout || Device->UfsSyncTimeout > SCSI_DISK_TIMEOUT) { return EFI_INVALID_PARAMETER; }
++  EFI_SCSI_IO_SCSI_REQUEST_PACKET Packet;
++  UINT8 Cdb[10] = { 0x35 }; // SYNCHRONIZE CACHE(10), IMMED=0, whole LUN.
++  UINT8 Sense[32];
++  ZeroMem (&Packet, sizeof Packet);
++  ZeroMem (Sense, sizeof Sense);
++  Packet.Timeout = Device->UfsSyncTimeout;
++  Packet.Cdb = Cdb; Packet.CdbLength = sizeof Cdb;
++  Packet.DataDirection = EFI_SCSI_IO_DATA_DIRECTION_READ;
++  Packet.SenseData = Sense; Packet.SenseDataLength = sizeof Sense;
++  Packet.HostAdapterStatus = EFI_SCSI_IO_STATUS_HOST_ADAPTER_OTHER;
++  Packet.TargetStatus = 0xFF;
++  EFI_STATUS Status = Device->ScsiIo->ExecuteScsiCommand (Device->ScsiIo, &Packet, NULL);
++  if (EFI_ERROR (Status)) { return Status; }
++  if (Packet.HostAdapterStatus == EFI_SCSI_IO_STATUS_HOST_ADAPTER_TIMEOUT_COMMAND ||
++      Packet.HostAdapterStatus == EFI_SCSI_IO_STATUS_HOST_ADAPTER_TIMEOUT) { return EFI_TIMEOUT; }
++  if (Packet.HostAdapterStatus != EFI_SCSI_IO_STATUS_HOST_ADAPTER_OK ||
++      Packet.TargetStatus != EFI_SCSI_IO_STATUS_TARGET_GOOD) { return EFI_DEVICE_ERROR; }
++  return EFI_SUCCESS;
++}
+ 
+-  EFI_SUCCESS is returned directly.
++/**
++  Flush Block to Disk. Opt-in UFS media issues a real device cache sync.
+ 
+   @param  This              The pointer of EFI_BLOCK_IO_PROTOCOL
+ 
+@@ -990,10 +1056,7 @@ ScsiDiskFlushBlocks (
+   IN  EFI_BLOCK_IO_PROTOCOL  *This
+   )
+ {
+-  //
+-  // return directly
+-  //
+-  return EFI_SUCCESS;
++  return ScsiDiskUfsSynchronizeCache (SCSI_DISK_DEV_FROM_BLKIO (This));
+ }
+ 
+ /**
+@@ -1448,6 +1511,18 @@ ScsiDiskFlushBlocksEx (
+   ScsiDiskDevice = SCSI_DISK_DEV_FROM_BLKIO2 (This);
+   Media          = ScsiDiskDevice->BlkIo.Media;
+ 
++  if (ScsiDiskDevice->UfsPlatformSync) {
++    Status = ScsiDiskUfsSynchronizeCache (ScsiDiskDevice);
++    if (Token != NULL) {
++      Token->TransactionStatus = Status;
++      if (Token->Event != NULL) {
++        gBS->SignalEvent (Token->Event);
++        Status = EFI_SUCCESS; // Accepted/completed; result is in the token.
++      }
++    }
++    goto Done;
++  }
++
+   if (!IS_DEVICE_FIXED (ScsiDiskDevice)) {
+     Status = ScsiDiskDetectMedia (ScsiDiskDevice, FALSE, &MediaChange);
+     if (EFI_ERROR (Status)) {
+diff --git a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.h b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.h
+index a1fab62a8f..ac76b745d1 100644
+--- a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.h
++++ b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.h
+@@ -20,6 +20,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ #include <Protocol/ScsiPassThruExt.h>
+ #include <Protocol/DiskInfo.h>
+ #include <Protocol/StorageSecurityCommand.h>
++#include <Protocol/UfsHostControllerPlatform.h>
+ 
+ #include <Library/DebugLib.h>
+ #include <Library/UefiDriverEntryPoint.h>
+@@ -97,6 +98,8 @@ typedef struct {
+   // The flag indicates FUA support
+   //
+   BOOLEAN                                  FuaMode;
++  BOOLEAN                                  UfsPlatformSync;
++  UINT64                                   UfsSyncTimeout;
+ } SCSI_DISK_DEV;
+ 
+ #define SCSI_DISK_DEV_FROM_BLKIO(a)     CR (a, SCSI_DISK_DEV, BlkIo, SCSI_DISK_DEV_SIGNATURE)
+diff --git a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
+index 194dac50e5..7b1c8779a6 100644
+--- a/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
++++ b/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
+@@ -36,6 +36,7 @@
+ 
+ [Packages]
+   MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
+ 
+ 
+ [LibraryClasses]
+@@ -50,6 +51,7 @@
+   PrintLib
+ 
+ [Protocols]
++  gEdkiiUfsHcPlatformProtocolGuid                ## SOMETIMES_CONSUMES
+   gEfiDiskInfoProtocolGuid                      ## BY_START
+   gEfiBlockIoProtocolGuid                       ## BY_START
+   gEfiBlockIo2ProtocolGuid                      ## BY_START
 diff --git a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c
-index 14fc5e6d12..a431a0d205 100644
+index 14fc5e6d12..f9943c1b3e 100644
 --- a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c
 +++ b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c
-@@ -757,9 +757,13 @@ UfsFinishDeviceInitialization (
+@@ -218,6 +218,12 @@ UfsPassThruPassThru (
+     return EFI_INVALID_PARAMETER;
+   }
+ 
++  // The protocol requires a blocking call, ignoring Event, when NONBLOCKIO
++  // is not advertised. Keep the lower v4 policy strictly synchronous.
++  if ((This->Mode->Attributes & EFI_EXT_SCSI_PASS_THRU_ATTRIBUTES_NONBLOCKIO) == 0) {
++    Event = NULL;
++  }
++
+   Status = UfsExecScsiCmds (Private, UfsLun, Packet, Event);
+ 
+   return Status;
+@@ -757,9 +763,13 @@ UfsFinishDeviceInitialization (
    EFI_STATUS  Status;
    UINT8       DeviceInitStatus;
    UINT32      Timeout;
@@ -16,7 +199,7 @@ index 14fc5e6d12..a431a0d205 100644
  
    //
    // The host enables the device initialization completion by setting fDeviceInit flag.
-@@ -770,6 +774,9 @@ UfsFinishDeviceInitialization (
+@@ -770,6 +780,9 @@ UfsFinishDeviceInitialization (
    }
  
    do {
@@ -26,7 +209,7 @@ index 14fc5e6d12..a431a0d205 100644
      Status = UfsReadFlag (Private, UfsFlagDevInit, &DeviceInitStatus);
      if (EFI_ERROR (Status)) {
        return Status;
-@@ -842,6 +849,7 @@ UfsPassThruDriverBindingStart (
+@@ -842,6 +855,7 @@ UfsPassThruDriverBindingStart (
    UINT32                                 DeviceDescriptorSize;
    EDKII_UFS_CARD_REF_CLK_FREQ_ATTRIBUTE  Attributes;
    UINT8                                  RefClkAttr;
@@ -34,7 +217,7 @@ index 14fc5e6d12..a431a0d205 100644
  
    Status    = EFI_SUCCESS;
    UfsHc     = NULL;
-@@ -906,6 +914,9 @@ UfsPassThruDriverBindingStart (
+@@ -906,6 +920,9 @@ UfsPassThruDriverBindingStart (
      DEBUG ((DEBUG_ERROR, "Failed to initialize UfsHcInfo\n"));
      goto Error;
    }
@@ -44,7 +227,7 @@ index 14fc5e6d12..a431a0d205 100644
  
    //
    // Initialize UFS Host Controller H/W.
-@@ -977,7 +988,7 @@ UfsPassThruDriverBindingStart (
+@@ -977,7 +994,7 @@ UfsPassThruDriverBindingStart (
           "Failure from platform driver during EdkiiUfsHcPostLinkStartup, Status = %r\n",
           Status)
          );
@@ -53,7 +236,7 @@ index 14fc5e6d12..a431a0d205 100644
      }
    }
  
-@@ -989,12 +1000,14 @@ UfsPassThruDriverBindingStart (
+@@ -989,12 +1006,14 @@ UfsPassThruDriverBindingStart (
                    NULL
                    );
    // MU_CHANGE [END]
@@ -69,7 +252,7 @@ index 14fc5e6d12..a431a0d205 100644
      Status = UfsRwDeviceDesc (Private, TRUE, UfsUnitDesc, (UINT8)Index, 0, &UnitDescriptor, &UnitDescriptorSize);
      if (EFI_ERROR (Status)) {
        DEBUG ((DEBUG_ERROR, "Failed to read unit descriptor, index = %X, status = %r\n", Index, Status));
-@@ -1024,6 +1037,9 @@ UfsPassThruDriverBindingStart (
+@@ -1024,6 +1043,9 @@ UfsPassThruDriverBindingStart (
    //
    // Start the asynchronous interrupt monitor
    //
@@ -79,7 +262,7 @@ index 14fc5e6d12..a431a0d205 100644
    Status = gBS->CreateEvent (
                    EVT_TIMER | EVT_NOTIFY_SIGNAL,
                    TPL_NOTIFY,
-@@ -1046,6 +1062,7 @@ UfsPassThruDriverBindingStart (
+@@ -1046,6 +1068,7 @@ UfsPassThruDriverBindingStart (
      goto Error;
    }
  
@@ -87,7 +270,7 @@ index 14fc5e6d12..a431a0d205 100644
    // MU_CHANGE [BEGIN] - Install UFS Device Config Protocol before caching the device config
    Status = gBS->InstallMultipleProtocolInterfaces (
                    &Controller,
-@@ -1055,11 +1072,22 @@ UfsPassThruDriverBindingStart (
+@@ -1055,11 +1078,22 @@ UfsPassThruDriverBindingStart (
                    );
    // MU_CHANGE [END]
    ASSERT_EFI_ERROR (Status);
@@ -110,7 +293,7 @@ index 14fc5e6d12..a431a0d205 100644
      if (Private->TmrlMapping != NULL) {
        UfsHc->Unmap (UfsHc, Private->TmrlMapping);
      }
-@@ -1192,6 +1220,7 @@ UfsPassThruDriverBindingStop (
+@@ -1192,6 +1226,7 @@ UfsPassThruDriverBindingStop (
    //
    Status = UfsControllerStop (Private);
    ASSERT_EFI_ERROR (Status);
@@ -119,7 +302,7 @@ index 14fc5e6d12..a431a0d205 100644
    if (Private->TmrlMapping != NULL) {
      UfsHc->Unmap (UfsHc, Private->TmrlMapping);
 diff --git a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c
-index c1b71ff946..8a736284b0 100644
+index c1b71ff946..20671a96ac 100644
 --- a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c
 +++ b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c
 @@ -10,6 +10,25 @@
@@ -338,19 +521,21 @@ index c1b71ff946..8a736284b0 100644
  }
  
  /**
-@@ -1506,6 +1571,11 @@ UfsExecScsiCmds (
+@@ -1506,6 +1571,13 @@ UfsExecScsiCmds (
    EFI_TPL                             OldTpl;
    UFS_PASS_THRU_TRANS_REQ             *TransReq;
    EDKII_UFS_HOST_CONTROLLER_PROTOCOL  *UfsHc;
 +  BOOLEAN                             Completed = FALSE;
 +
 +  EDKII_UFS_HC_SCSI_POLICY Policy = { Lun, Packet, Event };
++  Packet->HostAdapterStatus = EFI_EXT_SCSI_STATUS_HOST_ADAPTER_OTHER;
++  Packet->TargetStatus = 0xFF;
 +  Status = UfsCommandPolicy (Private, EdkiiUfsHcValidateScsi, &Policy);
 +  if (EFI_ERROR (Status)) { return Status; }
  
    TransReq = AllocateZeroPool (sizeof (UFS_PASS_THRU_TRANS_REQ));
    if (TransReq == NULL) {
-@@ -1522,6 +1592,7 @@ UfsExecScsiCmds (
+@@ -1522,6 +1594,7 @@ UfsExecScsiCmds (
    //
    Status = UfsFindAvailableSlotInTrl (Private, &TransReq->Slot);
    if (EFI_ERROR (Status)) {
@@ -358,7 +543,7 @@ index c1b71ff946..8a736284b0 100644
      return Status;
    }
  
-@@ -1539,6 +1610,7 @@ UfsExecScsiCmds (
+@@ -1539,6 +1612,7 @@ UfsExecScsiCmds (
               &TransReq->CmdDescMapping
               );
    if (EFI_ERROR (Status)) {
@@ -366,7 +551,7 @@ index c1b71ff946..8a736284b0 100644
      return Status;
    }
  
-@@ -1562,7 +1634,11 @@ UfsExecScsiCmds (
+@@ -1562,7 +1636,11 @@ UfsExecScsiCmds (
    //
    // Start to execute the transfer request.
    //
@@ -379,7 +564,7 @@ index c1b71ff946..8a736284b0 100644
  
    //
    // Immediately return for async I/O.
-@@ -1582,6 +1658,7 @@ UfsExecScsiCmds (
+@@ -1582,6 +1660,7 @@ UfsExecScsiCmds (
    //
    // Get sense data if exists
    //
@@ -387,7 +572,7 @@ index c1b71ff946..8a736284b0 100644
    Response = (UTP_RESPONSE_UPIU *)((UINT8 *)TransReq->CmdDescHost + TransReq->Trd->RuO * sizeof (UINT32));
    ASSERT (Response != NULL);
    SenseDataLen = Response->SenseDataLen;
-@@ -1591,7 +1668,7 @@ UfsExecScsiCmds (
+@@ -1591,7 +1670,7 @@ UfsExecScsiCmds (
      //
      // Make sure the hardware device does not return more data than expected.
      //
@@ -396,7 +581,7 @@ index c1b71ff946..8a736284b0 100644
        CopyMem (Packet->SenseData, Response->SenseData, SenseDataLen);
        Packet->SenseDataLength = (UINT8)SenseDataLen;
      } else {
-@@ -1614,12 +1691,14 @@ UfsExecScsiCmds (
+@@ -1614,12 +1693,14 @@ UfsExecScsiCmds (
        if ((Response->Flags & BIT5) == BIT5) {
          ResTranCount = Response->ResTranCount;
          SwapLittleEndianToBigEndian ((UINT8 *)&ResTranCount, sizeof (UINT32));
@@ -411,11 +596,18 @@ index c1b71ff946..8a736284b0 100644
          Packet->OutTransferLength -= ResTranCount;
        }
      }
-@@ -1630,17 +1709,31 @@ UfsExecScsiCmds (
+@@ -1630,17 +1711,37 @@ UfsExecScsiCmds (
  Exit:
    UfsHc->Flush (UfsHc);
  
 -  UfsStopExecCmd (Private, TransReq->Slot);
++  if (Status == EFI_TIMEOUT) {
++    Packet->HostAdapterStatus = EFI_EXT_SCSI_STATUS_HOST_ADAPTER_TIMEOUT_COMMAND;
++  } else if (!EFI_ERROR (Status)) {
++    Packet->HostAdapterStatus = EFI_EXT_SCSI_STATUS_HOST_ADAPTER_OK;
++  }
+ 
+-  UfsReconcileDataTransferBuffer (Private, TransReq);
 +  if (EFI_ERROR (UfsFinishCommand (Private, TransReq->Slot, Completed))) {
 +    return EFI_DEVICE_ERROR;
 +  }
@@ -423,8 +615,7 @@ index c1b71ff946..8a736284b0 100644
 +    Packet->InTransferLength = 0;
 +    Packet->OutTransferLength = 0;
 +  }
- 
--  UfsReconcileDataTransferBuffer (Private, TransReq);
++
 +  if (EFI_ERROR (UfsReconcileDataTransferBuffer (Private, TransReq))) {
 +    UfsCommandPolicy (Private, EdkiiUfsHcAbort, NULL);
 +    return EFI_DEVICE_ERROR; // Keep auxiliary buffer and request until quiesced.
@@ -447,7 +638,7 @@ index c1b71ff946..8a736284b0 100644
    }
  
    if (TransReq != NULL) {
-@@ -1818,7 +1911,7 @@ UfsAllocateAlignCommonBuffer (
+@@ -1818,7 +1919,7 @@ UfsAllocateAlignCommonBuffer (
      return EFI_OUT_OF_RESOURCES;
    }
  
@@ -456,7 +647,7 @@ index c1b71ff946..8a736284b0 100644
      //
      // The UFS host controller doesn't support 64bit addressing, so should not get a >4G UFS bus master address.
      //
-@@ -2181,6 +2274,10 @@ UfsControllerStop (
+@@ -2181,6 +2282,10 @@ UfsControllerStop (
    EFI_STATUS  Status;
    UINT32      Data;
  
@@ -468,7 +659,7 @@ index c1b71ff946..8a736284b0 100644
    // Enable the UTP Task Management Request List by setting the UTP Task Management
    // Request List RunStop Register (UTMRLRSR) to '1'.
 diff --git a/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h b/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h
-index d7ab738041..57c588be68 100644
+index d7ab738041..c048dabdb9 100644
 --- a/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h
 +++ b/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h
 @@ -9,8 +9,11 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -483,7 +674,7 @@ index d7ab738041..57c588be68 100644
  
  extern EFI_GUID  gEdkiiUfsHcPlatformProtocolGuid;
  
-@@ -79,9 +82,29 @@ typedef enum {
+@@ -79,9 +82,36 @@ typedef enum {
    EdkiiUfsHcPreHce,
    EdkiiUfsHcPostHce,
    EdkiiUfsHcPreLinkStartup,
@@ -492,7 +683,8 @@ index d7ab738041..57c588be68 100644
 +  EdkiiUfsHcValidateScsi,
 +  EdkiiUfsHcCompleteScsi,
 +  EdkiiUfsHcValidateQuery,
-+  EdkiiUfsHcAbort
++  EdkiiUfsHcAbort,
++  EdkiiUfsHcGetMediaPolicy
  } EDKII_UFS_HC_PLATFORM_CALLBACK_PHASE;
  
 +// Version 4: validate before allocations/submission, complete after data unmap.
@@ -507,6 +699,12 @@ index d7ab738041..57c588be68 100644
 +  UINT32 TransferLength;
 +  UINT64 Timeout;
 +} EDKII_UFS_HC_QUERY_POLICY;
++
++// Obtained from the child's actual ExtSCSI parent before BlockIo publication.
++typedef struct {
++  BOOLEAN ReadOnly;
++  UINT64 SyncTimeout; // Positive, bounded, in 100 ns units. No async/retry.
++} EDKII_UFS_HC_MEDIA_POLICY;
 +
 +// Abort has no data. Success MUST mean submissions are closed and HCE=0 has
 +// been observed. Failure requires retaining every possibly DMA-owned buffer.

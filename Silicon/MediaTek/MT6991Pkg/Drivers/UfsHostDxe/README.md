@@ -14,7 +14,10 @@ The platform protocol explicitly selects the repository's v4 command-policy
 extension. Existing providers retain version 3. HCE/link startup are performed
 by the MT6991 control core, and the generic driver skips repeating them. The
 device reference-clock attribute is preserved. One transfer slot is exposed;
-async requests and zero/unbounded timeouts are refused before allocation.
+async submissions and zero timeouts are refused before allocation. Positive
+SCSI timeouts are capped at three seconds, including ScsiDisk's 30-second
+default. Direct PassThru ignores Event when NONBLOCKIO is not advertised, as
+the protocol requires, and then executes synchronously.
 
 SCSI permits identification, mode sense, capacity, reads and synchronous cache
 commands on common LUNs 0–7. Other opcodes, well-known LUNs and data-out requests
@@ -48,17 +51,34 @@ host, disconnect the upper drivers, and release residual mappings. Any failed
 step refuses the menu/XNU handoff. This is not yet the optional generic
 DarwinBoot pre-final-memory-map interface or the XNU ownership handoff.
 
-119 host tests pass, including 14 production DMA/backend tests, 8 production
-wire-policy tests and 10 tests executing the production PassThru function
-bodies under faults. AArch64 default-disabled and explicitly enabled builds
-have compiled. Software results do not qualify MT6991 hardware.
+ScsiDisk obtains media policy from its actual ExtSCSI parent before publishing
+BlockIo. A failed v4 policy prevents publication; MODE SENSE failure cannot
+weaken the forced read-only flag. PartitionDxe inherits that media policy.
+For this parent only, FlushBlocks and FlushBlocksEx issue one bounded blocking
+SYNCHRONIZE CACHE(10), with IMMED clear and no data. Transport, host and target
+errors propagate; an event token carries the actual result. The legacy path
+is unchanged.
+
+The diagnostic enumerates only this host's BlockIo paths, asserts read-only
+whole disks and partitions, and logs observed LUNs, geometry and GPT partition
+paths. It hashes blocks 0, 1 and LastBlock on each root using the actual logical
+block size. The captured Android LUN-2 geometry additionally selects the boot_b
+first block; its content must match the current candidate, since boot_b now
+contains that candidate. Media identity is checked around reads and sync.
+Each successful Flush must advance the host's validated device-SYNC completion
+counter by exactly one; a no-op Flush cannot qualify synchronization.
+
+142 host tests pass, including 14 production DMA/backend, 9 wire-policy,
+12 production PassThru, 8 ScsiDisk media/sync, 8 BlockIo diagnostic and 4 host
+sync-completion tests. An explicitly enabled AArch64 build has compiled these
+changes. Software results do not qualify MT6991 hardware.
 
 The existing off/register-probe packager verifies the compiled disabled host
 inside the actual FD and refuses enabled physical-host builds. Direct
 `build_uefi.py` supports explicit host builds for software qualification; a
 dedicated sealed candidate profile and runner are still required for hardware.
 
-Remaining work includes physical BlockIo publication/geometry/read evidence,
-real ScsiDisk FlushBlocks synchronization (the inherited implementation is a
-no-op), scratch child/policy, generic firmware/XNU handoff, physical XNU driver
-and repeated write/sync/reboot/readback qualification.
+Remaining work includes the candidate profile/runner and physical BlockIo
+publication/geometry/read/sync evidence, scratch child/policy, generic
+firmware/XNU handoff, physical XNU driver and repeated write/sync/reboot/readback
+qualification.
