@@ -1,4 +1,4 @@
-"""Execute the production DMA core and UEFI UC adapter with fault injection."""
+"""Execute the production DMA core and ARM Normal Non-cacheable adapter."""
 import ctypes
 from pathlib import Path
 import shutil
@@ -92,7 +92,7 @@ extern EFI_GUID gEfiCpuArchProtocolGuid;
 #include <Protocol/Cpu.h>
 typedef struct { void *cpu; size_t pages; uint64_t attr; } Allocation;
 static Allocation allocated[32];
-static unsigned scenario,live,allocs,frees,restores,ucsets,flushes,fences,restore_failed;
+static unsigned scenario,live,allocs,frees,restores,ncsets,flushes,fences,restore_failed;
 void MemoryFence(void) { ++fences; }
 static EFI_STATUS allocate(int type,int memory,size_t pages,uint64_t *address) {
  if(type!=AllocateMaxAddress || memory!=EfiBootServicesData) return EFI_INVALID_PARAMETER;
@@ -113,13 +113,15 @@ static EFI_STATUS release(uint64_t a,size_t pages) {
 }
 static EFI_STATUS descriptor(uint64_t a,EFI_GCD_MEMORY_SPACE_DESCRIPTOR *d) {
  for(unsigned i=0;i<32;i++) if((uintptr_t)allocated[i].cpu==a) {
-  *d=(EFI_GCD_MEMORY_SPACE_DESCRIPTOR){a,allocated[i].pages*4096,EFI_MEMORY_UC|EFI_MEMORY_WB|EFI_MEMORY_XP,allocated[i].attr};
+  *d=(EFI_GCD_MEMORY_SPACE_DESCRIPTOR){a,allocated[i].pages*4096,EFI_MEMORY_UC|EFI_MEMORY_WC|EFI_MEMORY_WB|EFI_MEMORY_XP,allocated[i].attr};
+  if(scenario==15)d->Capabilities&=~EFI_MEMORY_WC;
   return 0;
  }\n return EFI_NOT_FOUND;
 }
 static EFI_STATUS attributes(uint64_t a,uint64_t len,uint64_t attrs) {
  for(unsigned i=0;i<32;i++) if((uintptr_t)allocated[i].cpu==a && len==allocated[i].pages*4096) {
-  if(attrs&EFI_MEMORY_UC) {++ucsets;allocated[i].attr=attrs;if(scenario==1)return EFI_DEVICE_ERROR;}
+  if(attrs&EFI_MEMORY_UC)return EFI_UNSUPPORTED;
+  if(attrs&EFI_MEMORY_WC) {++ncsets;allocated[i].attr=attrs;if(scenario==1)return EFI_DEVICE_ERROR;}
   else {++restores;if(scenario==2&&!restore_failed++){return EFI_DEVICE_ERROR;}allocated[i].attr=attrs;}
   return 0;
  }\n return EFI_INVALID_PARAMETER;
@@ -133,12 +135,12 @@ static EFI_STATUS locate(EFI_GUID *g,void *r,void **out) {(void)g;(void)r;*out=&
 static EFI_BOOT_SERVICES bs={allocate,release,locate};EFI_BOOT_SERVICES *gBS=&bs;
 static EFI_DXE_SERVICES ds={descriptor,attributes};EFI_DXE_SERVICES *gDS=&ds;
 int run(unsigned which,uint64_t *out) {
- scenario=which;live=allocs=frees=restores=ucsets=flushes=fences=restore_failed=0;
+ scenario=which;live=allocs=frees=restores=ncsets=flushes=fences=restore_failed=0;
  memset(allocated,0,sizeof allocated);
  MT6991_UFS_DMA d={0};void *host=NULL,*uc=NULL;uint64_t dev=0,id=0,old=0;
  unsigned char data[66];memset(data,0x55,sizeof data);
  out[0]=Mt6991UfsDmaUefiInit(&d,0xffffffff);
- if(which<=4) {
+ if(which<=4 || which==15) {
   out[1]=Mt6991UfsDmaAllocate(&d,1,&host);
   out[2]=live;
   if(host)out[3]=Mt6991UfsDmaFree(&d,1,host);
@@ -199,7 +201,7 @@ int run(unsigned which,uint64_t *out) {
   out[3]=Mt6991UfsDmaUnmap(&d,old);out[4]=Mt6991UfsDmaUnmap(&d,id);
   out[5]=live;out[6]=Mt6991UfsDmaStopped(&d,0);out[7]=Mt6991UfsDmaReleaseAll(&d);
  }
- out[20]=live;out[21]=allocs;out[22]=frees;out[23]=restores;out[24]=ucsets;out[25]=flushes;
+ out[20]=live;out[21]=allocs;out[22]=frees;out[23]=restores;out[24]=ncsets;out[25]=flushes;
  out[26]=fences;out[27]=d.Busy;
  for(unsigned i=0;i<32;i++)if(allocated[i].cpu){munmap(allocated[i].cpu,allocated[i].pages*4096);allocated[i].cpu=NULL;}
  return 0;
@@ -222,12 +224,12 @@ int run(unsigned which,uint64_t *out) {
         self.assertEqual(out[0], 0)
         return list(out)
 
-    def test_real_uefi_backend_uses_uc_and_restores_before_free(self):
+    def test_real_uefi_backend_uses_normal_noncacheable_and_restores_before_free(self):
         out = self.case(0)
         self.assertEqual(out[1:6], [0, 1, 0, 0, 0])
         self.assertEqual(out[20:26], [0, 1, 1, 1, 1, 2])
 
-    def test_failed_uc_update_and_post_change_cache_flush_are_rolled_back(self):
+    def test_failed_attribute_update_and_post_change_cache_flush_are_rolled_back(self):
         for scenario in (1, 3):
             out = self.case(scenario)
             self.assertEqual((out[1], out[2], out[20], out[23]), (7, 0, 0, 1))
@@ -283,3 +285,7 @@ int run(unsigned which,uint64_t *out) {
         out = self.case(14)
         self.assertEqual(out[1:8], [6, 6, 6, 6, 2, 0, 0])
         self.assertEqual(out[20], 0)
+
+    def test_uc_only_gcd_does_not_fall_back_to_device_memory(self):
+        out = self.case(15)
+        self.assertEqual((out[1], out[20], out[24], out[25]), (3, 0, 0, 0))

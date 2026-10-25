@@ -11,7 +11,7 @@ import sys
 import tomllib
 
 from fdt import Fdt
-from firmware_volume import extract_bds
+from firmware_volume import extract_bds, extract_module, UFS_HOST_GUID
 
 
 def ufs_probe_metadata(build, token=None, *, fd):
@@ -21,6 +21,9 @@ def ufs_probe_metadata(build, token=None, *, fd):
     auto = build / "daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG"
     header = (auto / "AutoGen.h").read_text()
     source = (auto / "AutoGen.c").read_text()
+    physical = re.search(r"^#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled\s+0U\s*$", header, re.M)
+    if not physical:
+        raise ValueError("physical UFS host requires its dedicated candidate verifier/runner")
     flag = re.search(r"^#define _PCD_VALUE_PcdDaliUfsProbeEnabled\s+([01])U\s*$", header, re.M)
     value = re.search(r"_gPcd_FixedAtBuild_PcdDaliUfsProbeToken\[(\d+)\]\s*=\s*\{([^}]+)\}", source)
     if not flag or not value or int(flag[1]) != int(token is not None):
@@ -41,6 +44,24 @@ def ufs_probe_metadata(build, token=None, *, fd):
             "bds_sha256": hashlib.sha256(module).hexdigest(),
             "bds_verified_in_final_fd": True,
             "bds_autogen_sha256": hashlib.sha256(source.encode()).hexdigest()}
+
+
+def ufs_host_off_metadata(build, *, fd):
+    """The register-probe packaging path cannot qualify the new physical host."""
+    auto = build / "MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG"
+    header = (auto / "AutoGen.h").read_text()
+    source = (auto / "AutoGen.c").read_text()
+    if not re.search(r"^#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled\s+0U\s*$", header, re.M):
+        raise ValueError("physical UFS host requires its dedicated candidate verifier/runner")
+    value = re.search(r"_gPcd_FixedAtBuild_PcdDaliUfsStorageToken\[(\d+)\]\s*=\s*\{([^}]+)\}", source)
+    if not value or int(value[1]) != 5 or bytes(int(v.strip(), 0) for v in value[2].split(',') if v.strip()) != b"none\0":
+        raise ValueError("compiled disabled UFS host token differs")
+    module = (build / "DaliUfsHostDxe.efi").read_bytes()
+    if extract_module(fd, UFS_HOST_GUID, 'UFS host') != module:
+        raise ValueError("final FD UFS host differs from validated compiled module")
+    return {"enabled": False, "mode": "off", "physical_storage_qualified": False,
+            "host_sha256": hashlib.sha256(module).hexdigest(), "host_verified_in_final_fd": True,
+            "host_autogen_sha256": hashlib.sha256(source.encode()).hexdigest()}
 
 
 def main():
@@ -94,6 +115,7 @@ def main():
         raise SystemExit("Unexpected dali FD size")
     try:
         probe = ufs_probe_metadata(fd.parent.parent / "AARCH64", args.ufs_probe_token, fd=fd.read_bytes())
+        host = ufs_host_off_metadata(fd.parent.parent / "AARCH64", fd=fd.read_bytes())
     except (OSError, ValueError) as error:
         raise SystemExit("UFS probe build verification failed: " + str(error)) from None
     payload = json.loads((out / "payload.json").read_text())
@@ -138,7 +160,7 @@ def main():
               "device_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=device_repo, text=True).strip(),
               "uefi_commit": uefi_commit,
               "mu_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
-              "payload": payload, "ufs_probe": probe}
+              "payload": payload, "ufs_probe": probe, "ufs_host": host}
     (out / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))
 

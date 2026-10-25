@@ -14,6 +14,9 @@ PORT_PYTHON=${MU_PYTHON:-python3}
 PORT_XNU_KERNEL=
 PORT_XNU_ADT=
 PORT_PROBE_PACKAGE_ARGS=()
+[[ "${DALI_UFS_READ_ONLY:-false}" == false ]] || {
+  echo "Physical UFS host builds require the dedicated candidate verifier/runner; packaging is not enabled yet" >&2; exit 2;
+}
 if [[ "${DALI_UFS_PROBE:-false}" == true ]]; then
   [[ $# == 3 && "${DALI_AUTO_FASTBOOT:-true}" == false && -z "${DALI_RESET_METHOD:-}" &&
      "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]] || {

@@ -173,6 +173,17 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         self.env.SetValue ("BLD_*_DALI_UFS_PROBE", "TRUE" if ufs_probe == "true" else "FALSE", "Opt-in UFS snapshot")
         self.env.SetValue ("BLD_*_DALI_UFS_PROBE_TOKEN", '"' + ufs_token + '"', "Bound UFS snapshot token")
 
+        ufs_read_only = os.environ.get("DALI_UFS_READ_ONLY", "false")
+        if ufs_read_only not in ("true", "false"):
+            raise ValueError("DALI_UFS_READ_ONLY must be true or false")
+        storage_token = os.environ.get("DALI_RUN_TOKEN", "none") if ufs_read_only == "true" else "none"
+        if ufs_read_only == "true" and (ufs_probe != "false" or
+                not re.fullmatch(r"[0-9a-f]{32}", storage_token) or
+                os.environ.get("DALI_AUTO_FASTBOOT") != "false" or os.environ.get("DALI_RESET_METHOD")):
+            raise ValueError("UFS host diagnostic requires its own token and no competing probe/reset mode")
+        self.env.SetValue ("BLD_*_DALI_UFS_READ_ONLY", "TRUE" if ufs_read_only == "true" else "FALSE", "Opt-in physical UFS diagnostic")
+        self.env.SetValue ("BLD_*_DALI_UFS_STORAGE_TOKEN", '"' + storage_token + '"', "Bound physical UFS diagnostic token")
+
         return 0
 
     def PlatformPreBuild (self):

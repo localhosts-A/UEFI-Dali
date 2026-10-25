@@ -16,10 +16,17 @@
 !ifndef DALI_UFS_PROBE_TOKEN
   DEFINE DALI_UFS_PROBE_TOKEN = "none"
 !endif
+!ifndef DALI_UFS_READ_ONLY
+  DEFINE DALI_UFS_READ_ONLY = FALSE
+!endif
+!ifndef DALI_UFS_STORAGE_TOKEN
+  DEFINE DALI_UFS_STORAGE_TOKEN = "none"
+!endif
 
 !include MT6991Pkg/MT6991Pkg.dsc.inc
 
 [LibraryClasses]
+  UefiScsiLib|MdePkg/Library/UefiScsiLib/UefiScsiLib.inf
   # Keep event waits polling until MT6991 WFI wakeup is validated separately.
   CpuLib|daliPkg/Library/PollingCpuLib/PollingCpuLib.inf
   KeypadDeviceLib|daliPkg/Library/KeypadDeviceLib/KeypadDeviceLib.inf
@@ -29,6 +36,8 @@
 [PcdsFixedAtBuild]
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled|$(DALI_UFS_PROBE)
   gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|$(DALI_UFS_PROBE_TOKEN)
+  gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled|$(DALI_UFS_READ_ONLY)
+  gDaliTokenSpaceGuid.PcdDaliUfsStorageToken|$(DALI_UFS_STORAGE_TOKEN)
   gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
   gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC5000000
@@ -42,6 +51,11 @@
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosProcessorPartNumber|"MT6991"
 
 [Components]
+  MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe.inf
+  MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruDxe.inf
+  MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
+  MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
+  MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
   DarwinBootPkg/Driver/DarwinBoot.inf
   UniXNUPkg/Application/UniXNU/UniXNU.inf

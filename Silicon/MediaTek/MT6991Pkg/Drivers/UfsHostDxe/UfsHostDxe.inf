@@ -1,0 +1,39 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliUfsHostDxe
+  FILE_GUID = 071ca928-9d14-41f2-9a35-d01287493376
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DaliUfsHostEntry
+[Sources]
+  UfsHostDxe.c
+  UfsPolicy.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  IoLib
+  ArmSmcLib
+  PcdLib
+  Mt6991PlatformLib
+  Mt6991UfsDmaLib
+[FixedPcd]
+  gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsStorageToken
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
+[Protocols]
+  gEfiExtScsiPassThruProtocolGuid ## SOMETIMES_CONSUMES
+  gEfiCpuArchProtocolGuid ## CONSUMES
+  gDaliUfsDiagnosticProtocolGuid ## PRODUCES
+  gEdkiiUfsHostControllerProtocolGuid ## PRODUCES
+  gEdkiiUfsHcPlatformProtocolGuid ## PRODUCES
+  gEfiDevicePathProtocolGuid ## PRODUCES
+[Depex]
+  gEfiCpuArchProtocolGuid

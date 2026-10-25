@@ -80,8 +80,20 @@ class ShimConsoleTests(unittest.TestCase):
                                         self.fail(str(response['error']))
                             qmp('qmp_capabilities')
                             qmp('cont')
-                            time.sleep(0.1)
-                            qmp('stop')
+                            # Wait for payload execution, not a host scheduling
+                            # delay that can stop QEMU halfway through relocation.
+                            deadline = time.monotonic() + 5
+                            while True:
+                                time.sleep(0.01)
+                                qmp('stop')
+                                result = qmp('human-monitor-command', **{'command-line':
+                                    f'pmemsave 0x48201000 8 "{work / "abi"}"'})
+                                self.assertFalse(result, result)
+                                if (work/'abi').read_bytes() == struct.pack('<Q', 0x48300000):
+                                    break
+                                if time.monotonic() >= deadline:
+                                    self.fail('payload entry did not publish its preserved FDT argument')
+                                qmp('cont')
                             for address, length, name in ((0xaec0eff0, len(before), 'actual'),
                                                           (0x50000000, 4096, 'relocated'), (0x48201000, 8, 'abi')):
                                 result = qmp('human-monitor-command', **{'command-line':

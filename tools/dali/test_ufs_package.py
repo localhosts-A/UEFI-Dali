@@ -4,11 +4,11 @@ import lzma
 import struct
 import tempfile
 import unittest
-from package import ufs_probe_metadata
-from firmware_volume import BDS_GUID, LZMA_GUID, extract_bds
+from package import ufs_probe_metadata, ufs_host_off_metadata
+from firmware_volume import BDS_GUID, LZMA_GUID, UFS_HOST_GUID, extract_bds
 
 
-def firmware(module, nested=False, duplicate=False):
+def firmware(module, nested=False, duplicate=False, guid=BDS_GUID):
     def section(kind, body):
         return (len(body) + 4).to_bytes(3, 'little') + bytes([kind]) + body
 
@@ -34,7 +34,7 @@ def firmware(module, nested=False, duplicate=False):
             result[at:at + len(file)] = file
         return bytes(result)
 
-    inner = volume(section(0x10, module))
+    inner = volume(section(0x10, module), guid)
     if not nested:
         return inner
     packed = lzma.compress(section(0x17, inner), format=lzma.FORMAT_ALONE)
@@ -47,7 +47,8 @@ class ProbePackagingTests(unittest.TestCase):
         auto = folder / 'daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG'
         auto.mkdir(parents=True, exist_ok=True)
         flag = (token is not None) if enabled is None else enabled
-        (auto / 'AutoGen.h').write_text(f'#define _PCD_VALUE_PcdDaliUfsProbeEnabled  {int(flag)}U\n')
+        (auto / 'AutoGen.h').write_text(f'#define _PCD_VALUE_PcdDaliUfsProbeEnabled  {int(flag)}U\n'
+                                      '#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled  0U\n')
         data = (token or 'none').encode() + b'\0'
         (auto / 'AutoGen.c').write_text(f'const UINT8 _gPcd_FixedAtBuild_PcdDaliUfsProbeToken[{len(data)}] = {{' +
                                         ', '.join(str(byte) for byte in data) + ' };\n')
@@ -91,6 +92,38 @@ class ProbePackagingTests(unittest.TestCase):
             self.fixture(folder, token)
             with self.assertRaisesRegex(ValueError, 'final FD BDS'):
                 ufs_probe_metadata(folder, token, fd=firmware(b'MZother-module', nested=True))
+
+    def test_register_probe_packager_refuses_physical_host_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            fd = self.fixture(folder)
+            header = folder / 'daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG/AutoGen.h'
+            header.write_text(header.read_text().replace('ReadOnlyEnabled  0U', 'ReadOnlyEnabled  1U'))
+            with self.assertRaisesRegex(ValueError, 'dedicated candidate verifier'):
+                ufs_probe_metadata(folder, fd=fd)
+
+    def test_disabled_host_must_match_actual_fd_pcd_and_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            auto = folder / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG'
+            auto.mkdir(parents=True)
+            header = auto / 'AutoGen.h'
+            header.write_text('#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled  0U\n')
+            source = auto / 'AutoGen.c'
+            source.write_text('const UINT8 _gPcd_FixedAtBuild_PcdDaliUfsStorageToken[5] = {110,111,110,101,0};\n')
+            module = b'MZdisabled-host'
+            (folder / 'DaliUfsHostDxe.efi').write_bytes(module)
+            fd = firmware(module, nested=True, guid=UFS_HOST_GUID)
+            self.assertFalse(ufs_host_off_metadata(folder, fd=fd)['enabled'])
+            with self.assertRaisesRegex(ValueError, 'final FD UFS host'):
+                ufs_host_off_metadata(folder, fd=firmware(b'MZstale-host', guid=UFS_HOST_GUID))
+            header.write_text('#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled  1U\n')
+            with self.assertRaisesRegex(ValueError, 'dedicated candidate verifier'):
+                ufs_host_off_metadata(folder, fd=fd)
+            header.write_text('#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled  0U\n')
+            source.write_text(source.read_text().replace('[5]', '[6]'))
+            with self.assertRaisesRegex(ValueError, 'token differs'):
+                ufs_host_off_metadata(folder, fd=fd)
 
     def test_volume_bounds_checksum_and_unique_target(self):
         module = b'MZtest'

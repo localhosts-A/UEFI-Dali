@@ -7,6 +7,7 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/LoadedImage.h>
+#include <Protocol/DaliUfsDiagnostic.h>
 #include <Guid/Fdt.h>
 #include <Guid/EventGroup.h>
 #include <Library/BaseLib.h>
@@ -287,6 +288,24 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       EFI_STATUS UfsStatus = gBS->SetWatchdogTimer (0, 0, 0, NULL);
       if (!EFI_ERROR (UfsStatus)) { UfsStatus = Mt6991ProbeUfs ((VOID *)(UINTN)DALI_FDT_BASE); }
       DEBUG ((DEBUG_WARN, "DALI-UFS: probe status=%r; no physical storage commands submitted\n", UfsStatus));
+    }
+    if (FixedPcdGetBool (PcdDaliUfsReadOnlyEnabled)) {
+      if (mAutoFastboot || mResetQualification || FixedPcdGetBool (PcdDaliUfsProbeEnabled)) {
+        DEBUG ((DEBUG_ERROR, "DALI-UFS-HOST: refused competing diagnostic/reset policy\n"));
+        DiagnosticHalt ();
+      }
+      DALI_UFS_DIAGNOSTIC_PROTOCOL *Ufs = NULL;
+      EFI_HANDLE Controller = NULL;
+      EFI_STATUS UfsStatus = gBS->SetWatchdogTimer (0, 0, 0, NULL);
+      if (!EFI_ERROR (UfsStatus)) { UfsStatus = gBS->LocateProtocol (&gDaliUfsDiagnosticProtocolGuid, NULL, (VOID **)&Ufs); }
+      if (!EFI_ERROR (UfsStatus)) { UfsStatus = Ufs->Initialize ((VOID *)(UINTN)DALI_FDT_BASE, &Controller); }
+      DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: diagnostic initialization=%r\n", UfsStatus));
+      // Until the generic DarwinBoot handoff exists, this diagnostic must always
+      // close the physical host and release DMA before launching the RAM payload.
+      if (Ufs != NULL && EFI_ERROR (Ufs->Quiesce ())) {
+        DEBUG ((DEBUG_ERROR, "DALI-UFS-HOST: stop failed; refusing XNU/menu handoff\n"));
+        DiagnosticHalt ();
+      }
     }
     DEBUG ((DEBUG_WARN, "DALI: UEFI_UNIXNU_READY\n"));
     if (LaunchUniXNU () == EFI_ABORTED) { RecoverAfterExit (Out); }

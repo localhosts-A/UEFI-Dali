@@ -23,6 +23,11 @@
   INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
   INF daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe.inf
   INF daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
+  INF MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe.inf
+  INF MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruDxe.inf
+  INF MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
+  INF MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
+  INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   INF DarwinBootPkg/Driver/DarwinBoot.inf
   INF MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF FatPkg/EnhancedFatDxe/Fat.inf

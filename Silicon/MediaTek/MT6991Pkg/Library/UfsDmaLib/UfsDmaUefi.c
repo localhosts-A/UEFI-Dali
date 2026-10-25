@@ -5,7 +5,9 @@
 #include <Library/Mt6991UfsDmaLib.h>
 #include <Protocol/Cpu.h>
 
-STATIC EFI_STATUS UcAllocate (MT6991_DMA_REGION *R, UINTN Pages, UINT64 Limit, VOID *Context) {
+// AArch64 CpuDxe maps WC to Normal Non-cacheable. UC is Device memory and
+// cannot safely back the packed descriptors used by the generic UFS driver.
+STATIC EFI_STATUS NonCachedAllocate (MT6991_DMA_REGION *R, UINTN Pages, UINT64 Limit, VOID *Context) {
   EFI_CPU_ARCH_PROTOCOL *Cpu = Context;
   EFI_PHYSICAL_ADDRESS Address = Limit;
   EFI_STATUS Status = gBS->AllocatePages (AllocateMaxAddress, EfiBootServicesData, Pages, &Address);
@@ -17,19 +19,19 @@ STATIC EFI_STATUS UcAllocate (MT6991_DMA_REGION *R, UINTN Pages, UINT64 Limit, V
   if (EFI_ERROR (Status)) { return Status; }
   if (Address < Descriptor.BaseAddress || Bytes > Descriptor.Length ||
       Address - Descriptor.BaseAddress > Descriptor.Length - Bytes ||
-      !(Descriptor.Capabilities & EFI_MEMORY_UC) ||
+      !(Descriptor.Capabilities & EFI_MEMORY_WC) ||
       (Descriptor.Attributes & (EFI_MEMORY_RO | EFI_MEMORY_RP | EFI_MEMORY_WP))) { return EFI_UNSUPPORTED; }
   R->OriginalAttributes = Descriptor.Attributes;
   Status = Cpu->FlushDataCache (Cpu, Address, Bytes, EfiCpuFlushTypeWriteBackInvalidate);
   if (EFI_ERROR (Status)) { return Status; }
   UINT64 CacheMask = EFI_MEMORY_UC | EFI_MEMORY_WC | EFI_MEMORY_WT | EFI_MEMORY_WB | EFI_MEMORY_UCE;
   R->AttributesChanged = TRUE; // A failed update may still need restoration.
-  Status = gDS->SetMemorySpaceAttributes (Address, Bytes, (Descriptor.Attributes & ~CacheMask) | EFI_MEMORY_UC);
+  Status = gDS->SetMemorySpaceAttributes (Address, Bytes, (Descriptor.Attributes & ~CacheMask) | EFI_MEMORY_WC);
   if (EFI_ERROR (Status)) { return Status; }
   return Cpu->FlushDataCache (Cpu, Address, Bytes, EfiCpuFlushTypeInvalidate);
 }
 
-STATIC EFI_STATUS UcFree (MT6991_DMA_REGION *R, VOID *Context) {
+STATIC EFI_STATUS NonCachedFree (MT6991_DMA_REGION *R, VOID *Context) {
   (VOID)Context;
   MemoryFence ();
   if (R->AttributesChanged && !R->AttributesRestored) {
@@ -40,12 +42,12 @@ STATIC EFI_STATUS UcFree (MT6991_DMA_REGION *R, VOID *Context) {
   return gBS->FreePages (R->Device, R->Pages);
 }
 
-STATIC VOID UcFence (VOID *Context) { (VOID)Context; MemoryFence (); }
+STATIC VOID NonCachedFence (VOID *Context) { (VOID)Context; MemoryFence (); }
 
 EFI_STATUS Mt6991UfsDmaUefiInit (MT6991_UFS_DMA *D, UINT64 Limit) {
   EFI_CPU_ARCH_PROTOCOL *Cpu;
   EFI_STATUS Status = gBS->LocateProtocol (&gEfiCpuArchProtocolGuid, NULL, (VOID **)&Cpu);
   if (EFI_ERROR (Status)) { return Status; }
-  MT6991_DMA_OPS Ops = {UcAllocate, UcFree, UcFence, Cpu};
+  MT6991_DMA_OPS Ops = {NonCachedAllocate, NonCachedFree, NonCachedFence, Cpu};
   return Mt6991UfsDmaInit (D, &Ops, Limit);
 }
