@@ -47,6 +47,68 @@ EFI_STATUS Mt6991UfsReadOnlyCommand (CONST MT6991_UFS_GEOMETRY *G,
   return CdbBytes == Length ? EFI_SUCCESS : EFI_INVALID_PARAMETER;
 }
 
+STATIC BOOLEAN Nonzero (CONST UINT8 *Bytes, UINTN Length) {
+  UINT8 Value = 0;
+  for (UINTN Index = 0; Index < Length; Index++) { Value |= Bytes[Index]; }
+  return Value != 0;
+}
+
+STATIC BOOLEAN ValidScratchGrant (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
+  CONST UINT64 ScratchBytes = 1024ULL * 1024ULL;
+  UINT64 BootEnd, BootBytes, WindowBlocks;
+  if (Grant == NULL || !Grant->Enabled || Grant->Lun >= 8 ||
+      !Nonzero (Grant->DeviceBinding, sizeof Grant->DeviceBinding) ||
+      !Nonzero (Grant->CandidateSha256, sizeof Grant->CandidateSha256) ||
+      !Nonzero (Grant->SourceSha256, sizeof Grant->SourceSha256) ||
+      !Nonzero (Grant->PartitionGuid, sizeof Grant->PartitionGuid)) { return FALSE; }
+  for (UINTN Index = 0; Index < 32; Index++) {
+    if (!((Grant->Token[Index] >= '0' && Grant->Token[Index] <= '9') ||
+          (Grant->Token[Index] >= 'a' && Grant->Token[Index] <= 'f'))) { return FALSE; }
+  }
+  if (Grant->Token[32] != 0 || Grant->BlockSize < 512 || Grant->BlockSize > 65536 ||
+      (Grant->BlockSize & (Grant->BlockSize - 1)) || ScratchBytes % Grant->BlockSize ||
+      Grant->CapacityBlocks == 0 || Grant->BootBlocks == 0 || Grant->CandidateBytes == 0 ||
+      Grant->BootBlocks > MAX_UINT64 / Grant->BlockSize) { return FALSE; }
+  BootBytes = Grant->BootBlocks * Grant->BlockSize;
+  if (Grant->CandidateBytes > BootBytes || Grant->BootStartLba >= Grant->CapacityBlocks ||
+      Grant->BootBlocks > Grant->CapacityBlocks - Grant->BootStartLba) { return FALSE; }
+  WindowBlocks = ScratchBytes / Grant->BlockSize;
+  if (Grant->ScratchBlocks != WindowBlocks || Grant->TailGuardBlocks != WindowBlocks) { return FALSE; }
+  BootEnd = Grant->BootStartLba + Grant->BootBlocks;
+  if (Grant->ScratchStartLba < Grant->BootStartLba || Grant->ScratchStartLba > BootEnd ||
+      Grant->ScratchBlocks > BootEnd - Grant->ScratchStartLba ||
+      Grant->TailGuardBlocks != BootEnd - Grant->ScratchStartLba - Grant->ScratchBlocks ||
+      Grant->ScratchStartLba - Grant->BootStartLba > MAX_UINT64 / Grant->BlockSize ||
+      (Grant->ScratchStartLba - Grant->BootStartLba) * Grant->BlockSize < Grant->CandidateBytes) { return FALSE; }
+  return TRUE;
+}
+
+EFI_STATUS Mt6991UfsScratchWriteCommand (CONST MT6991_UFS_GEOMETRY *G,
+  CONST MT6991_UFS_SCRATCH_GRANT *Grant, UINT8 Lun, CONST UINT8 *Cdb, UINTN CdbBytes, UINT32 WriteBytes) {
+  UINTN Length;
+  UINT64 Lba, Count;
+  if (Lun >= 8 || Cdb == NULL || CdbBytes < 6 || WriteBytes == 0) { return EFI_INVALID_PARAMETER; }
+  if (!ValidScratchGrant (Grant) || G == NULL || !G[Lun].Valid ||
+      !G[Lun].WriteProtectionKnown || G[Lun].WriteProtected || Lun != Grant->Lun ||
+      G[Lun].BlockSize != Grant->BlockSize || G[Lun].Blocks != Grant->CapacityBlocks) { return EFI_WRITE_PROTECTED; }
+  if (Cdb[0] == 0x2A) {
+    Length = 10; if (CdbBytes != Length) { return EFI_INVALID_PARAMETER; }
+    if (Cdb[1] || Cdb[6] || Cdb[9]) { return EFI_INVALID_PARAMETER; }
+    Lba = Be32 (Cdb + 2); Count = Be16 (Cdb + 7);
+  } else if (Cdb[0] == 0x8A) {
+    Length = 16; if (CdbBytes != Length) { return EFI_INVALID_PARAMETER; }
+    if (Cdb[1] || Cdb[14] || Cdb[15]) { return EFI_INVALID_PARAMETER; }
+    Lba = Be64 (Cdb + 2); Count = Be32 (Cdb + 10);
+  } else { return EFI_WRITE_PROTECTED; }
+  if (Count == 0 || Lba >= G[Lun].Blocks || Count > G[Lun].Blocks - Lba ||
+      Count > MT6991_UFS_DMA_MAX_TRANSFER / G[Lun].BlockSize ||
+      WriteBytes != Count * G[Lun].BlockSize) { return EFI_INVALID_PARAMETER; }
+  if (Lba < Grant->ScratchStartLba ||
+      Lba - Grant->ScratchStartLba >= Grant->ScratchBlocks ||
+      Count > Grant->ScratchBlocks - (Lba - Grant->ScratchStartLba)) { return EFI_WRITE_PROTECTED; }
+  return EFI_SUCCESS;
+}
+
 EFI_STATUS Mt6991UfsReadOnlyQuery (UINT8 Op, UINT8 Id, UINT8 Index,
   UINT8 Selector, UINT32 Bytes, BOOLEAN InitAllowed) {
   if (Selector != 0) { return EFI_ACCESS_DENIED; }
@@ -57,12 +119,13 @@ EFI_STATUS Mt6991UfsReadOnlyQuery (UINT8 Op, UINT8 Id, UINT8 Index,
   return EFI_WRITE_PROTECTED;
 }
 
-STATIC EFI_STATUS DataMapping (MT6991_UFS_DMA *D, UINT32 Expected, MT6991_DMA_MAP **Result) {
+STATIC EFI_STATUS DataMapping (MT6991_UFS_DMA *D, UINT32 Expected,
+  MT6991_DMA_OPERATION Operation, MT6991_DMA_MAP **Result) {
   *Result = NULL;
   for (UINTN I = 0; I < MT6991_UFS_DMA_SLOTS; I++) {
     MT6991_DMA_MAP *M = &D->Maps[I];
     if (!M->Live || M->Operation == Mt6991DmaCommon) { continue; }
-    if (*Result != NULL || M->Operation != Mt6991DmaDeviceWrite ||
+    if (*Result != NULL || M->Operation != Operation ||
         M->Length != ((Expected + 3U) & ~3U)) { return EFI_ACCESS_DENIED; }
     *Result = M;
   }
@@ -70,13 +133,15 @@ STATIC EFI_STATUS DataMapping (MT6991_UFS_DMA *D, UINT32 Expected, MT6991_DMA_MA
 }
 
 EFI_STATUS Mt6991UfsValidateTransfer (MT6991_UFS_DMA *D, UINT64 Trl,
-  CONST MT6991_UFS_GEOMETRY *G, BOOLEAN InitAllowed, MT6991_UFS_PENDING *P) {
+  CONST MT6991_UFS_GEOMETRY *G, CONST MT6991_UFS_SCRATCH_GRANT *Grant,
+  BOOLEAN InitAllowed, MT6991_UFS_PENDING *P) {
   VOID *Cpu;
   EFI_STATUS Status;
   UINT8 *T, *Q;
   UINTN RuOffset, RuBytes, PrdtOffset, PrdtCount, Size;
   UINT64 CommandAddress;
   MT6991_DMA_MAP *Map;
+  MT6991_DMA_OPERATION DataOperation = Mt6991DmaDeviceWrite;
   if (P == NULL || (Trl & 1023)) { return EFI_INVALID_PARAMETER; }
   ZeroMem (P, sizeof *P);
   Status = Mt6991UfsDmaResolve (D, Trl, 32, TRUE, &Cpu);
@@ -107,10 +172,14 @@ EFI_STATUS Mt6991UfsValidateTransfer (MT6991_UFS_DMA *D, UINT64 Trl,
     P->Expected = Be32 (Q + 12);
     UINT8 Op = Q[16]; P->Opcode = Op;
     UINTN CdbBytes = (Op == 0 || Op == 3 || Op == 0x12 || Op == 0x1A) ? 6 :
-                    (Op == 0xA0 ? 12 : (Op == 0x88 || Op == 0x91 || Op == 0x9E ? 16 : 10));
-    Status = Mt6991UfsReadOnlyCommand (G, Q[2], Q + 16, CdbBytes, P->Expected);
+                    (Op == 0xA0 ? 12 : (Op == 0x88 || Op == 0x8A || Op == 0x91 || Op == 0x9E ? 16 : 10));
+    BOOLEAN Write = Op == 0x2A || Op == 0x8A;
+    Status = Write ? Mt6991UfsScratchWriteCommand (G, Grant, Q[2], Q + 16, CdbBytes, P->Expected) :
+                     Mt6991UfsReadOnlyCommand (G, Q[2], Q + 16, CdbBytes, P->Expected);
     if (EFI_ERROR (Status)) { return Status; }
-    if (RuBytes != 56 || Direction != (P->Expected ? 2U : 0U) || Q[1] != (P->Expected ? 0x41 : 1) || Q[4]) { return EFI_ACCESS_DENIED; }
+    if (Write) { DataOperation = Mt6991DmaDeviceRead; }
+    if (RuBytes != 56 || Direction != (P->Expected ? (Write ? 1U : 2U) : 0U) ||
+        Q[1] != (P->Expected ? 0x41 : 1) || Q[4]) { return EFI_ACCESS_DENIED; }
   } else if (Q[0] == 0x16) {
     UINT8 Op = Q[12]; UINT32 Bytes = Be16 (Q + 18);
     Status = Mt6991UfsReadOnlyQuery (Op, Q[13], Q[14], Q[15], Bytes, InitAllowed);
@@ -118,7 +187,7 @@ EFI_STATUS Mt6991UfsValidateTransfer (MT6991_UFS_DMA *D, UINT64 Trl,
     if (Q[5] != (Op == 6 ? 0x81 : 1) || Direction != (Op == 6 ? 1U : 2U) ||
         PrdtCount || RuBytes != 32U + ((Bytes + 7U) & ~7U) || Be32 (Q + 20)) { return EFI_ACCESS_DENIED; }
   } else if (RuBytes != 32 || Direction || PrdtCount) { return EFI_ACCESS_DENIED; }
-  Status = DataMapping (D, P->Expected, &Map);
+  Status = DataMapping (D, P->Expected, DataOperation, &Map);
   if (EFI_ERROR (Status)) { return Status; }
   if (Map != NULL) {
     UINT64 Base = D->Regions[Map->Region].Device + Map->Offset;

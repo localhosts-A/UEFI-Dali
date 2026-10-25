@@ -24,6 +24,8 @@
 STATIC MT6991_UFS_CONTROLLER mControl;
 STATIC MT6991_UFS_DMA mDma;
 STATIC MT6991_UFS_GEOMETRY mGeometry[8];
+// No runtime path populates a scratch grant yet; all write submissions remain denied.
+STATIC MT6991_UFS_SCRATCH_GRANT mScratchGrant;
 STATIC MT6991_UFS_PENDING mPending;
 STATIC volatile UINT64 mCompletedSync[8];
 STATIC EFI_HANDLE mController;
@@ -210,7 +212,7 @@ STATIC EFI_STATUS EFIAPI WriteLocked (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
   if (Offset == 0x58) {
     if (Value != 1 || !mTrl || mDma.Busy || MmioRead32 (HCI + 0x58) ||
         MmioRead32 (HCI + 0x78) || MmioRead32 (HCI + 0x60) != 1) { return EFI_ACCESS_DENIED; }
-    EFI_STATUS Status = Mt6991UfsValidateTransfer (&mDma, mTrl, mGeometry,
+    EFI_STATUS Status = Mt6991UfsValidateTransfer (&mDma, mTrl, mGeometry, &mScratchGrant,
       !mInitUsed && !mInitFinished, &mPending);
     if (!EFI_ERROR (Status)) { Status = Mt6991UfsDmaSubmit (&mDma); }
     if (!EFI_ERROR (Status)) {
@@ -269,7 +271,16 @@ STATIC EFI_STATUS EFIAPI Callback (EFI_HANDLE Controller, EDKII_UFS_HC_PLATFORM_
     if (Policy == NULL || Policy->Packet == NULL) { return EFI_INVALID_PARAMETER; }
     EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET *P = Policy->Packet;
     if (Phase == EdkiiUfsHcValidateScsi) {
-      if (Policy->Event != NULL || EFI_ERROR (Mt6991UfsBoundTimeout (&P->Timeout)) || P->OutTransferLength ||
+      if (Policy->Event != NULL || P->Cdb == NULL || EFI_ERROR (Mt6991UfsBoundTimeout (&P->Timeout))) { return EFI_ACCESS_DENIED; }
+      UINT8 Opcode = ((UINT8 *)P->Cdb)[0];
+      if (Opcode == 0x2A || Opcode == 0x8A) {
+        if (P->InTransferLength || P->InDataBuffer != NULL ||
+            P->DataDirection != EFI_EXT_SCSI_DATA_DIRECTION_WRITE ||
+            P->OutTransferLength == 0 || P->OutDataBuffer == NULL) { return EFI_ACCESS_DENIED; }
+        return Mt6991UfsScratchWriteCommand (mGeometry, &mScratchGrant, Policy->Lun,
+          P->Cdb, P->CdbLength, P->OutTransferLength);
+      }
+      if (P->OutTransferLength || P->OutDataBuffer != NULL ||
           (P->InTransferLength && (P->DataDirection != EFI_EXT_SCSI_DATA_DIRECTION_READ || P->InDataBuffer == NULL))) { return EFI_ACCESS_DENIED; }
       return Mt6991UfsReadOnlyCommand (mGeometry, Policy->Lun, P->Cdb, P->CdbLength, P->InTransferLength);
     }

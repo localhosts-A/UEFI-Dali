@@ -113,7 +113,7 @@ EFI_STATUS DaliUfsDrainAndSync (MT6991_UFS_DMA *D, MT6991_UFS_PENDING *P, MT6991
       Le32 (Trd, 0x11000000); Le32 (Trd + 8, 15); Le32 (Trd + 16, (UINT32)(Device + 1024));
       Le16 (Trd + 24, 14); Le16 (Trd + 26, 8); Le16 (Trd + 30, 22);
       Ucd[0] = 1; Ucd[1] = 1; Ucd[2] = Lun; Ucd[3] = Tag++; Ucd[16] = 0x35;
-      Status = Mt6991UfsValidateTransfer (D, Device, G, FALSE, P);
+      Status = Mt6991UfsValidateTransfer (D, Device, G, NULL, FALSE, P);
       if (Status == EFI_SUCCESS) { Status = Mt6991UfsDmaSubmit (D); }
       if (Status != EFI_SUCCESS) { return Failure (D, S, Status); }
       ++S->Commands;

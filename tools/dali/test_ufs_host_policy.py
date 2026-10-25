@@ -14,7 +14,7 @@ class UfsHostPolicyTests(unittest.TestCase):
         dma_test.UfsDmaTests.setUpClass()
         base = Path(dma_test.UfsDmaTests.temp.name)
         with (base / 'Uefi.h').open('a') as f:
-            f.write('\ntypedef uint16_t UINT16;\n#define EFI_WRITE_PROTECTED 8\n')
+            f.write('\ntypedef uint16_t UINT16; typedef char CHAR8;\n#define EFI_WRITE_PROTECTED 8\n')
         with (base / 'Library/BaseMemoryLib.h').open('a') as f:
             f.write('#define CompareMem memcmp\n')
         (base / 'policy.c').write_text(r'''
@@ -28,18 +28,66 @@ static void be64(unsigned char *p,uint64_t n){be32(p,n>>32);be32(p+4,n);}
 uint64_t command(unsigned op,unsigned lun,unsigned cbytes,uint64_t lba,uint64_t count,
                  unsigned block,uint64_t blocks,unsigned bytes,unsigned ready,unsigned immediate) {
  MT6991_UFS_GEOMETRY g[8]={0};unsigned char cdb[16]={0};
- if(lun<8)g[lun]=(MT6991_UFS_GEOMETRY){blocks,block,ready!=0};
+ if(lun<8)g[lun]=(MT6991_UFS_GEOMETRY){blocks,block,ready!=0,FALSE,FALSE};
  cdb[0]=op;cdb[1]=immediate?2:0;
  if(op==0x28){be32(cdb+2,lba);be16(cdb+7,count);}
  if(op==0x88){be64(cdb+2,lba);be32(cdb+10,count);}
  if(op==0x9e){cdb[1]=0x10;be32(cdb+10,bytes);}
  return Mt6991UfsReadOnlyCommand(g,lun,cdb,cbytes,bytes);
 }
+uint64_t scratch(unsigned mode) {
+ MT6991_UFS_GEOMETRY g[8]={0};MT6991_UFS_SCRATCH_GRANT grant={0};unsigned char cdb[16]={0};
+ g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true,true,false};
+ grant.Enabled=true;grant.Lun=2;strcpy(grant.Token,"0123456789abcdef0123456789abcdef");
+ memset(grant.DeviceBinding,1,sizeof grant.DeviceBinding);memset(grant.CandidateSha256,2,sizeof grant.CandidateSha256);
+ memset(grant.SourceSha256,3,sizeof grant.SourceSha256);memset(grant.PartitionGuid,4,sizeof grant.PartitionGuid);
+ grant.BlockSize=4096;grant.CapacityBlocks=64577536;grant.BootStartLba=418560;grant.BootBlocks=16384;
+ grant.CandidateBytes=5062656;grant.ScratchStartLba=434432;grant.ScratchBlocks=256;grant.TailGuardBlocks=256;
+ unsigned lun=2,cdbBytes=10,bytes=4096;uint64_t lba=434432,count=1;cdb[0]=0x2a;
+ switch(mode){
+ case 1:cdb[0]=0x8a;cdbBytes=16;lba=434687;break;
+ case 2:lba=434687;count=2;bytes=8192;break;
+ case 3:lba=434431;break;
+ case 4:lba=434688;break;
+ case 5:count=0;bytes=0;break;
+ case 6:g[2].Blocks-- ;break;
+ case 7:g[2].Valid=false;break;
+ case 8:g[2].WriteProtectionKnown=false;break;
+ case 9:g[2].WriteProtected=true;break;
+ case 10:lun=1;break;
+ case 11:grant.Enabled=false;break;
+ case 12:grant.Token[0]='z';break;
+ case 13:memset(grant.CandidateSha256,0,sizeof grant.CandidateSha256);break;
+ case 14:memset(grant.SourceSha256,0,sizeof grant.SourceSha256);break;
+ case 15:memset(grant.DeviceBinding,0,sizeof grant.DeviceBinding);break;
+ case 16:memset(grant.PartitionGuid,0,sizeof grant.PartitionGuid);break;
+ case 17:grant.CandidateBytes=64ULL*1024*1024;break;
+ case 18:grant.ScratchStartLba++;break;
+ case 19:grant.TailGuardBlocks--;break;
+ case 20:cdbBytes=6;break;
+ case 21:cdb[1]=8;break;
+ case 22:cdb[6]=1;break;
+ case 23:cdb[9]=1;break;
+ case 24:cdb[0]=0x8a;cdbBytes=16;cdb[1]=8;break;
+ case 25:cdb[0]=0x8a;cdbBytes=16;cdb[14]=1;break;
+ case 26:cdb[0]=0x8a;cdbBytes=16;cdb[15]=1;break;
+ }
+ if(cdb[0]==0x2a){be32(cdb+2,lba);be16(cdb+7,count);}else{be64(cdb+2,lba);be32(cdb+10,count);}
+ return Mt6991UfsScratchWriteCommand(g,&grant,lun,cdb,cdbBytes,bytes);
+}
+static void grant_init(MT6991_UFS_SCRATCH_GRANT *grant) {
+ memset(grant,0,sizeof *grant);grant->Enabled=true;grant->Lun=2;
+ strcpy(grant->Token,"0123456789abcdef0123456789abcdef");
+ memset(grant->DeviceBinding,1,sizeof grant->DeviceBinding);memset(grant->CandidateSha256,2,sizeof grant->CandidateSha256);
+ memset(grant->SourceSha256,3,sizeof grant->SourceSha256);memset(grant->PartitionGuid,4,sizeof grant->PartitionGuid);
+ grant->BlockSize=4096;grant->CapacityBlocks=64577536;grant->BootStartLba=418560;grant->BootBlocks=16384;
+ grant->CandidateBytes=5062656;grant->ScratchStartLba=434432;grant->ScratchBlocks=256;grant->TailGuardBlocks=256;
+}
 void wire(unsigned which,uint64_t *out) {
  scenario=0;live=allocs=frees=restores=ncsets=flushes=fences=restore_failed=0;
  memset(allocated,0,sizeof allocated);
- MT6991_UFS_DMA d={0};MT6991_UFS_GEOMETRY g[8]={0};MT6991_UFS_PENDING p;
- unsigned char *trd=NULL,*q=NULL,*r=NULL,host[64]={0};void *cpu;
+ MT6991_UFS_DMA d={0};MT6991_UFS_GEOMETRY g[8]={0};MT6991_UFS_SCRATCH_GRANT grant={0};MT6991_UFS_PENDING p;
+ unsigned char *trd=NULL,*q=NULL,*r=NULL,host[4096]={0};void *cpu;
  uint64_t trl,cmd,id1,id2,data=0,id3=0,extra;
  Mt6991UfsDmaUefiInit(&d,0xffffffff);
  Mt6991UfsDmaAllocate(&d,1,(void**)&trd);Mt6991UfsDmaAllocate(&d,1,(void**)&q);
@@ -87,8 +135,21 @@ void wire(unsigned which,uint64_t *out) {
    if(which==26){q[15]=1;}
   }
  }
- out[0]=Mt6991UfsValidateTransfer(&d,trl,g,which!=24,&p);
+ if(which>=28) {
+  memset(q,0,4096);memset(r,0,32);le32(trd,0x13000000);le32(trd+8,15);le32(trd+16,cmd);
+  le16(trd+24,14);le16(trd+26,8);le16(trd+28,1);le16(trd+30,22);
+  q[0]=1;q[1]=0x41;q[2]=2;q[3]=0x72;be32(q+12,4096);q[16]=0x2a;be32(q+18,434432);be16(q+23,1);
+  g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true,true,false};memset(host,0x5a,sizeof host);
+  if(which!=28)grant_init(&grant);
+  if(which==30)be32(q+18,434688);
+  if(which==31)g[2].WriteProtectionKnown=false;
+  if(which==32)q[17]=8;
+  Mt6991UfsDmaMap(&d,which==33?Mt6991DmaDeviceWrite:Mt6991DmaDeviceRead,host,sizeof host,&data,&id3);
+  le32(q+88,data);le32(q+100,4095);r[0]=0x21;r[2]=2;r[3]=0x72;
+ }
+ out[0]=Mt6991UfsValidateTransfer(&d,trl,g,&grant,which!=24,&p);
  if(!out[0]) {
+  if(which==29&&Mt6991UfsDmaResolve(&d,data,1,false,&cpu)==0)out[10]=((unsigned char*)cpu)[0];
   out[1]=Mt6991UfsDmaSubmit(&d);le32(trd+8,0);
   if(which==27)le32(trd+8,1);
   bool valid=false;out[2]=Mt6991UfsValidateResponse(&p,g,&valid);out[3]=valid;
@@ -109,6 +170,8 @@ void wire(unsigned which,uint64_t *out) {
         cls.lib.wire.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint64)]
         cls.lib.command.argtypes = [ctypes.c_uint] * 3 + [ctypes.c_uint64] * 2 + [ctypes.c_uint, ctypes.c_uint64] + [ctypes.c_uint] * 3
         cls.lib.command.restype = ctypes.c_uint64
+        cls.lib.scratch.argtypes = [ctypes.c_uint]
+        cls.lib.scratch.restype = ctypes.c_uint64
         cls.lib.Mt6991UfsBoundTimeout.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
         cls.lib.Mt6991UfsBoundTimeout.restype = ctypes.c_uint64
 
@@ -173,6 +236,24 @@ void wire(unsigned which,uint64_t *out) {
             self.assertEqual(self.command(op), 0)
             self.assertNotEqual(self.command(op, immediate=1), 0)
             self.assertNotEqual(self.command(op, size=1), 0)
+
+    def test_scratch_write_requires_exact_geometry_nonzero_bindings_and_one_mib_window(self):
+        self.assertEqual(self.lib.scratch(0), 0)
+        self.assertEqual(self.lib.scratch(1), 0)  # WRITE(16) at final scratch block.
+        for mode in (2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
+            with self.subTest(mode=mode): self.assertEqual(self.lib.scratch(mode), 8)
+        for mode in (5, 20, 21, 22, 23, 24, 25, 26):
+            with self.subTest(mode=mode): self.assertEqual(self.lib.scratch(mode), 2)
+
+    def test_scratch_wire_write_is_default_denied_and_authorized_data_is_staged_before_submission(self):
+        denied = self.wire(28)
+        self.assertEqual(denied[0], 8)
+        self.assertEqual(denied[1], 0)  # no DMA submit without the grant
+        allowed = self.wire(29)
+        self.assertEqual(allowed[:4], [0, 0, 0, 1])
+        self.assertEqual(allowed[10], 0x5A)  # DeviceRead bounce received host payload
+        for mode in (30, 31, 32, 33):
+            with self.subTest(mode=mode): self.assertNotEqual(self.wire(mode)[0], 0)
 
     def test_generic_scsi_timeout_is_bounded_without_rejecting_valid_reads(self):
         for supplied, expected in ((1, 1), (30000000, 30000000), (300000000, 30000000), (2**64-1, 30000000)):

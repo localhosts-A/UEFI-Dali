@@ -68,11 +68,12 @@ typedef unsigned EFI_TPL;typedef unsigned EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WID
 typedef unsigned EDKII_UFS_HOST_CONTROLLER_OPERATION;
 typedef unsigned MT6991_DMA_OPERATION;
 typedef struct {unsigned unused;} EDKII_UFS_HOST_CONTROLLER_PROTOCOL;
+typedef struct {unsigned unused;} MT6991_UFS_SCRATCH_GRANT;
 typedef struct {bool Initialized,Poisoned,Stopped,Busy;} DMA;
 typedef struct {bool Touched;unsigned Io;} CONTROL;
 typedef struct {bool Attempted,Completed;unsigned SyncedLuns,Commands;EFI_STATUS Status;} SHUTDOWN;
 typedef struct {unsigned unused;} UNIXNU_STORAGE_QUIESCE_PROTOCOL;
-static DMA mDma;static CONTROL mControl;static SHUTDOWN mShutdown;
+static DMA mDma;static CONTROL mControl;static SHUTDOWN mShutdown;static MT6991_UFS_SCRATCH_GRANT mScratchGrant;
 static struct {unsigned Transaction;unsigned char *Request;} mPending;
 static unsigned mGeometry[8],mTrl,mTmrl;static volatile uint64_t mCompletedSync[8];
 static bool mClosed,mDisconnected,mQuiesced,mQuiescing,mInitUsed,mInitFinished;static EFI_STATUS mQuiesceFailure;
@@ -95,7 +96,7 @@ static unsigned Mt6991UfsStop(CONTROL *c){(void)c;if(tpl!=TPL_NOTIFY)abort();++s
 static EFI_STATUS Mt6991UfsDmaStopped(DMA *d,uint32_t enabled){add(3);if(enabled!=0)return EFI_NOT_READY;d->Stopped=true;return 0;}
 static EFI_STATUS Mt6991UfsDmaReleaseAll(DMA *d){if(tpl!=TPL_NOTIFY)abort();++release_calls;add(6);if(!d->Stopped||hce)return EFI_DEVICE_ERROR;return scenario==6&&release_calls==1?EFI_DEVICE_ERROR:0;}
 static EFI_STATUS Mt6991UfsDmaResolve(DMA *d,UINT64 a,UINTN n,bool common,void **p){(void)d;(void)a;(void)n;(void)common;(void)p;return 0;}
-static EFI_STATUS Mt6991UfsValidateTransfer(DMA *d,UINT64 a,void *g,bool init,void *p){(void)d;(void)a;(void)g;(void)init;(void)p;++validate_calls;return 0;}
+static EFI_STATUS Mt6991UfsValidateTransfer(DMA *d,UINT64 a,void *g,void *grant,bool init,void *p){(void)d;(void)a;(void)g;(void)grant;(void)init;(void)p;++validate_calls;return 0;}
 static EFI_STATUS Mt6991UfsDmaSubmit(DMA *d){if(tpl!=TPL_NOTIFY)abort();d->Busy=true;++submit_calls;return 0;}
 static EFI_STATUS Mt6991UfsDmaAllocate(DMA *d,UINTN n,void **h){(void)d;(void)n;(void)h;++alloc_calls;return 0;}
 static EFI_STATUS Mt6991UfsDmaMap(DMA *d,unsigned op,void *h,UINTN n,UINT64 *dev,UINT64 *id){(void)d;(void)op;(void)h;(void)n;(void)dev;(void)id;++map_calls;return 0;}

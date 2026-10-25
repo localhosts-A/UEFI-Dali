@@ -122,13 +122,13 @@ static void inflight(Port *p,bool query) {
   if(Mt6991UfsDmaMap(&p->d,Mt6991DmaDeviceWrite,p->user,512,&datadev,&id))abort();
   put32(q+88,(uint32_t)datadev);put32(q+100,511);
  }
- if(Mt6991UfsValidateTransfer(&p->d,dev,p->g,false,&p->p)||Mt6991UfsDmaSubmit(&p->d))abort();
+ if(Mt6991UfsValidateTransfer(&p->d,dev,p->g,NULL,false,&p->p)||Mt6991UfsDmaSubmit(&p->d))abort();
  p->reg[0x50/4]=(uint32_t)dev;p->reg[0x58/4]=1;p->old_trl=dev;
 }
 void run(unsigned scenario,uint64_t *out) {
  Port p={0};p.scenario=scenario;p.next_device=0x10000000;
  p.reg[0x34/4]=1;p.reg[0x60/4]=1;p.reg[0x80/4]=1;
- p.g[0]=(MT6991_UFS_GEOMETRY){1024,4096,true};p.g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true};
+ p.g[0]=(MT6991_UFS_GEOMETRY){1024,4096,true,false,false};p.g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true,false,false};
  MT6991_DMA_OPS ops={allocate,release,fence,&p};
  MT6991_UFS_IO io={read32,write32,fence,stall,NULL,&p};
  if(scenario!=20&&Mt6991UfsDmaInit(&p.d,&ops,UINT32_MAX))abort();
