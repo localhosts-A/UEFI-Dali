@@ -27,11 +27,17 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--resource-context', action='store_true', help='also verify the opt-in native CPU mapping/FDT context')
     parser.add_argument('--native-host-worker', action='store_true', help='also verify the opt-in fail-closed native host consumer')
+    parser.add_argument('--default-off', action='store_true', help='verify that the optional USB stack/context/worker are absent')
     args = parser.parse_args()
+    if args.default_off and (args.resource_context or args.native_host_worker):
+        parser.error('--default-off cannot be combined with enabled module options')
     if args.native_host_worker and not args.resource_context:
         parser.error('--native-host-worker requires --resource-context')
     fd = args.fd.read_bytes(); modules = {}
-    inputs = [(name, inf, root / 'Mu_Basecore' / inf) for name, inf in MODULES.items()]
+    if args.default_off:
+        inputs = [(name, MODULES[name], root / 'Mu_Basecore' / MODULES[name]) for name in ('DiskIoDxe', 'Fat')]
+    else:
+        inputs = [(name, inf, root / 'Mu_Basecore' / inf) for name, inf in MODULES.items()]
     if args.resource_context:
         inf = 'Platforms/Xiaomi/daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.inf'
         inputs.append(('DaliUsbResourceContextDxe', inf, root / inf))
@@ -50,11 +56,33 @@ def main():
                          'sha256': hashlib.sha256(image).hexdigest(), 'matches_final_fd': True,
                          'compiled_image': str(expected.resolve()), 'source_inf': inf,
                          'source_inf_sha256': hashlib.sha256(source.read_bytes()).hexdigest()}
+    absent = []
+    if args.default_off:
+        optional = dict(MODULES)
+        optional.pop('DiskIoDxe')
+        optional.pop('Fat')
+        optional['DaliUsbResourceContextDxe'] = 'Platforms/Xiaomi/daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.inf'
+        optional['DaliUsbNativeHostWorkerDxe'] = 'Platforms/Xiaomi/daliPkg/Drivers/UsbNativeHostWorkerDxe/UsbNativeHostWorkerDxe.inf'
+        for name, inf in optional.items():
+            source = root / 'Mu_Basecore' / inf if inf.startswith(('MdeModulePkg/', 'FatPkg/')) else root / inf
+            matches = re.findall(r'^\s*FILE_GUID\s*=\s*([0-9a-fA-F-]{36})\s*$', source.read_text(), re.M)
+            if len(matches) != 1:
+                raise ValueError(f'ambiguous source FILE_GUID: {inf}')
+            try:
+                extract_module(fd, uuid.UUID(matches[0]).bytes_le)
+            except ValueError as error:
+                if str(error) != 'final FD must contain exactly one selected PE32 module':
+                    raise
+            else:
+                raise ValueError(f'default-off final FD unexpectedly contains {name}')
+            absent.append(name)
     result = {'scope': 'Dali opt-in source USB/class FV assembly; no native controller/DMA/role or hardware qualification',
               'hardware_qualified': False, 'final_fd': str(args.fd.resolve()),
               'resource_context_requested': args.resource_context,
               'native_host_worker_requested': args.native_host_worker,
+              'default_off_asserted': args.default_off,
               'final_fd_sha256': hashlib.sha256(fd).hexdigest(), 'modules': modules,
+              'absent_optional_modules': absent,
               'verifier_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'parser_sha256': hashlib.sha256((Path(__file__).parent / 'firmware_volume.py').read_bytes()).hexdigest()}
     args.output.write_text(json.dumps(result, indent=2) + '\n')
