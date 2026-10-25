@@ -37,13 +37,18 @@ def valid_config(token=TOKEN):
                        "args": f"-v dali-earlyboot=1 dali-auto-fastboot=0 dali-ufs-readonly=1 dali-run={token} kt_fixed_zones=120"}]}
 
 
-def single_raw_fv(guid, payload, file_type=0x02):
+def single_raw_fv(guid, payload, file_type=0x02, large=False):
     section = (len(payload) + 4).to_bytes(3, "little") + b"\x19" + payload
-    file_size = 24 + len(section)
-    ffs = bytearray(24)
+    header_size = 32 if large else 24
+    file_size = header_size + len(section)
+    ffs = bytearray(header_size)
     ffs[:16] = guid
     ffs[18] = file_type
-    ffs[20:23] = file_size.to_bytes(3, "little")
+    if large:
+        ffs[19] = 0x01
+        ffs[24:32] = file_size.to_bytes(8, "little")
+    else:
+        ffs[20:23] = file_size.to_bytes(3, "little")
     ffs[23] = 0x08
     ffs += section
     volume_size = 56 + len(ffs)
@@ -131,6 +136,13 @@ class XnuUfsPackageTests(unittest.TestCase):
         data = b"DALI FAT payload bytes" * 3
         fd = single_raw_fv(guid, data)
         self.assertEqual(extract_module(fd, guid, "Dali payload", section_type=0x19), data)
+        large_fd = single_raw_fv(guid, data, large=True)
+        self.assertEqual(extract_module(large_fd, guid, "Dali payload", section_type=0x19,
+                                        expected_file_type=0x02), data)
+        bad_large = bytearray(large_fd); bad_large[76:79] = b"\x01\x00\x00"
+        with self.assertRaisesRegex(ValueError, "invalid extended firmware file"):
+            extract_module(bytes(bad_large), guid, "Dali payload", section_type=0x19,
+                           expected_file_type=0x02)
         with self.assertRaisesRegex(ValueError, "exactly one"):
             extract_module(fd, uuid.uuid4().bytes_le, "other payload", section_type=0x19)
         driver_file = single_raw_fv(guid, data, file_type=0x07)

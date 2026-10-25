@@ -76,7 +76,9 @@ def extract_module(fd, target_guid, name='module', *, section_type=0x10, expecte
                 break
             size, fh = int.from_bytes(raw[20:23], 'little'), 24
             if raw[19] & 1:
-                if size != 0xffffff or at + 32 > length:
+                # EFI_FFS_FILE_HEADER2 uses the extended size with Size[3]
+                # set to zero; 0xffffff is the extended SECTION header marker.
+                if size != 0 or at + 32 > length:
                     raise ValueError('invalid extended firmware file')
                 size, fh = struct.unpack_from('<Q', data, at + 24)[0], 32
             if size < fh or size > length - at:
