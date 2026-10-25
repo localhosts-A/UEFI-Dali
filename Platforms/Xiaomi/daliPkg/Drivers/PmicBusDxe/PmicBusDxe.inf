@@ -1,0 +1,22 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliPmicBusDxe
+  FILE_GUID = 83EC74A1-33CF-49EA-AD52-6FD60D6076DA
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DaliPmicBusInitialize
+[Sources]
+  PmicBusDxe.c
+[Packages]
+  MdePkg/MdePkg.dec
+  daliPkg/dali.dec
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  SynchronizationLib
+[Protocols]
+  gDaliPmicBusProtocolGuid ## PRODUCES
+[Guids]
+  gEfiEventExitBootServicesGuid
+[Depex]
+  TRUE

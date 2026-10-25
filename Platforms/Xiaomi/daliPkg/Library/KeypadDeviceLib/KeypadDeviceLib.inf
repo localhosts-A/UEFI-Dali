@@ -15,9 +15,13 @@
   MdePkg/MdePkg.dec
   SiliciumPkg/SiliciumPkg.dec
   MT6991Pkg/MT6991Pkg.dec
+  daliPkg/dali.dec
 [LibraryClasses]
   IoLib
   FdtLib
   DebugLib
   TimerLib
   BaseLib
+  UefiBootServicesTableLib
+[Protocols]
+  gDaliPmicBusProtocolGuid ## CONSUMES

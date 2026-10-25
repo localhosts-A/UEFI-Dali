@@ -41,6 +41,7 @@
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosProcessorPartNumber|"MT6991"
 
 [Components]
+  daliPkg/Drivers/PmicBusDxe/PmicBusDxe.inf
   daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
   DarwinBootPkg/Driver/DarwinBoot.inf
   UniXNUPkg/Application/UniXNU/UniXNU.inf

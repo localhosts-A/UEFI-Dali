@@ -56,6 +56,21 @@ volume-down/up changed selection, and power started Hello and selected Exit.
 Only PMIC reads are implemented; commands and valid acknowledgements write
 the PMIF controller, while PMIC configuration and clocks remain untouched.
 
+The independent USB branch adds `DaliPmicBusDxe` in the actual DSC/FV. Its
+single protocol instance serializes SWINF2 clients with nonblocking leases at
+TPL_HIGH_LEVEL. The keypad now locates this service before sampling SID4;
+temporary contention or a missing service leaves input enabled for retry.
+Timed-out owned commands reserve the channel across lease boundaries, and only
+their original client can recover a late response and release the reservation.
+Valid-clear must reach idle before releasing ownership. No PMIF clock/route or
+PMIC configuration is changed by the service or keypad. ExitBootServices closes
+the service to new requests; USB must quiesce before the final memory map.
+Production C model tests cover leases, TPL restoration, incorrect releases,
+keypad read/NACK/timeout/late response/failed valid-clear, foreign responses and
+EBS retries. This is not physical keypad requalification or USB qualification.
+The SID14 USB adapter, resource/PHY/DMA backend and USB profile remain pending;
+ordinary USB functionality is still disabled.
+
 After UniXNU's Exit action, firmware provides a ten-second window to hold only
 volume-down, then issues the keyed RGU software reset. This retained ramoops
 and reached fastboot in Run7. A manual power-key reset left pstore empty in

@@ -8,6 +8,8 @@
 #include <Library/IoLib.h>
 #include <Library/Mt6991PlatformLib.h>
 #include <Library/TimerLib.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Protocol/DaliPmicBus.h>
 #include "PmicKeys.h"
 
 #define PMIF_ACC      0x880
@@ -18,24 +20,70 @@ STATIC BOOLEAN mReady, mHaveRaw;
 STATIC UINT8 mLastRaw;
 STATIC UINT64 mNextPoll;
 STATIC UINTN mChanges;
+STATIC BOOLEAN mPendingOwned;
+STATIC DALI_PMIC_BUS_PROTOCOL *mBus;
+STATIC DALI_PMIC_BUS_TOKEN mBusToken;
 
-STATIC EFI_STATUS ReadTopStatus (UINT8 *Value) {
+STATIC EFI_STATUS AcknowledgeResponse (VOID) {
+  MmioWrite32 (DALI_PMIF_BASE + PMIF_VLD_CLR, 1);
+  for (UINTN I = 0; I < 1000; I++) {
+    if (((MmioRead32 (DALI_PMIF_BASE + PMIF_STA) >> 1) & 7) == 0) {
+      mPendingOwned = FALSE;
+      return EFI_SUCCESS;
+    }
+    MicroSecondDelay (10);
+  }
+  // Keep the reservation until the controller actually confirms idle.
+  return EFI_TIMEOUT;
+}
+
+// Caller holds the singleton bus lease. Only our own late response may be
+// discarded; a foreign non-idle channel is never acknowledged.
+STATIC EFI_STATUS ReadTopStatusLocked (UINT8 *Value) {
   UINT32 State = MmioRead32 (DALI_PMIF_BASE + PMIF_STA);
+  if (mPendingOwned) {
+    if (((State >> 1) & 7) == 6) {
+      (VOID)MmioRead32 (DALI_PMIF_BASE + PMIF_RDATA);
+      EFI_STATUS Status = AcknowledgeResponse ();
+      if (EFI_ERROR (Status)) { return Status; }
+    } else if (((State >> 1) & 7) == 0) { mPendingOwned = FALSE; }
+    return EFI_NOT_READY;
+  }
   // Never consume or clear somebody else's pending transaction.
   if (((State >> 1) & 7) != 0) { return EFI_NOT_READY; }
   // EXT_REG_LONG read, SID4, one byte, MT6363 TOPSTATUS 0x1e. BIT29 (write)
   // is deliberately zero; no PMIC register writes are implemented here.
+  mPendingOwned = TRUE;
   MmioWrite32 (DALI_PMIF_BASE + PMIF_ACC, (3U << 30) | (4U << 24) | 0x1E);
   for (UINTN I = 0; I < 1000; I++) {
     State = MmioRead32 (DALI_PMIF_BASE + PMIF_STA);
     if (((State >> 1) & 7) == 6) {
-      *Value = (UINT8)MmioRead32 (DALI_PMIF_BASE + PMIF_RDATA);
-      MmioWrite32 (DALI_PMIF_BASE + PMIF_VLD_CLR, 1);
-      return (State & BIT18) ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+      UINT8 Raw = (UINT8)MmioRead32 (DALI_PMIF_BASE + PMIF_RDATA);
+      EFI_STATUS Status = AcknowledgeResponse ();
+      if (EFI_ERROR (Status)) { return Status; }
+      if (State & BIT18) { return EFI_DEVICE_ERROR; }
+      *Value = Raw;
+      return EFI_SUCCESS;
     }
     MicroSecondDelay (10);
   }
   return EFI_TIMEOUT;
+}
+
+STATIC EFI_STATUS ReadTopStatus (UINT8 *Value) {
+  EFI_STATUS Status;
+  if (mBus == NULL) {
+    Status = gBS->LocateProtocol (&gDaliPmicBusProtocolGuid, NULL, (VOID **)&mBus);
+    if (EFI_ERROR (Status)) { mBus = NULL; return EFI_NOT_READY; }
+    if (mBus->Revision != DALI_PMIC_BUS_REVISION || mBus->TryAcquire == NULL || mBus->Release == NULL) {
+      mBus = NULL; return EFI_UNSUPPORTED;
+    }
+  }
+  Status = mBus->TryAcquire (mBus, &mBusToken);
+  if (EFI_ERROR (Status)) { return Status; }
+  Status = ReadTopStatusLocked (Value);
+  EFI_STATUS Released = mBus->Release (mBus, &mBusToken, mPendingOwned);
+  return EFI_ERROR (Released) ? Released : Status;
 }
 
 VOID DaliPmicKeysInitialize (CONST VOID *Fdt) {
@@ -77,6 +125,9 @@ EFI_STATUS DaliPmicKeysPoll (UINT64 Now, UINT8 *Raw) {
   if (!mReady || Now < mNextPoll) { return EFI_NOT_READY; }
   mNextPoll = Now + 20000000ULL;
   Status = ReadTopStatus (Raw);
+  // Contention and a bounded timed-out read are transient. Keep servicing our
+  // owned late response so it cannot permanently block the USB SID14 client.
+  if (Status == EFI_NOT_READY || Status == EFI_TIMEOUT) { return Status; }
   if (EFI_ERROR (Status)) {
     mReady = FALSE;
     DEBUG ((DEBUG_WARN, "DALI: PMIC key sampling disabled status=%r SWINF2=%x\n", Status,
