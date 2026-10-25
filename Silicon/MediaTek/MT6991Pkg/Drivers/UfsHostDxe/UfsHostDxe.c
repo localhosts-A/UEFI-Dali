@@ -266,6 +266,13 @@ STATIC EFI_STATUS EFIAPI Callback (EFI_HANDLE Controller, EDKII_UFS_HC_PLATFORM_
     Policy->ReadOnly = TRUE; Policy->SyncTimeout = COMMAND_TIMEOUT;
     return EFI_SUCCESS;
   }
+  if (Phase == EdkiiUfsHcUnitDescriptor) {
+    EDKII_UFS_HC_UNIT_DESCRIPTOR_POLICY *Unit = Data;
+    if (Unit == NULL || Unit->Lun >= 8) { return EFI_INVALID_PARAMETER; }
+    mGeometry[Unit->Lun].WriteProtectionKnown = Unit->Enabled && Unit->WriteProtectionKnown;
+    mGeometry[Unit->Lun].WriteProtected = Unit->Enabled && Unit->WriteProtectionKnown && Unit->WriteProtected;
+    return EFI_SUCCESS;
+  }
   if (Phase == EdkiiUfsHcValidateScsi || Phase == EdkiiUfsHcCompleteScsi) {
     EDKII_UFS_HC_SCSI_POLICY *Policy = Data;
     if (Policy == NULL || Policy->Packet == NULL) { return EFI_INVALID_PARAMETER; }

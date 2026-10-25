@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import test_ufs_passthru_policy as passthru
+from mu_patch_sources import patched_mu_source
 
 
 class UfsScsiMediaTests(unittest.TestCase):
@@ -16,7 +17,8 @@ class UfsScsiMediaTests(unittest.TestCase):
         if not compiler: raise unittest.SkipTest('C compiler required')
         cls.temp = tempfile.TemporaryDirectory(); base = Path(cls.temp.name)
         root = Path(__file__).resolve().parents[2]
-        source = (root / 'Mu_Basecore/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c').read_text()
+        with patched_mu_source(root) as mu:
+            source = (mu / 'MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDisk.c').read_text()
         names = ('ScsiDiskApplyUfsMediaPolicy', 'ScsiDiskUfsSynchronizeCache', 'ScsiDiskFlushBlocks', 'ScsiDiskFlushBlocksEx')
         header = r'''
 #include <stdint.h>
@@ -99,13 +101,14 @@ static EFI_STATUS locate(unsigned type,EFI_GUID *guid,void *key,UINTN *count,EFI
  if(fault==34)return EFI_OUT_OF_RESOURCES;*count=3;*handles=h;return 0;
 }
 static EFI_STATUS EfiTestChildHandle(EFI_HANDLE parent,EFI_HANDLE child,EFI_GUID *guid){
- (void)guid;return parent==(void*)2&&child==(void*)9&&fault!=32?0:EFI_UNSUPPORTED;
+ return parent==(void*)2&&child==(void*)9&&guid==&gEfiExtScsiPassThruProtocolGuid&&fault!=32?0:EFI_UNSUPPORTED;
 }
 static EFI_STATUS handle(EFI_HANDLE parent,EFI_GUID *guid,void **out){
  (void)guid;if(fault==33)return EFI_DEVICE_ERROR;if(fault==31)return EFI_UNSUPPORTED;
  if(parent!=(void*)2)return EFI_SECURITY_VIOLATION;*out=&platform;return 0;
 }
 static EFI_STATUS release(void *p){(void)p;freed++;return 0;}
+static void FreePool(void *p){(void)p;freed++;}
 static EFI_TPL raise(EFI_TPL p){return p;}static void restore(EFI_TPL p){(void)p;}
 static EFI_STATUS signal(EFI_EVENT p){(void)p;signals++;return 0;}
 static EFI_STATUS reinstall(EFI_HANDLE h,EFI_GUID *g,void *old,void *newp){(void)h;(void)g;(void)old;(void)newp;return 0;}

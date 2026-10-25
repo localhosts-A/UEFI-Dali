@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from mu_patch_sources import patched_mu_source
+
 
 def function(source, name):
     match = re.search(r'(?m)^(?:STATIC\s+)?(?:BOOLEAN|EFI_STATUS)\s+(?:EFIAPI\s+)?' + name + r'\s*\(', source)
@@ -30,8 +32,9 @@ class PassThruPolicyTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         base = Path(cls.temp.name)
         root = Path(__file__).resolve().parents[2]
-        source = (root / 'Mu_Basecore/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c').read_text()
-        interface = (root / 'Mu_Basecore/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c').read_text()
+        with patched_mu_source(root) as mu:
+            source = (mu / 'MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c').read_text()
+            interface = (mu / 'MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c').read_text()
         names = ('UfsHasCommandPolicy', 'UfsCommandPolicy', 'UfsWaitMemSet', 'UfsStartExecCmd',
                  'UfsStopExecCmd', 'UfsFinishCommand', 'UfsSendDmRequestRetry', 'UfsSendDmRequest',
                  'UfsExecNopCmds', 'UfsExecScsiCmds')
@@ -42,7 +45,7 @@ class PassThruPolicyTests(unittest.TestCase):
 #include <string.h>
 typedef uint8_t UINT8;typedef uint16_t UINT16;typedef uint32_t UINT32;
 typedef uint64_t UINT64;typedef size_t UINTN;typedef bool BOOLEAN;
-typedef uint64_t EFI_STATUS;typedef unsigned EFI_TPL;typedef void *EFI_EVENT;
+typedef uint64_t EFI_STATUS;typedef unsigned EFI_TPL;typedef void *EFI_EVENT,*EFI_HANDLE;
 #define STATIC static
 #define VOID void
 #define IN
@@ -69,6 +72,7 @@ typedef uint64_t EFI_STATUS;typedef unsigned EFI_TPL;typedef void *EFI_EVENT;
 #define EFI_EXT_SCSI_PASS_THRU_ATTRIBUTES_NONBLOCKIO 4
 #define ADDRESS_IS_ALIGNED(p,n) (((uintptr_t)(p) % (n)) == 0)
 #define SetMem(p,n,v) memset(p,v,n)
+#define ZeroMem(p,n) memset(p,0,n)
 #define CompareMem memcmp
 #define TPL_NOTIFY 16
 #define UFS_TIMEOUT 30
@@ -80,6 +84,7 @@ typedef uint64_t EFI_STATUS;typedef unsigned EFI_TPL;typedef void *EFI_EVENT;
 #define EFI_EXT_SCSI_DATA_DIRECTION_READ 0
 #define EFI_EXT_SCSI_STATUS_HOST_ADAPTER_OTHER 0x7f
 #define EFI_EXT_SCSI_STATUS_HOST_ADAPTER_OK 0
+#define EFI_SCSI_IO_STATUS_TARGET_GOOD 0
 #define EFI_EXT_SCSI_STATUS_HOST_ADAPTER_TIMEOUT_COMMAND 9
 #define UFS_PASS_THRU_TRANS_REQ_SIG 123
 #define UfsUtpQueryResponseSuccess 0
@@ -132,7 +137,6 @@ static HC hc={flush,unmap,release};
 static EFI_TPL raise(unsigned t){return t;}static void restore(EFI_TPL t){(void)t;}
 static struct {EFI_TPL (*RaiseTPL)(unsigned);void (*RestoreTPL)(EFI_TPL);} bs={raise,restore},*gBS=&bs;
 static void InsertTailList(LIST_ENTRY *a,LIST_ENTRY *b){(void)a;(void)b;}
-static void RemoveEntryList(LIST_ENTRY *a){(void)a;}
 static UINT64 DivU64x32(UINT64 a,UINT32 b){return a/b;}
 static void MicroSecondDelay(unsigned n){(void)n;}
 static void *AllocateZeroPool(UINTN n){pools++;pool=calloc(1,n);return pool;}
@@ -167,7 +171,7 @@ static void SwapLittleEndianToBigEndian(UINT8 *p,UINT32 n){for(unsigned i=0;i<n/
         footer = r'''
 void run(unsigned mode,unsigned fault,uint64_t *out){
  kind=mode>=3?0:mode;scenario=fault;starts=aborts=unmaps=freebufs=reconciles=pools=poolfrees=ctors=querycopies=completes=reads=doorbell=0;pool=NULL;
- platform=(PLATFORM){4,callback};memset(&trd,0,sizeof trd);
+ platform=(PLATFORM){4,fault==18?NULL:callback};memset(&trd,0,sizeof trd);
  UFS_PASS_THRU_PRIVATE_DATA p={0};p.UfsHostController=&hc;p.UtpTrlBase=&trd;
  unsigned char sense[32]={0},cdb[16]={0};
  EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET packet={0};packet.Timeout=scenario==6?0:10;packet.InTransferLength=8;
@@ -260,3 +264,8 @@ void run(unsigned mode,unsigned fault,uint64_t *out){
     def test_direct_passthru_ignores_event_when_nonblocking_is_not_advertised(self):
         self.assertEqual(self.run_case(3, 0)[:5], [0, 1, 0, 1, 1])
         self.assertEqual(self.run_case(4, 0)[:5], [2, 0, 0, 0, 0])
+
+    def test_v4_policy_without_callback_fails_closed_before_allocation(self):
+        out = self.run_case(0, 18)
+        self.assertEqual(out[0], 26)
+        self.assertEqual(out[1:9], [0] * 8)
