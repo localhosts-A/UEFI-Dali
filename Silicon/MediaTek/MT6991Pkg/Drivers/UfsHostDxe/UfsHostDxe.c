@@ -3,6 +3,7 @@
 #include <Library/ArmSmcLib.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/BaseCryptLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
 #include <Library/PcdLib.h>
@@ -247,6 +248,19 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   *Controller = NULL;
   if (mAttempted) { return EFI_ALREADY_STARTED; }
   mAttempted = TRUE;
+  // A known-answer check precedes all controller writes. Build packaging also
+  // rejects the null crypto library, whose DEBUG stub would assert here.
+  STATIC CONST UINT8 Expected[SHA256_DIGEST_SIZE] = {
+    0xBA,0x78,0x16,0xBF,0x8F,0x01,0xCF,0xEA,0x41,0x41,0x40,0xDE,0x5D,0xAE,0x22,0x23,
+    0xB0,0x03,0x61,0xA3,0x96,0x17,0x7A,0x9C,0xB4,0x10,0xFF,0x61,0xF2,0x00,0x15,0xAD
+  };
+  UINT8 Digest[SHA256_DIGEST_SIZE];
+  Print (L"UFS: SHA-256 self-test\r\n");
+  if (!Sha256HashAll ("abc", 3, Digest) || CompareMem (Digest, Expected, sizeof Digest) != 0) {
+    Print (L"UFS: SHA-256 self-test failed; controller untouched.\r\n");
+    return EFI_DEVICE_ERROR;
+  }
+  Print (L"UFS: SHA-256 self-test=Success\r\n");
   Print (L"UFS: controller start run=%a\r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken));
   MT6991_UFS_IO Io = { IoRead, IoWrite, Fence, Stall, Sip, NULL };
   MT6991_UFS_RESULT Result = Mt6991UfsStart (Fdt, TRUE, FixedPcdGetPtr (PcdDaliUfsStorageToken), &Io, &mControl);

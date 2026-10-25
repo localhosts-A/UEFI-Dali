@@ -148,6 +148,22 @@ reads or commands and do not log inside completion polling loops. The last
 visible line is an observation aid, never evidence of completed I/O. All normal
 disabled profiles retain the RAM baseline without executing these diagnostics.
 
+The visible-diagnostic trial (89524c9, token db963732) reached controller result
+7/stage 7/fault 0, DMA initialization Success and ConnectController Success,
+then stopped at the BlockIo diagnostic entry. The operator supplied a photo;
+it does not expose device/token identity or completed read/sync evidence. After
+forced fastboot, original-only recovery and independent Android B/root/all 18
+backup-byte/hash checks passed. No raw console survived.
+
+Inspection of that exact host's static link list identified BaseCryptLibNull.
+Its Sha256HashAll asserts, and DEBUG mask 0x2f deadloops on ASSERT. This is a
+definite software defect which could explain the observed stop after a read;
+the photo cannot prove that SHA was reached. The host now has a component-only
+real BaseCryptLib/OpenSSL dependency, an abc known-answer check before any
+controller writes, and packaging rejects null/mixed/missing crypto link inputs.
+Other modules retain their existing crypto policy. Real build/runtime validation
+of this correction is pending.
+
 ## Validated UEFI milestone (2026-10-24)
 
 Run8 passed the strict collector with both `--require-unixnu` and

@@ -110,12 +110,22 @@ def ufs_read_only_metadata(build, token, *, fd):
     host_module = (build / 'DaliUfsHostDxe.efi').read_bytes()
     if token.encode() + b'\0' not in host_module:
         raise ValueError('storage token missing from compiled physical host')
+    # Null SHA asserts in DEBUG, so source compilation alone is insufficient.
+    # Bind the actual host link inputs, alongside its exact final-FD module.
+    libraries = (build / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/OUTPUT/static_library_files.lst').read_bytes()
+    entries = libraries.decode().replace('\\', '/').splitlines()
+    crypto = [entry.strip() for entry in entries if '/Library/BaseCryptLib' in entry]
+    if (len(crypto) != 1 or not crypto[0].endswith(
+            '/OpensslPkg/Library/BaseCryptLib/BaseCryptLib/OUTPUT/BaseCryptLib.lib')):
+        raise ValueError('physical UFS host requires the actual non-null SHA-256 library')
     probe = _probe_record((build / 'DaliDiagnosticBds.efi').read_bytes(), sources['bds'], None)
     host = {'enabled': True, 'mode': 'read-only-blockio', 'run_token': token, 'log_version': 1,
             'controller_commands': True, 'mmio_writes': True, 'media_writes': False,
             'write_authorized': False, 'physical_storage_qualified': False,
             'host_sha256': modules['DaliUfsHostDxe'], 'host_verified_in_final_fd': True,
             'host_autogen_sha256': hashlib.sha256(sources['host'].encode()).hexdigest(),
+            'sha256_implementation': 'OpensslPkg/Library/BaseCryptLib/BaseCryptLib.inf',
+            'host_link_libraries_sha256': hashlib.sha256(libraries).hexdigest(),
             'modules_verified_in_final_fd': modules}
     return probe, host
 

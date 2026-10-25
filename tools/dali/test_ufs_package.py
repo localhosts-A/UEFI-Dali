@@ -165,6 +165,10 @@ class PhysicalPackagingTests(unittest.TestCase):
                                           '#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled 1U\n')
             (auto / 'AutoGen.c').write_text(f'const UINT8 _gPcd_FixedAtBuild_PcdDaliUfs{pcd}Token[{len(value)}] = {{' +
                                           ','.join(str(b) for b in value) + '};\n')
+        output = folder / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/OUTPUT'
+        output.mkdir(parents=True, exist_ok=True)
+        (output / 'static_library_files.lst').write_text(
+            '/build/OpensslPkg/Library/BaseCryptLib/BaseCryptLib/OUTPUT/BaseCryptLib.lib\n')
         modules = []
         for name, guid in PHYSICAL_UFS_MODULES.items():
             data = bytearray(128)
@@ -212,6 +216,20 @@ class PhysicalPackagingTests(unittest.TestCase):
             path = folder / 'daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG/AutoGen.c'
             path.write_text(path.read_text().replace('110,111,110,101,0', '110,111,110,102,0'))
             with self.assertRaisesRegex(ValueError, 'token mismatch'):
+                ufs_read_only_metadata(folder, self.token, fd=fd)
+
+    def test_null_mixed_duplicate_or_missing_sha_link_library_cannot_be_packaged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp); fd = self.fixture(folder)
+            path = folder / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/OUTPUT/static_library_files.lst'
+            real = path.read_text()
+            null = '/build/CryptoPkg/Library/BaseCryptLibNull/BaseCryptLibNull/OUTPUT/BaseCryptLibNull.lib\n'
+            for value in ('', null, real + null, real * 2):
+                path.write_text(value)
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'non-null SHA-256'):
+                    ufs_read_only_metadata(folder, self.token, fd=fd)
+            path.unlink()
+            with self.assertRaises(FileNotFoundError):
                 ufs_read_only_metadata(folder, self.token, fd=fd)
 
     def test_any_missing_stale_wrong_arch_or_duplicate_final_module_fails(self):

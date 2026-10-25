@@ -68,7 +68,7 @@ contains that candidate. Media identity is checked around reads and sync.
 Each successful Flush must advance the host's validated device-SYNC completion
 counter by exactly one; a no-op Flush cannot qualify synchronization.
 
-162 host tests pass, including 26 production controller, 14 DMA/backend, 9 wire-policy,
+163 host tests pass, including 26 production controller, 14 DMA/backend, 9 wire-policy,
 12 production PassThru, 8 ScsiDisk media/sync, 8 BlockIo diagnostic and 4 host
 sync-completion tests and 5 physical-profile packaging tests. An explicitly
 enabled AArch64 build has compiled these changes. Software results do not
@@ -91,6 +91,16 @@ the forced restart, so control/DMA/media progress remains unknown. Visible
 breadcrumbs now identify control commands and the DMA/connect/BlockIo/stop
 boundaries without adding MMIO reads, commands or completion-loop output.
 They do not grant hardware qualification.
+
+The 89524c9/db963732 photo shows successful controller/DMA/connect return values,
+then entry into BlockIo diagnostics without return. Original-only recovery and
+Android B/root/all 18 backup-byte/hash checks passed; raw console is unavailable.
+The exact linked SHA provider was BaseCryptLibNull, which ASSERTs and deadloops
+in this DEBUG build. The current component override selects real BaseCryptLib
+and its dependencies only for this host. Before control writes, a SHA-256 abc
+known-answer check must pass; packaging checks actual host link inputs and
+rejects missing, null, duplicate or mixed providers. This repairs a definite
+software defect; actual read/sync qualification still requires new evidence.
 
 The existing off/register-probe packager verifies the compiled disabled host
 inside the actual FD and refuses enabled physical-host builds. The separate
