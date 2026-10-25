@@ -9,12 +9,14 @@
   UfsHostDxe.c
   UfsPolicy.c
   UfsDiagnostics.c
+  UfsShutdown.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   ArmPkg/ArmPkg.dec
   CryptoPkg/CryptoPkg.dec
   MT6991Pkg/MT6991Pkg.dec
+  UniXNUPkg/UniXNUPkg.dec
 [LibraryClasses]
   UefiDriverEntryPoint
   UefiBootServicesTableLib
@@ -39,6 +41,7 @@
   gEfiExtScsiPassThruProtocolGuid ## SOMETIMES_CONSUMES
   gEfiCpuArchProtocolGuid ## CONSUMES
   gDaliUfsDiagnosticProtocolGuid ## PRODUCES
+  gUniXNUStorageQuiesceProtocolGuid ## PRODUCES
   gEdkiiUfsHostControllerProtocolGuid ## PRODUCES
   gEdkiiUfsHcPlatformProtocolGuid ## PRODUCES
   gEfiDevicePathProtocolGuid ## PRODUCES

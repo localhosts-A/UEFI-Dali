@@ -14,7 +14,9 @@
 #include <Protocol/DevicePath.h>
 #include <Protocol/DaliUfsDiagnostic.h>
 #include <Protocol/UfsHostControllerPlatform.h>
+#include <Protocol/UniXNUStorageQuiesce.h>
 #include "UfsHostInternal.h"
+#include "UfsShutdown.h"
 
 #define HCI 0x16810000U
 #define WINDOW 0x2A00U
@@ -27,6 +29,10 @@ STATIC volatile UINT64 mCompletedSync[8];
 STATIC EFI_HANDLE mController;
 STATIC BOOLEAN mAttempted, mClosed = TRUE, mInitUsed, mInitFinished, mDisconnected;
 STATIC UINT32 mTrl, mTmrl;
+STATIC DALI_UFS_SHUTDOWN mShutdown;
+STATIC EFI_STATUS mQuiesceFailure;
+STATIC BOOLEAN mQuiesced, mQuiescing;
+STATIC UNIXNU_STORAGE_QUIESCE_PROTOCOL mStorage;
 
 STATIC UINT32 IoRead (UINTN Address, VOID *Context) { (VOID)Context; return MmioRead32 (Address); }
 STATIC BOOLEAN IoWrite (UINTN Address, UINT32 Value, VOID *Context) {
@@ -49,28 +55,64 @@ STATIC UINT64 Sip (UINT32 Service, UINT32 Selector, UINT32 A, UINT32 B, VOID *Co
 }
 
 STATIC EFI_STATUS StopController (VOID) {
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
   mClosed = TRUE;
   Mt6991UfsDmaPoison (&mDma);
-  if (Mt6991UfsStop (&mControl) != Mt6991UfsStopped) { return EFI_DEVICE_ERROR; }
-  if (!mDma.Initialized) { return EFI_SUCCESS; }
-  return Mt6991UfsDmaStopped (&mDma, MmioRead32 (HCI + 0x34));
+  EFI_STATUS Status = EFI_DEVICE_ERROR;
+  if (Mt6991UfsStop (&mControl) == Mt6991UfsStopped) {
+    Status = mDma.Initialized ? Mt6991UfsDmaStopped (&mDma, MmioRead32 (HCI + 0x34)) : EFI_SUCCESS;
+  }
+  gBS->RestoreTPL (OldTpl); return Status;
 }
 
 STATIC EFI_STATUS EFIAPI Quiesce (VOID) {
-  EFI_STATUS Status = StopController ();
-  if (!EFI_ERROR (Status) && mController != NULL && !mDisconnected) {
+  if (EfiGetCurrentTpl () > TPL_NOTIFY) { return EFI_UNSUPPORTED; }
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
+  if (mQuiesced || mQuiescing) {
+    EFI_STATUS Status = mQuiesced ? EFI_SUCCESS : EFI_NOT_READY;
+    gBS->RestoreTPL (OldTpl); return Status;
+  }
+  if (OldTpl != TPL_APPLICATION) { gBS->RestoreTPL (OldTpl); return EFI_UNSUPPORTED; }
+  mQuiescing = TRUE;
+  // Admission closes before any poll/allocation. Private shutdown commands use
+  // the owned-DMA core directly, never reopen the public protocol callbacks.
+  // Host submission/DMA callbacks use this same TPL on the firmware BSP. No MP caller
+  // is supported. Keep it raised through drain/stop; disconnect needs the
+  // caller's TPL and may legitimately invoke the serialized Free/Unmap callbacks.
+  mClosed = TRUE;
+  EFI_STATUS Status = DaliUfsDrainAndSync (&mDma, &mPending, mGeometry, mCompletedSync, &mControl.Io, &mShutdown);
+  if (mQuiesceFailure == EFI_SUCCESS && Status != EFI_SUCCESS) { mQuiesceFailure = EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR; }
+  // Even failed sync/drain must stop/quarantine and attempt safe cleanup.
+  Status = StopController ();
+  gBS->RestoreTPL (OldTpl);
+  if (Status == EFI_SUCCESS && mController != NULL && !mDisconnected) {
     // Let PassThru retire its own descriptor pointers/cookies before releasing
     // any residual allocations. Never leave a live protocol holding freed TRLs.
     Status = gBS->DisconnectController (mController, NULL, NULL);
-    VOID *PassThru;
-    if (!EFI_ERROR (Status) && !EFI_ERROR (gBS->HandleProtocol (
-        mController, &gEfiExtScsiPassThruProtocolGuid, &PassThru))) { Status = EFI_DEVICE_ERROR; }
-    if (!EFI_ERROR (Status)) { mDisconnected = TRUE; }
+    if (Status == EFI_SUCCESS || Status == EFI_NOT_FOUND) {
+      VOID *PassThru = NULL;
+      EFI_STATUS Present = gBS->HandleProtocol (mController, &gEfiExtScsiPassThruProtocolGuid, &PassThru);
+      Status = (Present == EFI_UNSUPPORTED || Present == EFI_NOT_FOUND) ? EFI_SUCCESS : EFI_DEVICE_ERROR;
+    }
+    if (Status == EFI_SUCCESS) { mDisconnected = TRUE; }
   }
-  if (!EFI_ERROR (Status) && mDma.Initialized) { Status = Mt6991UfsDmaReleaseAll (&mDma); }
+  OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
+  if (Status == EFI_SUCCESS && mDma.Initialized) { Status = Mt6991UfsDmaReleaseAll (&mDma); }
+  if (mQuiesceFailure == EFI_SUCCESS && Status != EFI_SUCCESS) { mQuiesceFailure = EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR; }
+  Status = mQuiesceFailure;
+  mQuiesced = Status == EFI_SUCCESS;
+  mQuiescing = FALSE;
+  gBS->RestoreTPL (OldTpl);
+  DEBUG ((DEBUG_WARN, "DALI-UFS-HANDOFF: run=%a closed=1 drained-synced=%u mask=%x commands=%u result=%r\n",
+    (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mShutdown.Completed,
+    mShutdown.SyncedLuns, mShutdown.Commands, Status));
   DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a quiesce=%r hce=%x\n",
     (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Status, mControl.Touched ? MmioRead32 (HCI + 0x34) : 0));
   return Status;
+}
+
+STATIC EFI_STATUS EFIAPI StorageQuiesce (UNIXNU_STORAGE_QUIESCE_PROTOCOL *This) {
+  return This == &mStorage ? Quiesce () : EFI_INVALID_PARAMETER;
 }
 
 STATIC EFI_STATUS EFIAPI GetBar (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This, UINTN *Bar);
@@ -85,34 +127,39 @@ STATIC EFI_STATUS EFIAPI Allocate (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This, EFI
   EFI_MEMORY_TYPE MemoryType, UINTN Pages, VOID **Host, UINT64 Attributes) {
   (VOID)Type;
   if (!ValidHost (This) || MemoryType != EfiBootServicesData || Attributes) { return EFI_UNSUPPORTED; }
-  EFI_STATUS Status = Mt6991UfsDmaAllocate (&mDma, Pages, Host);
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
+  EFI_STATUS Status = mClosed ? EFI_DEVICE_ERROR : Mt6991UfsDmaAllocate (&mDma, Pages, Host);
   if (mDma.Poisoned && !mDma.Stopped) { StopController (); }
-  return Status;
+  gBS->RestoreTPL (OldTpl); return Status;
 }
 STATIC EFI_STATUS EFIAPI Free (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This, UINTN Pages, VOID *Host) {
   if (!ValidHost (This)) { return EFI_INVALID_PARAMETER; }
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
   EFI_STATUS Status = Mt6991UfsDmaFree (&mDma, Pages, Host);
   if (mDma.Poisoned && !mDma.Stopped) { StopController (); }
-  return Status;
+  gBS->RestoreTPL (OldTpl); return Status;
 }
 STATIC EFI_STATUS EFIAPI Map (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
   EDKII_UFS_HOST_CONTROLLER_OPERATION Op, VOID *Host, UINTN *Bytes, EFI_PHYSICAL_ADDRESS *Device, VOID **Mapping) {
   UINT64 Id;
   if (!ValidHost (This) || Bytes == NULL || Device == NULL || Mapping == NULL || (UINT32)Op >= EdkiiUfsHcOperationMaximum) { return EFI_INVALID_PARAMETER; }
   *Mapping = NULL;
-  EFI_STATUS Status = Mt6991UfsDmaMap (&mDma, (MT6991_DMA_OPERATION)Op, Host, *Bytes, Device, &Id);
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
+  EFI_STATUS Status = mClosed ? EFI_DEVICE_ERROR : Mt6991UfsDmaMap (&mDma, (MT6991_DMA_OPERATION)Op, Host, *Bytes, Device, &Id);
   if (mDma.Poisoned && !mDma.Stopped) { StopController (); }
   if (!EFI_ERROR (Status)) { *Mapping = (VOID *)(UINTN)Id; }
-  return Status;
+  gBS->RestoreTPL (OldTpl); return Status;
 }
 STATIC EFI_STATUS EFIAPI Unmap (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This, VOID *Mapping) {
   if (!ValidHost (This)) { return EFI_INVALID_PARAMETER; }
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
   EFI_STATUS Status = Mt6991UfsDmaUnmap (&mDma, (UINTN)Mapping);
   if (mDma.Poisoned && !mDma.Stopped) { StopController (); }
-  return Status;
+  gBS->RestoreTPL (OldTpl); return Status;
 }
 STATIC EFI_STATUS EFIAPI Flush (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This) {
   if (!ValidHost (This)) { return EFI_INVALID_PARAMETER; }
+  if (mClosed) { return EFI_DEVICE_ERROR; }
   MemoryFence ();
   // Host posted-write barrier only. Device cache sync is a separate SCSI CDB.
   return MmioRead32 (HCI + 0x34) == 0xFFFFFFFFU ? EFI_DEVICE_ERROR : EFI_SUCCESS;
@@ -139,7 +186,7 @@ STATIC EFI_STATUS Complete (VOID) {
   if (EFI_ERROR (Status)) { StopController (); }
   return Status;
 }
-STATIC EFI_STATUS EFIAPI Read (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
+STATIC EFI_STATUS EFIAPI ReadLocked (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
   EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WIDTH Width, UINT64 Offset, UINTN Count, VOID *Buffer) {
   if (!ValidHost (This) || Buffer == NULL || Width != EfiUfsHcWidthUint32 ||
       Count != 1 || Offset >= WINDOW || (Offset & 3)) { return EFI_INVALID_PARAMETER; }
@@ -152,7 +199,7 @@ STATIC EFI_STATUS EFIAPI Read (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
   }
   CopyMem (Buffer, &Value, sizeof Value); return EFI_SUCCESS;
 }
-STATIC EFI_STATUS EFIAPI Write (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
+STATIC EFI_STATUS EFIAPI WriteLocked (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
   EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WIDTH Width, UINT64 Offset, UINTN Count, VOID *Buffer) {
   UINT32 Value; VOID *Cpu;
   if (!ValidHost (This) || Buffer == NULL || Width != EfiUfsHcWidthUint32 ||
@@ -163,7 +210,6 @@ STATIC EFI_STATUS EFIAPI Write (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
   if (Offset == 0x58) {
     if (Value != 1 || !mTrl || mDma.Busy || MmioRead32 (HCI + 0x58) ||
         MmioRead32 (HCI + 0x78) || MmioRead32 (HCI + 0x60) != 1) { return EFI_ACCESS_DENIED; }
-    EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
     EFI_STATUS Status = Mt6991UfsValidateTransfer (&mDma, mTrl, mGeometry,
       !mInitUsed && !mInitFinished, &mPending);
     if (!EFI_ERROR (Status)) { Status = Mt6991UfsDmaSubmit (&mDma); }
@@ -172,7 +218,7 @@ STATIC EFI_STATUS EFIAPI Write (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
       MmioWrite32 (HCI + 0x20, 1); MemoryFence ();
       MmioWrite32 (HCI + 0x58, 1); MemoryFence ();
     }
-    gBS->RestoreTPL (OldTpl); return Status;
+    return Status;
   }
   if (Offset == 0x5C) { return StopController (); }
   if (mDma.Busy) { return EFI_NOT_READY; }
@@ -188,6 +234,18 @@ STATIC EFI_STATUS EFIAPI Write (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
     default: return EFI_ACCESS_DENIED; // Includes task doorbells, UIC and MCQ.
   }
   MmioWrite32 (HCI + (UINTN)Offset, Value); MemoryFence (); return EFI_SUCCESS;
+}
+STATIC EFI_STATUS EFIAPI Read (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
+  EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WIDTH Width, UINT64 Offset, UINTN Count, VOID *Buffer) {
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
+  EFI_STATUS Status = ReadLocked (This, Width, Offset, Count, Buffer);
+  gBS->RestoreTPL (OldTpl); return Status;
+}
+STATIC EFI_STATUS EFIAPI Write (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
+  EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WIDTH Width, UINT64 Offset, UINTN Count, VOID *Buffer) {
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
+  EFI_STATUS Status = WriteLocked (This, Width, Offset, Count, Buffer);
+  gBS->RestoreTPL (OldTpl); return Status;
 }
 STATIC EDKII_UFS_HOST_CONTROLLER_PROTOCOL mHost = { GetBar, Allocate, Free, Map, Unmap, Flush, Read, Write };
 
@@ -246,7 +304,7 @@ STATIC struct { VENDOR_DEVICE_PATH Vendor; EFI_DEVICE_PATH_PROTOCOL End; } mPath
 STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   if (Controller == NULL || !FixedPcdGetBool (PcdDaliUfsReadOnlyEnabled) || FixedPcdGetBool (PcdDaliUfsProbeEnabled)) { return EFI_ACCESS_DENIED; }
   *Controller = NULL;
-  if (mAttempted) { return EFI_ALREADY_STARTED; }
+  if (mAttempted || mShutdown.Attempted) { return EFI_ALREADY_STARTED; }
   mAttempted = TRUE;
   // A known-answer check precedes all controller writes. Build packaging also
   // rejects the null crypto library, whose DEBUG stub would assert here.
@@ -315,9 +373,11 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   return Status;
 }
 STATIC DALI_UFS_DIAGNOSTIC_PROTOCOL mDiagnostic = { Initialize, Quiesce };
+STATIC UNIXNU_STORAGE_QUIESCE_PROTOCOL mStorage = { UNIXNU_STORAGE_QUIESCE_REVISION, StorageQuiesce };
 EFI_STATUS EFIAPI DaliUfsHostEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *SystemTable) {
   (VOID)SystemTable;
   if (!FixedPcdGetBool (PcdDaliUfsReadOnlyEnabled)) { return EFI_NOT_STARTED; }
   if (FixedPcdGetBool (PcdDaliUfsProbeEnabled)) { return EFI_ACCESS_DENIED; }
-  return gBS->InstallMultipleProtocolInterfaces (&Image, &gDaliUfsDiagnosticProtocolGuid, &mDiagnostic, NULL);
+  return gBS->InstallMultipleProtocolInterfaces (&Image,
+    &gDaliUfsDiagnosticProtocolGuid, &mDiagnostic, &gUniXNUStorageQuiesceProtocolGuid, &mStorage, NULL);
 }
