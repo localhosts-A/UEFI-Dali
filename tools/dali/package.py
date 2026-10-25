@@ -9,9 +9,28 @@ import struct
 import subprocess
 import sys
 import tomllib
+import uuid
 
 from fdt import Fdt
-from firmware_volume import extract_bds, extract_module, UFS_HOST_GUID
+from firmware_volume import extract_bds, extract_module, BDS_GUID, UFS_HOST_GUID
+
+PHYSICAL_UFS_MODULES = {
+    'DaliDiagnosticBds': BDS_GUID, 'DaliUfsHostDxe': UFS_HOST_GUID,
+    'UfsPassThruDxe': uuid.UUID('e7f1dff9-dab6-498a-9adf-57f344eddf57').bytes_le,
+    'ScsiBus': uuid.UUID('0167ccc4-d0f7-4f21-a3ef-9e64b7cdce8b').bytes_le,
+    'ScsiDisk': uuid.UUID('0a66e322-3740-4cce-ad62-bd172cecca35').bytes_le,
+    'PartitionDxe': uuid.UUID('1fa1f39e-feff-4aae-bd7b-38a070a3b609').bytes_le,
+}
+
+
+def _probe_record(module, source, token):
+    return {"enabled": token is not None, "run_token": token,
+            "mode": "read-only-registers" if token else "off",
+            "controller_commands": False, "mmio_writes": False,
+            "physical_storage_qualified": False,
+            "bds_sha256": hashlib.sha256(module).hexdigest(),
+            "bds_verified_in_final_fd": True,
+            "bds_autogen_sha256": hashlib.sha256(source.encode()).hexdigest()}
 
 
 def ufs_probe_metadata(build, token=None, *, fd):
@@ -37,13 +56,7 @@ def ufs_probe_metadata(build, token=None, *, fd):
         raise ValueError("final FD BDS differs from validated compiled module")
     if token is not None and expected not in module:
         raise ValueError("probe token missing from actual compiled BDS module")
-    return {"enabled": token is not None, "run_token": token,
-            "mode": "read-only-registers" if token else "off",
-            "controller_commands": False, "mmio_writes": False,
-            "physical_storage_qualified": False,
-            "bds_sha256": hashlib.sha256(module).hexdigest(),
-            "bds_verified_in_final_fd": True,
-            "bds_autogen_sha256": hashlib.sha256(source.encode()).hexdigest()}
+    return _probe_record(module, source, token)
 
 
 def ufs_host_off_metadata(build, *, fd):
@@ -64,6 +77,57 @@ def ufs_host_off_metadata(build, *, fd):
             "host_autogen_sha256": hashlib.sha256(source.encode()).hexdigest()}
 
 
+def ufs_read_only_metadata(build, token, *, fd):
+    """Explicit physical profile: both PCD consumers and every storage module."""
+    if not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{32}', token):
+        raise ValueError('invalid physical UFS token')
+    sources = {}
+    for label, directory, pcd, expected in (
+        ('bds', 'daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG', 'Probe', b'none\0'),
+        ('host', 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG', 'Storage', token.encode() + b'\0')):
+        auto = build / directory
+        header, source = (auto / 'AutoGen.h').read_text(), (auto / 'AutoGen.c').read_text()
+        for flag, number in (('ReadOnlyEnabled', 1), ('ProbeEnabled', 0)):
+            if not re.search(r'^#define _PCD_VALUE_PcdDaliUfs' + flag + r'\s+' + str(number) + r'U\s*$', header, re.M):
+                raise ValueError('physical UFS ' + label + ' enable/probe PCD mismatch')
+        value = re.search(r'_gPcd_FixedAtBuild_PcdDaliUfs' + pcd + r'Token\[(\d+)\]\s*=\s*\{([^}]+)\}', source)
+        if (not value or int(value[1]) != len(expected) or
+                bytes(int(v.strip(), 0) for v in value[2].split(',') if v.strip()) != expected):
+            raise ValueError('physical UFS ' + label + ' token mismatch')
+        sources[label] = source
+    modules = {}
+    for name, guid in PHYSICAL_UFS_MODULES.items():
+        module = (build / (name + '.efi')).read_bytes()
+        if extract_module(fd, guid, name) != module:
+            raise ValueError('final FD physical UFS module differs: ' + name)
+        if len(module) < 64:
+            raise ValueError('truncated physical UFS PE module: ' + name)
+        pe = struct.unpack_from('<I', module, 0x3c)[0]
+        if (pe > len(module) - 6 or module[pe:pe + 4] != b'PE\0\0' or
+                struct.unpack_from('<H', module, pe + 4)[0] != 0xaa64):
+            raise ValueError('physical UFS module is not ARM64 PE: ' + name)
+        modules[name] = hashlib.sha256(module).hexdigest()
+    host_module = (build / 'DaliUfsHostDxe.efi').read_bytes()
+    if token.encode() + b'\0' not in host_module:
+        raise ValueError('storage token missing from compiled physical host')
+    probe = _probe_record((build / 'DaliDiagnosticBds.efi').read_bytes(), sources['bds'], None)
+    host = {'enabled': True, 'mode': 'read-only-blockio', 'run_token': token, 'log_version': 1,
+            'controller_commands': True, 'mmio_writes': True, 'media_writes': False,
+            'write_authorized': False, 'physical_storage_qualified': False,
+            'host_sha256': modules['DaliUfsHostDxe'], 'host_verified_in_final_fd': True,
+            'host_autogen_sha256': hashlib.sha256(sources['host'].encode()).hexdigest(),
+            'modules_verified_in_final_fd': modules}
+    return probe, host
+
+
+def validate_diagnostic_payload(payload):
+    if (not isinstance(payload, dict) or not isinstance(payload.get('recovery'), dict) or
+            payload.get('xnu_kernel_sha256') is not None or payload.get('xnu_ramdisk_sha256') is not None or
+            payload['recovery'].get('auto_fastboot') is not False or
+            payload['recovery'].get('reset_method') is not None):
+        raise ValueError('UFS diagnostic requires a UEFI-only payload with automatic recovery disabled')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--backup", type=Path, required=True)
@@ -72,7 +136,9 @@ def main():
     p.add_argument("--unixnu", type=Path, required=True, help="reviewed generic UniXNU checkout")
     p.add_argument("--device-repo", type=Path, required=True, help="pinned UniXNU-Dali checkout")
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--ufs-probe-token", help="bind opt-in read-only firmware register snapshot")
+    profile = p.add_mutually_exclusive_group()
+    profile.add_argument("--ufs-probe-token", help="bind opt-in read-only firmware register snapshot")
+    profile.add_argument("--ufs-read-only-token", help="bind the explicit physical read-only BlockIo diagnostic")
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
     mu = args.mu.resolve()
@@ -114,15 +180,19 @@ def main():
     if fd.stat().st_size != fd_size:
         raise SystemExit("Unexpected dali FD size")
     try:
-        probe = ufs_probe_metadata(fd.parent.parent / "AARCH64", args.ufs_probe_token, fd=fd.read_bytes())
-        host = ufs_host_off_metadata(fd.parent.parent / "AARCH64", fd=fd.read_bytes())
+        if args.ufs_read_only_token is not None:
+            probe, host = ufs_read_only_metadata(fd.parent.parent / "AARCH64", args.ufs_read_only_token, fd=fd.read_bytes())
+        else:
+            probe = ufs_probe_metadata(fd.parent.parent / "AARCH64", args.ufs_probe_token, fd=fd.read_bytes())
+            host = ufs_host_off_metadata(fd.parent.parent / "AARCH64", fd=fd.read_bytes())
     except (OSError, ValueError) as error:
         raise SystemExit("UFS probe build verification failed: " + str(error)) from None
     payload = json.loads((out / "payload.json").read_text())
-    if probe["enabled"] and (payload.get("xnu_kernel_sha256") is not None or
-                              payload.get("recovery", {}).get("auto_fastboot") is not False or
-                              payload.get("recovery", {}).get("reset_method") is not None):
-        raise SystemExit("UFS probe requires a UEFI-only payload with automatic recovery disabled")
+    if probe['enabled'] or host['enabled']:
+        try:
+            validate_diagnostic_payload(payload)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
     shim_obj, shim_elf, shim = out / "DaliShim.o", out / "DaliShim.elf", out / "DaliShim.bin"
     subprocess.run(["clang", "--target=aarch64-none-elf", "-c", str(mu / "BootShim/DaliShim.S"),
                     "-o", str(shim_obj), f"-DFD_BASE={fd_base:#x}", f"-DFD_SIZE={fd_size:#x}"], check=True)

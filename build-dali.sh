@@ -14,10 +14,16 @@ PORT_PYTHON=${MU_PYTHON:-python3}
 PORT_XNU_KERNEL=
 PORT_XNU_ADT=
 PORT_PROBE_PACKAGE_ARGS=()
-[[ "${DALI_UFS_READ_ONLY:-false}" == false ]] || {
-  echo "Physical UFS host builds require the dedicated candidate verifier/runner; packaging is not enabled yet" >&2; exit 2;
-}
-if [[ "${DALI_UFS_PROBE:-false}" == true ]]; then
+if [[ "${DALI_UFS_READ_ONLY:-false}" == true ]]; then
+  [[ "${DALI_UFS_PROFILE:-off}" == read-only-blockio && $# == 3 &&
+     "${DALI_UFS_PROBE:-false}" == false && "${DALI_AUTO_FASTBOOT:-true}" == false &&
+     -z "${DALI_RESET_METHOD:-}" && "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]] || {
+    echo "Physical UFS needs explicit DALI_UFS_PROFILE=read-only-blockio, UEFI-only inputs, fresh token, no probe or automatic reset" >&2; exit 2;
+  }
+  PORT_PROBE_PACKAGE_ARGS+=(--ufs-read-only-token "$DALI_RUN_TOKEN")
+elif [[ "${DALI_UFS_READ_ONLY:-false}" != false || "${DALI_UFS_PROFILE:-off}" != off ]]; then
+  echo "Invalid UFS mode: host defaults off; read-only-blockio requires DALI_UFS_READ_ONLY=true" >&2; exit 2
+elif [[ "${DALI_UFS_PROBE:-false}" == true ]]; then
   [[ $# == 3 && "${DALI_AUTO_FASTBOOT:-true}" == false && -z "${DALI_RESET_METHOD:-}" &&
      "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]] || {
     echo "UFS probe needs UEFI-only build, fresh token, DALI_AUTO_FASTBOOT=false and no reset method" >&2; exit 2;

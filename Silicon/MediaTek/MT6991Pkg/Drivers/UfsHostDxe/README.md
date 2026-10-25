@@ -68,17 +68,27 @@ contains that candidate. Media identity is checked around reads and sync.
 Each successful Flush must advance the host's validated device-SYNC completion
 counter by exactly one; a no-op Flush cannot qualify synchronization.
 
-142 host tests pass, including 14 production DMA/backend, 9 wire-policy,
+147 host tests pass, including 14 production DMA/backend, 9 wire-policy,
 12 production PassThru, 8 ScsiDisk media/sync, 8 BlockIo diagnostic and 4 host
-sync-completion tests. An explicitly enabled AArch64 build has compiled these
-changes. Software results do not qualify MT6991 hardware.
+sync-completion tests and 5 physical-profile packaging tests. An explicitly
+enabled AArch64 build has compiled these changes. Software results do not
+qualify MT6991 hardware.
 
 The existing off/register-probe packager verifies the compiled disabled host
-inside the actual FD and refuses enabled physical-host builds. Direct
-`build_uefi.py` supports explicit host builds for software qualification; a
-dedicated sealed candidate profile and runner are still required for hardware.
+inside the actual FD and refuses enabled physical-host builds. The separate
+`DALI_UFS_PROFILE=read-only-blockio` profile requires `DALI_UFS_READ_ONLY=true`,
+`DALI_UFS_PROBE=false`, a fresh `DALI_RUN_TOKEN`, `DALI_AUTO_FASTBOOT=false`, no
+reset method, and the three UEFI-only build arguments. Its packager checks both
+BDS/host PCD consumers, the storage token and all six ARM64 modules against the
+actual FD. It grants no media-write permission or hardware qualification.
 
-Remaining work includes the candidate profile/runner and physical BlockIo
-publication/geometry/read/sync evidence, scratch child/policy, generic
+The device runner's explicit `--mode read-only-blockio --baseline-dir ...`
+validates that candidate and snapshots its baseline. Before flashing it collects
+a fresh Android read-only baseline, compares raw geometry/GPT, and checks the
+original partitions. It retains the shared device lease, fresh-token ledger and
+original-only recovery entry. Physical qualification still requires a real run.
+
+Remaining work includes final sealed-candidate/runner qualification and physical
+BlockIo publication/geometry/read/sync evidence, scratch child/policy, generic
 firmware/XNU handoff, physical XNU driver and repeated write/sync/reboot/readback
 qualification.

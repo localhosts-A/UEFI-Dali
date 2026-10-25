@@ -1,10 +1,13 @@
 """Bind the requested register-probe mode to actual generated BDS build inputs."""
 from pathlib import Path
 import lzma
+import os
 import struct
+import subprocess
 import tempfile
 import unittest
-from package import ufs_probe_metadata, ufs_host_off_metadata
+from package import (ufs_probe_metadata, ufs_host_off_metadata, ufs_read_only_metadata,
+                     validate_diagnostic_payload, PHYSICAL_UFS_MODULES)
 from firmware_volume import BDS_GUID, LZMA_GUID, UFS_HOST_GUID, extract_bds
 
 
@@ -134,6 +137,125 @@ class ProbePackagingTests(unittest.TestCase):
         for data in (firmware(module)[:100], bytes(corrupt), firmware(module, duplicate=True)):
             with self.subTest(size=len(data)), self.assertRaises(ValueError):
                 extract_bds(data)
+
+
+def combined_firmware(modules):
+    first = modules[0]
+    output = bytearray(firmware(first[1], guid=first[0]))
+    output[72:] = b'\xff' * (len(output) - 72)
+    at = 72
+    for guid, module in modules:
+        single = firmware(module, guid=guid)
+        size = int.from_bytes(single[92:95], 'little')
+        output[at:at + size] = single[72:72 + size]
+        at = (at + size + 7) & ~7
+    return bytes(output)
+
+
+class PhysicalPackagingTests(unittest.TestCase):
+    token = 'a1' * 16
+
+    def fixture(self, folder):
+        sources = [('daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG', 'Probe', b'none\0'),
+                   ('MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG', 'Storage', self.token.encode() + b'\0')]
+        for directory, pcd, value in sources:
+            auto = folder / directory
+            auto.mkdir(parents=True, exist_ok=True)
+            (auto / 'AutoGen.h').write_text('#define _PCD_VALUE_PcdDaliUfsProbeEnabled 0U\n'
+                                          '#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled 1U\n')
+            (auto / 'AutoGen.c').write_text(f'const UINT8 _gPcd_FixedAtBuild_PcdDaliUfs{pcd}Token[{len(value)}] = {{' +
+                                          ','.join(str(b) for b in value) + '};\n')
+        modules = []
+        for name, guid in PHYSICAL_UFS_MODULES.items():
+            data = bytearray(128)
+            data[:2] = b'MZ'
+            struct.pack_into('<I', data, 0x3c, 64)
+            data[64:68] = b'PE\0\0'
+            struct.pack_into('<H', data, 68, 0xaa64)
+            data += name.encode() + b'\0'
+            if name == 'DaliUfsHostDxe':
+                data += self.token.encode() + b'\0'
+            (folder / (name + '.efi')).write_bytes(data)
+            modules.append((guid, bytes(data)))
+        return combined_firmware(modules)
+
+    def test_explicit_profile_binds_both_consumers_and_all_final_fd_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp); fd = self.fixture(folder)
+            probe, host = ufs_read_only_metadata(folder, self.token, fd=fd)
+            self.assertFalse(probe['enabled'])
+            self.assertTrue(host['enabled'])
+            self.assertEqual(host['mode'], 'read-only-blockio')
+            self.assertEqual(host['run_token'], self.token)
+            self.assertEqual(set(host['modules_verified_in_final_fd']), set(PHYSICAL_UFS_MODULES))
+            for key in ('write_authorized', 'media_writes', 'physical_storage_qualified'):
+                self.assertFalse(host[key])
+            for old in (ufs_probe_metadata, ufs_host_off_metadata):
+                with self.assertRaisesRegex(ValueError, 'dedicated candidate verifier'):
+                    old(folder, fd=fd)
+
+    def test_wrong_token_either_enable_flag_and_competing_probe_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp); fd = self.fixture(folder)
+            for token in ('bad', 'b2' * 16, None):
+                with self.assertRaises(ValueError):
+                    ufs_read_only_metadata(folder, token, fd=fd)
+            for directory in ('daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG',
+                              'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG'):
+                for old, new in (('ReadOnlyEnabled 1U', 'ReadOnlyEnabled 0U'), ('ProbeEnabled 0U', 'ProbeEnabled 1U')):
+                    fd = self.fixture(folder)
+                    path = folder / directory / 'AutoGen.h'
+                    path.write_text(path.read_text().replace(old, new))
+                    with self.assertRaisesRegex(ValueError, 'PCD mismatch'):
+                        ufs_read_only_metadata(folder, self.token, fd=fd)
+            fd = self.fixture(folder)
+            path = folder / 'daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG/AutoGen.c'
+            path.write_text(path.read_text().replace('110,111,110,101,0', '110,111,110,102,0'))
+            with self.assertRaisesRegex(ValueError, 'token mismatch'):
+                ufs_read_only_metadata(folder, self.token, fd=fd)
+
+    def test_any_missing_stale_wrong_arch_or_duplicate_final_module_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for name in PHYSICAL_UFS_MODULES:
+                fd = self.fixture(folder)
+                (folder / (name + '.efi')).write_bytes(b'MZstale')
+                with self.assertRaisesRegex(ValueError, 'differs'):
+                    ufs_read_only_metadata(folder, self.token, fd=fd)
+            self.fixture(folder)
+            path = folder / 'ScsiDisk.efi'; data = bytearray(path.read_bytes()); data[68:70] = b'\x64\x86'; path.write_bytes(data)
+            modules = [(guid, (folder / (name + '.efi')).read_bytes()) for name, guid in PHYSICAL_UFS_MODULES.items()]
+            with self.assertRaisesRegex(ValueError, 'not ARM64'):
+                ufs_read_only_metadata(folder, self.token, fd=combined_firmware(modules))
+            self.fixture(folder)
+            modules = [(guid, (folder / (name + '.efi')).read_bytes()) for name, guid in PHYSICAL_UFS_MODULES.items()]
+            for changed in (modules[:-1], modules + [modules[-1]]):
+                with self.assertRaisesRegex(ValueError, 'exactly one'):
+                    ufs_read_only_metadata(folder, self.token, fd=combined_firmware(changed))
+
+    def test_diagnostic_payload_refuses_xnu_root_and_automatic_reset(self):
+        valid = {'xnu_kernel_sha256': None, 'xnu_ramdisk_sha256': None,
+                 'recovery': {'auto_fastboot': False, 'reset_method': None}}
+        validate_diagnostic_payload(valid)
+        for bad in ({**valid, 'xnu_kernel_sha256': 'a' * 64}, {**valid, 'xnu_ramdisk_sha256': 'b' * 64},
+                    {**valid, 'recovery': {'auto_fastboot': True}},
+                    {**valid, 'recovery': {'auto_fastboot': False, 'reset_method': 'psci'}}, {}):
+            with self.assertRaises(ValueError):
+                validate_diagnostic_payload(bad)
+
+    def test_wrapper_refuses_incomplete_opt_in_before_build_tools(self):
+        wrapper = Path(__file__).resolve().parents[2] / 'build-dali.sh'
+        valid = {'DALI_UFS_PROFILE': 'read-only-blockio', 'DALI_UFS_READ_ONLY': 'true',
+                 'DALI_UFS_PROBE': 'false', 'DALI_AUTO_FASTBOOT': 'false', 'DALI_RUN_TOKEN': self.token}
+        for change in ({'DALI_UFS_PROFILE': 'off'}, {'DALI_UFS_READ_ONLY': 'false'},
+                       {'DALI_UFS_PROBE': 'true'}, {'DALI_AUTO_FASTBOOT': 'true'},
+                       {'DALI_RESET_METHOD': 'psci'}, {'DALI_RUN_TOKEN': 'bad'}):
+            with tempfile.TemporaryDirectory() as tmp:
+                env = {k: v for k, v in os.environ.items() if not k.startswith('DALI_')}
+                env.update(valid); env.update(change)
+                run = subprocess.run(['bash', str(wrapper), tmp, tmp, tmp], env=env, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertNotIn('Initialize', run.stderr)
 
 
 if __name__ == '__main__':
