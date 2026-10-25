@@ -56,6 +56,7 @@ def main():
                         'dali_usb_pmif_init_vusb', 'dali_mt6373_vusb_identify', 'dali_usb_vusb_acquire', 'dali_usb_vusb_release')),
         'DaliUsbPmicLib': (('UsbPmicLib',), ('DaliUsbPmicOpen', 'DaliUsbVusbPmicOpen', 'DaliUsbPmicClose')),
         'DaliUsbI2cLib': (('UsbI2cLib',), ('DaliUsbNativeI2cOpen', 'DaliUsbNativeI2cRead', 'DaliUsbNativeI2cWrite', 'DaliUsbNativeI2cReset', 'DaliUsbNativeI2cRecover', 'DaliUsbNativeI2cClose')),
+        'DaliUsbXhciIoLib': (('UsbXhciIoLib',), ('DaliUsbXhciIoOpen', 'DaliUsbXhciIoQuiesce', 'DaliUsbXhciIoClose')),
         'DaliUsbPlatformLib': (('UsbCalibration', 'UsbClockResources', 'UsbVusbResources', 'UsbI2cResources'), ('DaliUsbReadCalibration', 'DaliUsbReadClockResources', 'DaliUsbReadVusbResources', 'DaliUsbReadI2cResources')),
         'BaseFdtLib': (('fdt_check', 'FdtLib'), ('fdt_check_full', 'FdtGetProp')),
     }
