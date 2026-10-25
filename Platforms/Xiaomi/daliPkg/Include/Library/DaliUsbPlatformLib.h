@@ -51,3 +51,18 @@ typedef struct {
 EFI_STATUS DaliUsbReadVusbResources (
   IN CONST VOID *Fdt, IN UINTN FdtSize, OUT DALI_USB_VUSB_RESOURCES *Out
   );
+
+typedef struct {
+  DALI_USB_MMIO_RANGE Gpio, IocfgLb2, Controller, Dma;
+  UINT32 SclPin, SdaPin, ResetPin;
+} DALI_USB_I2C_RESOURCES;
+/* Full clock/calibration FDT validation plus exact MT6991 pinctrl windows/names,
+ * GPIO104/105 I2C6 channel0/open-drain/stretch configuration and enabled NXP4f
+ * GPIO72 enable/disable pinctrl graph; reject additional unimplemented pinconf
+ * actions. Copied ranges describe full FDT windows;
+ * native context maps only their first4KiB (all registers used by this backend).
+ * This does not acquire a bus/pin/source/power lease or qualify electrical
+ * policy. Other clients on the I2C6 bus must be excluded before any transfer. */
+EFI_STATUS DaliUsbReadI2cResources (
+  IN CONST VOID *Fdt, IN UINTN FdtSize, OUT DALI_USB_I2C_RESOURCES *Out
+  );

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 #include <Library/DaliUsbPlatformLib.h>
+#include <DaliUsbI2cPins.h>
 
 extern EFI_GUID gDaliUsbResourceContextProtocolGuid;
 typedef struct _DALI_USB_RESOURCE_CONTEXT_PROTOCOL DALI_USB_RESOURCE_CONTEXT_PROTOCOL;
@@ -12,7 +13,8 @@ typedef struct {
   BOOLEAN BootServicesClosed;
 } DALI_USB_RESOURCE_CONTEXT_STATUS;
 typedef struct { BOOLEAN Active; } DALI_USB_VUSB_TOKEN;
-typedef EFI_STATUS (EFIAPI *DALI_USB_VUSB_GUARD)(VOID *Context);
+typedef EFI_STATUS (EFIAPI *DALI_USB_RESOURCE_GUARD)(VOID *Context);
+typedef DALI_USB_RESOURCE_GUARD DALI_USB_VUSB_GUARD;
 typedef struct {
   UINT32 NominalMicrovolt;
   UINT8 Selector, Trim, LowPower, ChipRevision;
@@ -50,4 +52,15 @@ struct _DALI_USB_RESOURCE_CONTEXT_PROTOCOL {
   EFI_STATUS (EFIAPI *AcquireVusb)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_VUSB_TOKEN *,
     DALI_USB_VUSB_GUARD Guard, VOID *Context, DALI_USB_VUSB_INFO *Out);
   EFI_STATUS (EFIAPI *ReleaseVusb)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_VUSB_TOKEN *);
+  /* Revision3: copied I2C6/NXP/GPIO/IOCFG resource graph and read-only pin
+   * inspection, no I2C transfer or mux/power operation. Only first4KiB of each
+   * returned FDT range is CPU-mapped. Read requires BSP/APPLICATION and a guard
+   * proving powered GPIO/IOCFG and pin-writer exclusion for the whole call.
+   * Guard/Context/Out are distinct persistent-for-call objects; guard is called
+   * before and after the two masked captures. Mode1/EH bit0 are checked; other
+   * inherited fields are reported, not electrically qualified. No lease persists.
+   * EBS/guard/error/change leaves Out untouched; no entry-time register reads. */
+  EFI_STATUS (EFIAPI *GetI2cResources)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_RESOURCES *);
+  EFI_STATUS (EFIAPI *ReadI2cPins)(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *,
+    DALI_USB_RESOURCE_GUARD Guard, VOID *Context, struct dali_i2c6_pin_snapshot *Out);
 };

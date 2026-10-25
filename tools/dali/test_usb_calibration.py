@@ -24,6 +24,10 @@ class UsbCalibrationTests(unittest.TestCase):
         self.check_fixture('usb_vusb_fdt_test.c', 'production UEFI MT6373 VUSB FDT graph',
                            'saved Dali FDT MT6373 VUSB supply acquisition')
 
+    def test_actual_fdt_i2c_resources(self):
+        self.check_fixture('usb_i2c_fdt_test.c', 'production UEFI I2C6 pin/reset resource graph',
+                           'saved Dali FDT I2C6 pin/reset graph acquisition')
+
     def check_fixture(self, fixture, marker, saved_marker):
         cc = shutil.which(os.environ.get('CC', 'clang'))
         self.assertIsNotNone(cc)
@@ -53,7 +57,9 @@ typedef uint64_t EFI_STATUS; typedef uint16_t UINT16;
             names = {'CheckHeader': 'check_header', 'TotalSize': 'totalsize',
                      'GetProp': 'getprop', 'PathOffset': 'path_offset',
                      'StringListSearch': 'stringlist_search', 'StringListCount': 'stringlist_count',
-                     'ParentOffset': 'parent_offset', 'NextNode': 'next_node', '32ToCpu': None}
+                     'ParentOffset': 'parent_offset', 'NextNode': 'next_node',
+                     'FirstPropertyOffset': 'first_property_offset', 'NextPropertyOffset': 'next_property_offset',
+                     '32ToCpu': None}
             shim = '#pragma once\n#include <libfdt.h>\n'
             for name, actual in names.items():
                 shim += f'#define Fdt{name} ' + ('fdt32_to_cpu' if actual is None else f'fdt_{actual}') + '\n'
@@ -76,6 +82,7 @@ typedef uint64_t EFI_STATUS; typedef uint16_t UINT16;
                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbCalibration.c'),
                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbClockResources.c'),
                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbVusbResources.c'),
+                              str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbI2cResources.c'),
                               str(DEVICE / 'drivers/DaliUsb/DaliUsbCalibration.c'),
                               str(ROOT / 'tools/dali/fixtures' / fixture),
                               *objects, '-o', str(binary)]

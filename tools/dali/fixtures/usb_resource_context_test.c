@@ -6,6 +6,7 @@
 #include "usb_clock_fdt_test.c"
 #undef main
 #include "usb_vusb_fdt_fixture.h"
+#include "usb_i2c_fdt_fixture.h"
 #include "../../../Platforms/Xiaomi/daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.c"
 #include <stdarg.h>
 
@@ -15,10 +16,10 @@ EFI_GUID gDaliUsbResourceContextProtocolGuid = {.Data1=1};
 EFI_GUID gEfiEventExitBootServicesGuid = {.Data1=2};
 static EFI_BOOT_SERVICES bs;
 static EFI_DXE_SERVICES ds;
-static EFI_GCD_MEMORY_SPACE_DESCRIPTOR desc[5];
-static const UINT64 pages[] = {0x1c016000,0x10000000,0x10001000,0x131b0000,0x16640000};
-static BOOLEAN cpu_mapped[5];
-static BOOLEAN cpu_cached[5], gcd_sync_shortcut;
+static EFI_GCD_MEMORY_SPACE_DESCRIPTOR desc[9];
+static const UINT64 pages[] = {0x1c016000,0x10000000,0x10001000,0x131b0000,0x16640000,0x1002d000,0x13110000,0x13170000,0x16410000};
+static BOOLEAN cpu_mapped[9];
+static BOOLEAN cpu_cached[9], gcd_sync_shortcut;
 static UINTN operation, fail_at, arm_calls, freed, event_calls, install_calls, cache_flushes;
 static BOOLEAN applied_error, no_pool, no_event, no_publish, mutate_copy, bad_address, bad_final;
 static EFI_TPL current_tpl;
@@ -28,10 +29,13 @@ static DALI_USB_RESOURCE_CONTEXT_PROTOCOL *published;
 static EFI_HANDLE image = (EFI_HANDLE)(UINTN)0x1234;
 static void reset(void);
 static void entry(EFI_STATUS expected);
+static UINT32 pin_mmio_read(UINTN);
+static void pin_reset(void);
 #include "usb_resource_power_fixture.h"
+#include "usb_resource_pin_fixture.h"
 
 static UINTN index_of(UINT64 page) {
-  for (UINTN i=0;i<5;i++) { if (pages[i]==page) { return i; } }
+  for (UINTN i=0;i<9;i++) { if (pages[i]==page) { return i; } }
   assert(0); return 0;
 }
 static BOOLEAN before(void) { operation++; return operation==fail_at && !applied_error; }
@@ -105,10 +109,10 @@ static EFI_STATUS EFIAPI publish(EFI_HANDLE *handle,...) {
 static void reset(void) {
   // Test process cleanup only; firmware deliberately never frees this context.
   free(mContext.Snapshot); memset(&mContext,0,sizeof mContext);
-  power_reset();
+  power_reset(); memset(&mI2c,0,sizeof mI2c);
   memset(desc,0,sizeof desc); memset(cpu_mapped,0,sizeof cpu_mapped);
   memset(cpu_cached,0,sizeof cpu_cached); gcd_sync_shortcut=FALSE;
-  for (UINTN i=0;i<5;i++) { desc[i].BaseAddress=pages[i]; desc[i].Length=4096; }
+  for (UINTN i=0;i<9;i++) { desc[i].BaseAddress=pages[i]; desc[i].Length=4096; }
   operation=fail_at=arm_calls=freed=event_calls=install_calls=cache_flushes=0;
   applied_error=no_pool=no_event=no_publish=mutate_copy=bad_address=bad_final=FALSE;
   current_tpl=TPL_APPLICATION; ebs=NULL; ebs_context=NULL; published=NULL;
@@ -119,7 +123,7 @@ static void reset(void) {
   ds.GetMemorySpaceDescriptor=get_desc; ds.AddMemorySpace=add_space;
   ds.AllocateMemorySpace=allocate_space; ds.SetMemorySpaceAttributes=set_attrs;
   // FreeMemorySpace/RemoveMemorySpace intentionally absent: calling them faults.
-  vusb_fixture();
+  vusb_fixture(); add_i2c_fixture();
 }
 static void unchanged(EFI_STATUS expected) {
   DALI_USB_CLOCK_RESOURCES out,old; memset(&out,0xa5,sizeof out); old=out;
@@ -135,8 +139,8 @@ static void entry(EFI_STATUS expected) {
 }
 static void success(void) {
   reset(); entry(EFI_SUCCESS); UINTN count=operation;
-  assert(count==35 && arm_calls==5 && mContext.PageCount==5 && mContext.Status.MappedPages==5 && mContext.Status.MappingAttempts==5);
-  for (UINTN i=0;i<5;i++) { assert(cpu_mapped[i] && desc[i].ImageHandle==image && desc[i].Attributes==EFI_MEMORY_UC); }
+  assert(count==63 && arm_calls==9 && mContext.PageCount==9 && mContext.Status.MappedPages==9 && mContext.Status.MappingAttempts==9);
+  for (UINTN i=0;i<9;i++) { assert(cpu_mapped[i] && desc[i].ImageHandle==image && desc[i].Attributes==EFI_MEMORY_UC); }
   DALI_USB_CLOCK_RESOURCES out; assert(published->GetClockResources(published,&out)==EFI_SUCCESS); check(&out);
   assert(mContext.Snapshot!=tree && !memcmp(mContext.Snapshot,tree,sizeof tree));
   memset(tree,0,sizeof tree); assert(published->GetClockResources(published,&out)==EFI_SUCCESS); check(&out);
@@ -148,13 +152,17 @@ static void success(void) {
   assert(published->GetStatus(published,&status)==EFI_UNSUPPORTED && !memcmp(&status,&old,sizeof status));
   for (UINTN n=1;n<=count;n++) { for (unsigned applied=0;applied<2;applied++) {
     reset(); fail_at=n; applied_error=(BOOLEAN)applied; entry(EFI_DEVICE_ERROR);
-    assert(operation==n && mContext.Status.MappingAttempts>=1 && mContext.Status.MappingAttempts<=5 &&
+    assert(operation==n && mContext.Status.MappingAttempts>=1 && mContext.Status.MappingAttempts<=9 &&
       mContext.Status.MappedPages<mContext.Status.MappingAttempts && freed==0);
     // A failed mapping is never counted complete, even when it took effect.
     for (UINTN i=0;i<mContext.Status.MappedPages;i++) { assert(cpu_mapped[i] && desc[i].ImageHandle==image); }
   } }
 }
 static void refusals(void) {
+  for (UINTN i=5;i<9;i++) {
+    reset(); desc[i].ImageHandle=(EFI_HANDLE)(UINTN)3; entry(EFI_ACCESS_DENIED);
+    assert(mContext.Status.MappingAttempts==i+1 && mContext.Status.MappedPages==i && arm_calls==i && pin_reads==0);
+  }
   for (unsigned kind=0;kind<8;kind++) {
     reset(); desc[0].GcdMemoryType=EfiGcdMemoryTypeMemoryMappedIo; desc[0].Capabilities=EFI_MEMORY_UC;
     switch(kind) {
@@ -176,14 +184,16 @@ static void refusals(void) {
   reset(); mutate_copy=TRUE; entry(EFI_COMPROMISED_DATA); assert(operation==0 && !mContext.Status.SnapshotValid);
   reset(); text(paths[0],"status","disabled"); entry(EFI_UNSUPPORTED); assert(operation==0);
   reset(); cell(RAIL,"regulator-always-on",1); entry(EFI_UNSUPPORTED); assert(operation==0 && power_commands==0);
+  reset(); cell(I2C,"sda-gpio-id",104); entry(EFI_UNSUPPORTED); assert(operation==0 && power_commands==0 && pin_reads==0);
+  pin_failure(EFI_UNSUPPORTED); assert(pin_guard_calls==0 && pin_reads==0);
   reset(); fdt_set_magic(tree,0); entry(EFI_COMPROMISED_DATA); assert(operation==0);
   reset(); fdt_set_totalsize(tree,sizeof tree+1); entry(EFI_COMPROMISED_DATA); assert(operation==0);
   reset(); assert(Prepare(tree,39)==EFI_COMPROMISED_DATA && operation==0);
   reset(); no_event=TRUE; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_SUCCESS &&
-    published==NULL && install_calls==0 && mContext.Status.InitializationStatus==EFI_OUT_OF_RESOURCES && arm_calls==5 && freed==0);
+    published==NULL && install_calls==0 && mContext.Status.InitializationStatus==EFI_OUT_OF_RESOURCES && arm_calls==9 && freed==0);
   no_event=FALSE; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_ALREADY_STARTED && install_calls==0);
   reset(); no_publish=TRUE; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_SUCCESS &&
-    published==NULL && ebs && arm_calls==5 && freed==0 && mContext.Status.InitializationStatus==EFI_OUT_OF_RESOURCES);
+    published==NULL && ebs && arm_calls==9 && freed==0 && mContext.Status.InitializationStatus==EFI_OUT_OF_RESOURCES);
   no_publish=FALSE; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_ALREADY_STARTED && install_calls==1);
   ebs(NULL,NULL); assert(mContext.Status.BootServicesClosed);
   reset(); current_tpl=TPL_CALLBACK; assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_SUCCESS &&
@@ -194,25 +204,27 @@ static void refusals(void) {
 }
 static void inherited(void) {
   reset();
-  for (UINTN i=0;i<5;i++) {
+    for (UINTN i=0;i<9;i++) {
     desc[i].GcdMemoryType=EfiGcdMemoryTypeMemoryMappedIo; desc[i].Capabilities=EFI_MEMORY_UC|EFI_MEMORY_WB;
     desc[i].Attributes=EFI_MEMORY_UC|(i%2 ? EFI_MEMORY_XP:0);
   }
-  entry(EFI_SUCCESS); assert(operation==25 && arm_calls==5);
-  for (UINTN i=0;i<5;i++) { assert(cpu_mapped[i] && desc[i].Attributes==(EFI_MEMORY_UC|(i%2 ? EFI_MEMORY_XP:0))); }
+  entry(EFI_SUCCESS); assert(operation==45 && arm_calls==9);
+  for (UINTN i=0;i<9;i++) { assert(cpu_mapped[i] && desc[i].Attributes==(EFI_MEMORY_UC|(i%2 ? EFI_MEMORY_XP:0))); }
   reset(); // GCD has no cache attributes, but the old CPU mapping is WB.
-  for (UINTN i=0;i<5;i++) { cpu_mapped[i]=TRUE; cpu_cached[i]=TRUE; }
-  entry(EFI_SUCCESS); assert(cache_flushes==5 && arm_calls==5);
+  for (UINTN i=0;i<9;i++) { cpu_mapped[i]=TRUE; cpu_cached[i]=TRUE; }
+  entry(EFI_SUCCESS); assert(cache_flushes==9 && arm_calls==9);
   reset(); // CPU map must still be established if GCD only changes metadata.
-  gcd_sync_shortcut=TRUE; entry(EFI_SUCCESS); assert(arm_calls==5);
-  for (UINTN i=0;i<5;i++) { assert(cpu_mapped[i]); }
+  gcd_sync_shortcut=TRUE; entry(EFI_SUCCESS); assert(arm_calls==9);
+  for (UINTN i=0;i<9;i++) { assert(cpu_mapped[i]); }
+  reset(); desc[5].GcdMemoryType=EfiGcdMemoryTypeMemoryMappedIo; desc[5].Capabilities=EFI_MEMORY_UC; desc[5].Attributes=EFI_MEMORY_UC;
+  entry(EFI_SUCCESS); assert(arm_calls==9 && operation==61); // Initial platform GPIO page.
 }
 int main(int argc,char **argv) {
-  assert(ClockGraphMain(argc,argv)==0); success(); refusals(); inherited(); power_protocol_tests(); reset();
+  assert(ClockGraphMain(argc,argv)==0); success(); refusals(); inherited(); power_protocol_tests(); pin_protocol_tests(); reset();
   if (argc==2) {
     FILE *f=fopen(argv[1],"rb"); assert(f && fseek(f,0,SEEK_END)==0); long length=ftell(f); assert(length>40);
     rewind(f); void *saved=malloc((size_t)length); assert(saved && fread(saved,1,(size_t)length,f)==(size_t)length); fclose(f);
-    mContext.Image=image; assert(Prepare(saved,(UINTN)length)==EFI_SUCCESS && arm_calls==5); free(saved);
+    mContext.Image=image; assert(Prepare(saved,(UINTN)length)==EFI_SUCCESS && arm_calls==9); free(saved);
     puts("PASS: saved Dali FDT private context with modeled CPU/GCD mappings");
   }
   free(mContext.Snapshot); mContext.Snapshot=NULL;

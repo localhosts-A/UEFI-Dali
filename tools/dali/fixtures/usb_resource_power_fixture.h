@@ -20,6 +20,7 @@ UINT32 EFIAPI InterlockedCompareExchange32(volatile UINT32 *value,UINT32 compare
 }
 VOID EFIAPI MemoryFence(VOID) {}
 UINT32 EFIAPI MmioRead32(UINTN address) {
+  if(address<0x1c01a000 || address>=0x1c01a8ff) return pin_mmio_read(address);
   assert(current_tpl==TPL_HIGH_LEVEL && address>=0x1c01a000 && address<0x1c01a8ff);
   UINTN offset=address-0x1c01a000;
   if(offset==0) return 1;
@@ -60,6 +61,7 @@ static void power_on_restore(void) {
   }
 }
 static void power_reset(void) {
+  pin_reset();
   memset(&mVusb,0,sizeof mVusb); mBusy=0; mClosing=FALSE; mOwner=mReserved=NULL;
   memset(power5,0,sizeof power5); memset(power14,0,sizeof power14);
   power5[8]=0x10; power5[9]=0x73; power5[0xb]=0x10;
@@ -86,7 +88,7 @@ static void power_failed_output(DALI_USB_VUSB_TOKEN *token,EFI_STATUS expected) 
   assert(power_acquire(token,&info)==expected && !memcmp(&info,&old,sizeof info));
 }
 static void power_protocol_tests(void) {
-  reset(); entry(EFI_SUCCESS); assert(power_commands==0 && mProtocol.Revision==2);
+  reset(); entry(EFI_SUCCESS); assert(power_commands==0 && mProtocol.Revision==3);
   DALI_USB_VUSB_RESOURCES desc; assert(mProtocol.GetVusbResources(&mProtocol,&desc)==EFI_SUCCESS && desc.SpmiDeviceMask==0x85c0);
   DALI_USB_VUSB_TOKEN a={0},b={0}; DALI_USB_VUSB_INFO info;
   current_tpl=TPL_NOTIFY; power_failed_output(&a,EFI_UNSUPPORTED); assert(!a.Active && !power_commands);

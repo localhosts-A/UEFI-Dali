@@ -9,6 +9,7 @@
   UsbCalibration.c
   UsbClockResources.c
   UsbVusbResources.c
+  UsbI2cResources.c
 [Packages]
   MdePkg/MdePkg.dec
   daliPkg/dali.dec

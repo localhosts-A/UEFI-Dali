@@ -4,11 +4,13 @@
 #include <Protocol/DaliUsbResourceContext.h>
 #include <Guid/EventGroup.h>
 #include <Library/ArmMmuLib.h>
+#include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/DxeServicesTableLib.h>
 #include <Library/DaliUsbPmicLib.h>
 #include <Library/FdtLib.h>
+#include <Library/IoLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/Mt6991PlatformLib.h>
 #include <Library/SynchronizationLib.h>
@@ -16,7 +18,7 @@
 #include <DaliUsbVusb.h>
 
 #define PAGE_BYTES  4096U
-#define MAX_PAGES   (DaliUsbClockBankCount * 2)
+#define MAX_PAGES   (DaliUsbClockBankCount * 2 + 4)
 STATIC struct {
   DALI_USB_RESOURCE_CONTEXT_STATUS Status;
   DALI_USB_CLOCK_RESOURCES Clocks;
@@ -36,13 +38,16 @@ STATIC struct {
   VOID *GuardContext;
   volatile UINT32 Busy;
 } mVusb;
+STATIC DALI_USB_I2C_RESOURCES mI2c;
 
 STATIC EFI_STATUS EFIAPI ReadStatus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_RESOURCE_CONTEXT_STATUS *Out);
 STATIC EFI_STATUS EFIAPI ReadClocks (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_CLOCK_RESOURCES *Out);
 STATIC EFI_STATUS EFIAPI ReadVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_VUSB_RESOURCES *Out);
 STATIC EFI_STATUS EFIAPI AcquireVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_VUSB_TOKEN *, DALI_USB_VUSB_GUARD, VOID *, DALI_USB_VUSB_INFO *);
 STATIC EFI_STATUS EFIAPI ReleaseVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_VUSB_TOKEN *);
-STATIC DALI_USB_RESOURCE_CONTEXT_PROTOCOL mProtocol = {2, ReadStatus, ReadClocks, ReadVusb, AcquireVusb, ReleaseVusb};
+STATIC EFI_STATUS EFIAPI ReadI2c (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_I2C_RESOURCES *);
+STATIC EFI_STATUS EFIAPI ReadPins (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_RESOURCE_GUARD, VOID *, struct dali_i2c6_pin_snapshot *);
+STATIC DALI_USB_RESOURCE_CONTEXT_PROTOCOL mProtocol = {3, ReadStatus, ReadClocks, ReadVusb, AcquireVusb, ReleaseVusb, ReadI2c, ReadPins};
 
 STATIC EFI_STATUS EFIAPI ReadStatus (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_RESOURCE_CONTEXT_STATUS *Out) {
   if (This != &mProtocol || Out == NULL) { return EFI_INVALID_PARAMETER; }
@@ -139,6 +144,44 @@ STATIC EFI_STATUS EFIAPI ReleaseVusb (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, 
   }
   return PowerLeave (Status);
 }
+STATIC EFI_STATUS EFIAPI ReadI2c (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This, DALI_USB_I2C_RESOURCES *Out) {
+  if (This != &mProtocol || Out == NULL) { return EFI_INVALID_PARAMETER; }
+  if (mContext.Status.BootServicesClosed) { return EFI_UNSUPPORTED; }
+  if (EFI_ERROR (mContext.Status.InitializationStatus)) { return mContext.Status.InitializationStatus; }
+  *Out = mI2c; return EFI_SUCCESS;
+}
+STATIC int PinRead32 (VOID *Context, UINT32 Offset, UINT32 *Out) {
+  CONST DALI_USB_MMIO_RANGE *Range = Context;
+  if (mContext.Status.BootServicesClosed) { return USB_UNSUPPORTED; }
+  if ((Offset & 3) || Range->Size < 4 || Offset > PAGE_BYTES - 4 || Offset > Range->Size - 4) { return USB_RANGE; }
+  MemoryFence ();
+  UINT32 Value = MmioRead32 ((UINTN)Range->Base + Offset);
+  MemoryFence ();
+  if (mContext.Status.BootServicesClosed) { return USB_UNSUPPORTED; }
+  *Out = Value; return USB_OK;
+}
+STATIC VOID PinBarrier (VOID *Context) { (VOID)Context; MemoryFence (); }
+STATIC EFI_STATUS PinGuard (DALI_USB_RESOURCE_GUARD Guard, VOID *Context) {
+  EFI_STATUS Status = Guard (Context);
+  return mContext.Status.BootServicesClosed ? EFI_UNSUPPORTED : Status;
+}
+STATIC EFI_STATUS EFIAPI ReadPins (DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This,
+  DALI_USB_RESOURCE_GUARD Guard, VOID *Context, struct dali_i2c6_pin_snapshot *Out) {
+  if (This != &mProtocol || Guard == NULL || Out == NULL) { return EFI_INVALID_PARAMETER; }
+  EFI_STATUS Status = PowerEnter ();
+  if (EFI_ERROR (Status)) { return Status; }
+  Status = PinGuard (Guard, Context);
+  struct dali_i2c6_pin_snapshot Value;
+  if (!EFI_ERROR (Status)) {
+    struct usb_mmio Gpio = {&mI2c.Gpio, PAGE_BYTES, PinRead32, NULL, PinBarrier, NULL};
+    struct usb_mmio Iocfg = {&mI2c.IocfgLb2, PAGE_BYTES, PinRead32, NULL, PinBarrier, NULL};
+    Status = EfiResult (dali_usb_i2c6_pins_read (&Gpio, &Iocfg, &Value));
+  }
+  if (!EFI_ERROR (Status)) { Status = PinGuard (Guard, Context); }
+  if (mContext.Status.BootServicesClosed) { Status = EFI_UNSUPPORTED; }
+  if (!EFI_ERROR (Status)) { *Out = Value; }
+  return PowerLeave (Status);
+}
 
 STATIC BOOLEAN Covers (EFI_GCD_MEMORY_SPACE_DESCRIPTOR *D, EFI_PHYSICAL_ADDRESS Page) {
   return D->BaseAddress <= Page && D->Length >= PAGE_BYTES && Page - D->BaseAddress <= D->Length - PAGE_BYTES;
@@ -191,15 +234,25 @@ STATIC EFI_STATUS Prepare (CONST VOID *Source, UINTN Capacity) {
   if (EFI_ERROR (Status)) { return Status; }
   Status = DaliUsbReadVusbResources (mContext.Snapshot, Size, &mVusb.Resources);
   if (EFI_ERROR (Status)) { return Status; }
+  Status = DaliUsbReadI2cResources (mContext.Snapshot, Size, &mI2c);
+  if (EFI_ERROR (Status)) { return Status; }
   // The fixed SEC arena is stable during this BSP DXE entry. Also reject any
   // observed change while copying. Subsequent source changes cannot modify our
   // private snapshot; no API returns its pointer, and no code writes it again.
   if (CompareMem (mContext.Snapshot, Source, Size) != 0) { return EFI_COMPROMISED_DATA; }
   mContext.Status.SnapshotValid = TRUE; mContext.Clocks = Clocks;
-  for (UINTN I = 0; I < DaliUsbClockBankCount; I++) {
-    UINT64 End = (UINT64)Clocks.Bank[I].Base + Clocks.Bank[I].Size;
-    if (Clocks.Bank[I].Size == 0 || End > 0x100000000ULL) { return EFI_COMPROMISED_DATA; }
-    for (EFI_PHYSICAL_ADDRESS Page = Clocks.Bank[I].Base & ~(EFI_PHYSICAL_ADDRESS)(PAGE_BYTES - 1); Page < End; Page += PAGE_BYTES) {
+  DALI_USB_MMIO_RANGE Ranges[DaliUsbClockBankCount + 4];
+  for (UINTN I = 0; I < DaliUsbClockBankCount; I++) { Ranges[I] = Clocks.Bank[I]; }
+  // GPIO already has an initial platform mapping; claim/recheck it with the
+  // same GCD/CPU rules. The remaining three pages are absent from that map.
+  Ranges[DaliUsbClockBankCount] = mI2c.Gpio;
+  Ranges[DaliUsbClockBankCount + 1] = mI2c.IocfgLb2;
+  Ranges[DaliUsbClockBankCount + 2] = (DALI_USB_MMIO_RANGE){mI2c.Controller.Base, PAGE_BYTES};
+  Ranges[DaliUsbClockBankCount + 3] = (DALI_USB_MMIO_RANGE){mI2c.Dma.Base, PAGE_BYTES};
+  for (UINTN I = 0; I < DaliUsbClockBankCount + 4; I++) {
+    UINT64 End = (UINT64)Ranges[I].Base + Ranges[I].Size;
+    if (Ranges[I].Size == 0 || End > 0x100000000ULL) { return EFI_COMPROMISED_DATA; }
+    for (EFI_PHYSICAL_ADDRESS Page = Ranges[I].Base & ~(EFI_PHYSICAL_ADDRESS)(PAGE_BYTES - 1); Page < End; Page += PAGE_BYTES) {
       BOOLEAN Seen = FALSE;
       for (UINTN J = 0; J < mContext.PageCount; J++) { Seen |= mContext.Pages[J] == Page; }
       if (Seen) { continue; }

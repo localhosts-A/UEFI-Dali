@@ -26,7 +26,9 @@ class UsbResourceContextTests(unittest.TestCase):
             names = {'CheckHeader': 'check_header', 'TotalSize': 'totalsize',
                      'GetProp': 'getprop', 'PathOffset': 'path_offset',
                      'StringListSearch': 'stringlist_search', 'StringListCount': 'stringlist_count',
-                     'ParentOffset': 'parent_offset', 'NextNode': 'next_node', '32ToCpu': None}
+                     'ParentOffset': 'parent_offset', 'NextNode': 'next_node',
+                     'FirstPropertyOffset': 'first_property_offset', 'NextPropertyOffset': 'next_property_offset',
+                     '32ToCpu': None}
             # Linux size_t and EDK2 UINTN have equal width but distinct C types
             # on X64. Adapt only the non-public fdt_check_full declaration.
             shim = ('#pragma once\n#define fdt_check_full HostFdtCheckFullDeclaration\n'
@@ -65,10 +67,12 @@ class UsbResourceContextTests(unittest.TestCase):
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbCalibration.c'),
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbClockResources.c'),
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbVusbResources.c'),
+                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbI2cResources.c'),
                                str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPmicLib/UsbPmicLib.c'),
                                str(GENERIC / 'drivers/UsbCore/UsbCore.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbPmif.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbVusb.c'),
+                               str(DEVICE / 'drivers/DaliUsb/DaliUsbI2cPins.c'),
                                str(DEVICE / 'drivers/DaliUsb/DaliUsbCalibration.c'),
                                str(ROOT / 'tools/dali/fixtures/usb_resource_context_test.c'),
                                *objects, '-o', str(target)]

@@ -24,6 +24,8 @@
   DaliUsbLib
   SynchronizationLib
   ArmMmuLib
+  BaseLib
+  IoLib
   BaseMemoryLib
   MemoryAllocationLib
   FdtLib
