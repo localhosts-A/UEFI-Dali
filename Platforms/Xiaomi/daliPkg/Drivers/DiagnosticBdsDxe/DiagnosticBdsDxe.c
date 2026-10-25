@@ -296,16 +296,23 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       }
       DALI_UFS_DIAGNOSTIC_PROTOCOL *Ufs = NULL;
       EFI_HANDLE Controller = NULL;
+      if (Out != NULL) { Out->OutputString (Out, L"UFS: starting physical read-only diagnostic.\r\n"); }
       EFI_STATUS UfsStatus = gBS->SetWatchdogTimer (0, 0, 0, NULL);
       if (!EFI_ERROR (UfsStatus)) { UfsStatus = gBS->LocateProtocol (&gDaliUfsDiagnosticProtocolGuid, NULL, (VOID **)&Ufs); }
       if (!EFI_ERROR (UfsStatus)) { UfsStatus = Ufs->Initialize ((VOID *)(UINTN)DALI_FDT_BASE, &Controller); }
       DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: diagnostic initialization=%r\n", UfsStatus));
+      if (Out != NULL) {
+        UnicodeSPrint (Text, sizeof Text, L"UFS: initialization returned %r; stopping host.\r\n", UfsStatus);
+        Out->OutputString (Out, Text);
+      }
       // Until the generic DarwinBoot handoff exists, this diagnostic must always
       // close the physical host and release DMA before launching the RAM payload.
       if (Ufs != NULL && EFI_ERROR (Ufs->Quiesce ())) {
         DEBUG ((DEBUG_ERROR, "DALI-UFS-HOST: stop failed; refusing XNU/menu handoff\n"));
+        if (Out != NULL) { Out->OutputString (Out, L"UFS: stop failed; menu handoff refused.\r\n"); }
         DiagnosticHalt ();
       }
+      if (Out != NULL) { Out->OutputString (Out, L"UFS: stopped; opening RAM menu.\r\n"); }
     }
     DEBUG ((DEBUG_WARN, "DALI: UEFI_UNIXNU_READY\n"));
     if (LaunchUniXNU () == EFI_ABORTED) { RecoverAfterExit (Out); }

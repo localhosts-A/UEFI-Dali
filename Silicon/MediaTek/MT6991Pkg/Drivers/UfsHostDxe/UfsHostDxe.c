@@ -7,6 +7,7 @@
 #include <Library/IoLib.h>
 #include <Library/PcdLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiLib.h>
 #include <Library/Mt6991UfsController.h>
 #include <Library/Mt6991UfsPolicy.h>
 #include <Protocol/DevicePath.h>
@@ -28,6 +29,10 @@ STATIC UINT32 mTrl, mTmrl;
 
 STATIC UINT32 IoRead (UINTN Address, VOID *Context) { (VOID)Context; return MmioRead32 (Address); }
 STATIC BOOLEAN IoWrite (UINTN Address, UINT32 Value, VOID *Context) {
+  // Control-plane breadcrumbs precede command submission, never the completion
+  // polling loop. They use existing arguments and add no diagnostic MMIO reads.
+  if (Address == HCI + 0x34) { Print (L"UFS: control HCE=%x\r\n", Value); }
+  if (Address == HCI + 0x90) { Print (L"UFS: control UIC=%x\r\n", Value); }
   (VOID)Context; MmioWrite32 (Address, Value); MemoryFence (); return TRUE;
 }
 STATIC VOID Fence (VOID *Context) { (VOID)Context; MemoryFence (); }
@@ -36,7 +41,10 @@ STATIC UINT64 Sip (UINT32 Service, UINT32 Selector, UINT32 A, UINT32 B, VOID *Co
   ARM_SMC_ARGS Args;
   (VOID)Context; ZeroMem (&Args, sizeof Args);
   Args.Arg0 = Service; Args.Arg1 = Selector; Args.Arg2 = A; Args.Arg3 = B;
-  ArmCallSmc (&Args); return Args.Arg0;
+  Print (L"UFS: SiP selector=%x args=%x/%x\r\n", Selector, A, B);
+  ArmCallSmc (&Args);
+  Print (L"UFS: SiP returned=%lx\r\n", Args.Arg0);
+  return Args.Arg0;
 }
 
 STATIC EFI_STATUS StopController (VOID) {
@@ -239,8 +247,11 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   *Controller = NULL;
   if (mAttempted) { return EFI_ALREADY_STARTED; }
   mAttempted = TRUE;
+  Print (L"UFS: controller start run=%a\r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken));
   MT6991_UFS_IO Io = { IoRead, IoWrite, Fence, Stall, Sip, NULL };
   MT6991_UFS_RESULT Result = Mt6991UfsStart (Fdt, TRUE, FixedPcdGetPtr (PcdDaliUfsStorageToken), &Io, &mControl);
+  Print (L"UFS: controller result=%u stage=%u fault=%lx/%x\r\n",
+    Result, mControl.Stage, mControl.FaultAddress, mControl.FaultValue);
   DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a link=%u stage=%u fault=%lx/%x\n",
     (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Result, mControl.Stage, mControl.FaultAddress, mControl.FaultValue));
   DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a reset low=%u release-attempt=%u released=%u cleanup=%u/%lx sip=%x/%x/%x/%lx\n",
@@ -265,16 +276,27 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
       S->LayerErrors[2], S->LayerErrors[3], S->LayerErrors[4]));
   }
   if (Result != Mt6991UfsLinkReady) { return EFI_DEVICE_ERROR; }
+  Print (L"UFS: DMA initialize\r\n");
   EFI_STATUS Status = Mt6991UfsDmaUefiInit (&mDma, 0xFFFFFFFFULL);
+  Print (L"UFS: DMA result=%r\r\n", Status);
   if (EFI_ERROR (Status)) { StopController (); return Status; }
   mClosed = FALSE;
+  Print (L"UFS: install host protocols\r\n");
   Status = gBS->InstallMultipleProtocolInterfaces (&mController,
     &gEdkiiUfsHostControllerProtocolGuid, &mHost, &gEdkiiUfsHcPlatformProtocolGuid, &mPlatform,
     &gEfiDevicePathProtocolGuid, &mPath, NULL);
-  if (!EFI_ERROR (Status)) { Status = gBS->ConnectController (mController, NULL, NULL, TRUE); }
+  if (!EFI_ERROR (Status)) {
+    Print (L"UFS: connect PassThru / SCSI / BlockIo\r\n");
+    Status = gBS->ConnectController (mController, NULL, NULL, TRUE);
+  }
+  Print (L"UFS: connect result=%r\r\n", Status);
   *Controller = mController;
   DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a connect=%r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Status));
-  if (!EFI_ERROR (Status)) { Status = DaliUfsReadOnlyDiagnostics (mController, FixedPcdGetPtr (PcdDaliUfsStorageToken), mCompletedSync); }
+  if (!EFI_ERROR (Status)) {
+    Print (L"UFS: read-only BlockIo diagnostics\r\n");
+    Status = DaliUfsReadOnlyDiagnostics (mController, FixedPcdGetPtr (PcdDaliUfsStorageToken), mCompletedSync);
+    Print (L"UFS: BlockIo result=%r\r\n", Status);
+  }
   if (EFI_ERROR (Status)) { StopController (); }
   return Status;
 }

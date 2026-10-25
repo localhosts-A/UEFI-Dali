@@ -84,6 +84,14 @@ also rejects unrelated status arriving before ACK. The unchanged 500 ms bound,
 device-presence check, fatal handling and no-replay policy remain mandatory.
 This new control policy still requires a fresh-token hardware trial.
 
+The subsequent e2e5c78/49a0b99b trial showed text/color bars without the menu.
+The 120-second observation expired; original-only recovery then restored the
+full original boot_b, Android B/root and all 18 hashes. No raw console survived
+the forced restart, so control/DMA/media progress remains unknown. Visible
+breadcrumbs now identify control commands and the DMA/connect/BlockIo/stop
+boundaries without adding MMIO reads, commands or completion-loop output.
+They do not grant hardware qualification.
+
 The existing off/register-probe packager verifies the compiled disabled host
 inside the actual FD and refuses enabled physical-host builds. The separate
 `DALI_UFS_PROFILE=read-only-blockio` profile requires `DALI_UFS_READ_ONLY=true`,

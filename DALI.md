@@ -135,6 +135,19 @@ latched status, no early layer reads/ACK, exact-deadline completion, a real
 completion injected 10 us late during stop, and the completion/ACK race.
 This deferred handling has no hardware qualification yet.
 
+The e2e5c78 trial (token prefix 49a0b99b) displayed the firmware text and color
+bars but never reached the RAM menu within 120 seconds. Manual forced fastboot
+recovery restored complete original boot_b, Android B/root and all 18 hashes;
+independent comparison also rehashed the original backup bytes. No raw console
+survived this recovery, so the last controller/DMA/media stage is unknown.
+
+The next diagnostic adds visible breadcrumbs before control-plane SiP/HCE/UIC
+requests and around DMA initialization, protocol installation, connection,
+BlockIo diagnostics and final stop. They use existing arguments, add no MMIO
+reads or commands and do not log inside completion polling loops. The last
+visible line is an observation aid, never evidence of completed I/O. All normal
+disabled profiles retain the RAM baseline without executing these diagnostics.
+
 ## Validated UEFI milestone (2026-10-24)
 
 Run8 passed the strict collector with both `--require-unixnu` and
