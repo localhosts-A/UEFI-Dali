@@ -18,6 +18,7 @@ PATCH_NAMES = (
     "Xhci-Native-Safety.patch",
     "Xhci-Native-Short-Event.patch",
     "Xhci-Native-MTK-Scheduler.patch",
+    "UsbHub-MultiTT.patch",
 )
 
 
@@ -44,10 +45,11 @@ def main():
     if not expected_paths:
         raise SystemExit("the Mu_Basecore patch set has no file records")
     status = git(mu, "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=all")
-    changed = set(git(mu, "diff", "--name-only", "HEAD", "--ignore-submodules=all").splitlines())
-    untracked = [line for line in status.splitlines() if line.startswith("?? ")]
-    if untracked:
-        raise SystemExit(f"Mu_Basecore has untracked non-build files: {untracked}")
+    untracked = {line[3:] for line in status.splitlines() if line.startswith("?? ")}
+    unexpected_untracked = untracked - expected_paths
+    if unexpected_untracked:
+        raise SystemExit(f"Mu_Basecore has untracked files outside the patch set: {sorted(unexpected_untracked)}")
+    changed = set(git(mu, "diff", "--name-only", "HEAD", "--ignore-submodules=all").splitlines()) | untracked
     if not changed:
         print("PASS: Mu_Basecore tracked worktree is clean")
         return

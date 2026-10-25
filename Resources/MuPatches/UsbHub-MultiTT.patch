@@ -1,0 +1,230 @@
+diff --git a/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBus.h b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBus.h
+index e229b1624a..6258e91bbb 100644
+--- a/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBus.h
++++ b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBus.h
+@@ -255,6 +255,11 @@ struct _USB_INTERFACE {
+   // MU_CHANGE [END] - 168923
+ };
+ 
++EFI_STATUS
++UsbHubSelectMultiTtSetting (
++  IN OUT USB_INTERFACE  *HubIf
++  );
++
+ //
+ // Stands for the current USB Bus
+ //
+diff --git a/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
+index d7bd52fbc2..58133e4c2a 100644
+--- a/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
++++ b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
+@@ -23,6 +23,7 @@
+   UsbEnumer.c
+   UsbEnumer.h
+   UsbBus.c
++  UsbHubMultiTt.c
+   UsbHub.c
+   ComponentName.c
+   UsbUtility.h
+diff --git a/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbHub.c b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbHub.c
+index c01210e027..bd3ba37f8f 100644
+--- a/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbHub.c
++++ b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbHub.c
+@@ -579,8 +579,25 @@ UsbHubInit (
+   // Locate the interrupt endpoint for port change map
+   //
+   HubIf->IsHub = FALSE;
+-  Setting      = HubIf->IfSetting;
+   HubDev       = HubIf->Device;
++
++  // Read/validate the hub descriptor before changing its interface mode.
++  // A multi-TT hub defaults to single-TT alt 0; activate alt 1 before any
++  // downstream port traffic so the hub and xHCI agree on MTT.
++  HubDesc = (EFI_USB_HUB_DESCRIPTOR *)HubDescBuffer;
++  Status  = UsbHubReadDesc (HubDev, HubDesc);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "UsbHubInit: failed to read HUB descriptor - %r\n", Status));
++    return Status;
++  }
++
++  Status = UsbHubSelectMultiTtSetting (HubIf);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "UsbHubInit: failed to select multi-TT mode - %r\n", Status));
++    return Status;
++  }
++
++  Setting      = HubIf->IfSetting;
+   EpDesc       = NULL;
+   NumEndpoints = Setting->Desc.NumEndpoints;
+ 
+@@ -602,17 +619,6 @@ UsbHubInit (
+   }
+ 
+   //
+-  // The length field of descriptor is UINT8 type, so the buffer
+-  // with 256 bytes is enough to hold the descriptor data.
+-  //
+-  HubDesc = (EFI_USB_HUB_DESCRIPTOR *)HubDescBuffer;
+-  Status  = UsbHubReadDesc (HubDev, HubDesc);
+-
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((DEBUG_ERROR, "UsbHubInit: failed to read HUB descriptor - %r\n", Status));
+-    return Status;
+-  }
+-
+   HubIf->NumOfPort = HubDesc->NumPorts;
+ 
+   DEBUG ((DEBUG_INFO, "UsbHubInit: hub %d has %d ports\n", HubDev->Address, HubIf->NumOfPort));
+diff --git a/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbHubMultiTt.c b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbHubMultiTt.c
+new file mode 100644
+index 0000000000..52278f0571
+--- /dev/null
++++ b/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbHubMultiTt.c
+@@ -0,0 +1,147 @@
++/** @file
++
++  Select the USB 2.0 multiple-transaction-translator mode for a hub.
++
++  Copyright (c) 2026.
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include "UsbBus.h"
++
++STATIC
++BOOLEAN
++UsbHubMultiTtHasInterruptIn (
++  IN USB_INTERFACE_SETTING  *Setting
++  )
++{
++  UINTN              Index;
++  USB_ENDPOINT_DESC  *Endpoint;
++
++  if ((Setting == NULL) || (Setting->Endpoints == NULL)) {
++    return FALSE;
++  }
++
++  for (Index = 0; Index < Setting->Desc.NumEndpoints; Index++) {
++    Endpoint = Setting->Endpoints[Index];
++    if ((Endpoint != NULL) &&
++        ((Endpoint->Desc.EndpointAddress & USB_ENDPOINT_DIR_IN) != 0) &&
++        ((Endpoint->Desc.Attributes & USB_ENDPOINT_TYPE_MASK) == USB_ENDPOINT_INTERRUPT))
++    {
++      return TRUE;
++    }
++  }
++
++  return FALSE;
++}
++
++/**
++  Select alternate setting 1 on a high-speed multiple-TT hub before its ports
++  are enumerated. The default alternate setting remains single-TT. The bus
++  control-transfer path updates HubIf->IfSetting only after the controller
++  successfully applies the interface change.
++
++  If the device does not advertise a valid multi-TT alternate setting, keep the
++  default single-TT mode. A failed SET_INTERFACE is returned so the caller
++  cannot start hub port traffic with a controller context that may disagree
++  with the device.
++
++  @param[in,out] HubIf  Hub interface to configure.
++
++  @retval EFI_SUCCESS      No switch was needed, or multi-TT mode is active.
++  @retval EFI_DEVICE_ERROR The hub/controller state did not match the request.
++  @retval Others           The alternate-setting request failed.
++**/
++EFI_STATUS
++UsbHubSelectMultiTtSetting (
++  IN OUT USB_INTERFACE  *HubIf
++  )
++{
++  USB_INTERFACE_SETTING  *Current;
++  USB_INTERFACE_SETTING  *Alternate;
++  EFI_USB_DEVICE_REQUEST Request;
++  EFI_STATUS             Status;
++  UINT32                 UsbStatus;
++  UINTN                  Index;
++  UINTN                  AlternateIndex;
++
++  if ((HubIf == NULL) || (HubIf->Device == NULL) || (HubIf->Device->DevDesc == NULL) ||
++      (HubIf->IfDesc == NULL) || (HubIf->IfSetting == NULL))
++  {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Current = HubIf->IfSetting;
++  if ((HubIf->Device->Speed != EFI_USB_SPEED_HIGH) ||
++      (HubIf->Device->DevDesc->Desc.DeviceProtocol != 2) ||
++      (Current->Desc.InterfaceProtocol == 2))
++  {
++    return EFI_SUCCESS;
++  }
++
++  // USB 2.0 multi-TT hubs default to alt 0 / single-TT protocol 1.
++  if (Current->Desc.InterfaceProtocol != 1) {
++    return EFI_SUCCESS;
++  }
++
++  if (HubIf->IfDesc->NumOfSetting > USB_MAX_INTERFACE_SETTING) {
++    return EFI_COMPROMISED_DATA;
++  }
++
++  Alternate = NULL;
++  AlternateIndex = 0;
++  for (Index = 0; Index < HubIf->IfDesc->NumOfSetting; Index++) {
++    USB_INTERFACE_SETTING *Candidate = HubIf->IfDesc->Settings[Index];
++
++    if ((Candidate != NULL) &&
++        (Candidate->Desc.InterfaceNumber == Current->Desc.InterfaceNumber) &&
++        (Candidate->Desc.AlternateSetting == 1))
++    {
++      // UsbSelectSetting() selects the first setting with this alternate value.
++      Alternate = Candidate;
++      AlternateIndex = Index;
++      break;
++    }
++  }
++
++  if ((Alternate == NULL) ||
++      (Alternate->Desc.InterfaceClass != USB_HUB_CLASS_CODE) ||
++      (Alternate->Desc.InterfaceSubClass != USB_HUB_SUBCLASS_CODE) ||
++      (Alternate->Desc.InterfaceProtocol != 2) ||
++      !UsbHubMultiTtHasInterruptIn (Alternate))
++  {
++    return EFI_SUCCESS;
++  }
++
++  if (HubIf->UsbIo.UsbControlTransfer == NULL) {
++    return EFI_UNSUPPORTED;
++  }
++
++  Request.RequestType = USB_REQUEST_TYPE (EfiUsbNoData, USB_REQ_TYPE_STANDARD, USB_TARGET_INTERFACE);
++  Request.Request     = USB_REQ_SET_INTERFACE;
++  Request.Value       = Alternate->Desc.AlternateSetting;
++  Request.Index       = Alternate->Desc.InterfaceNumber;
++  Request.Length      = 0;
++  UsbStatus           = EFI_USB_NOERROR;
++  Status              = HubIf->UsbIo.UsbControlTransfer (
++                          &HubIf->UsbIo,
++                          &Request,
++                          EfiUsbNoData,
++                          USB_GENERAL_DEVICE_REQUEST_TIMEOUT,
++                          NULL,
++                          0,
++                          &UsbStatus
++                          );
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  if ((UsbStatus != EFI_USB_NOERROR) ||
++      (HubIf->IfDesc->ActiveIndex != AlternateIndex) ||
++      (HubIf->IfSetting != Alternate))
++  {
++    return EFI_DEVICE_ERROR;
++  }
++
++  return EFI_SUCCESS;
++}

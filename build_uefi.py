@@ -485,7 +485,7 @@ def main ():
     cleanup_old_build (ctx.device, ctx.device_model, ctx.cleanup)
 
     # Remove Mu_Basecore Patches
-    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "ExitBootServices-Trace.patch", "Timer.patch", "Usb-Bus.patch", "Xhci-Native-Safety.patch", "Xhci-Native-Short-Event.patch", "Xhci-Native-MTK-Scheduler.patch"]:
+    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "ExitBootServices-Trace.patch", "Timer.patch", "Usb-Bus.patch", "Xhci-Native-Safety.patch", "Xhci-Native-Short-Event.patch", "Xhci-Native-MTK-Scheduler.patch", "UsbHub-MultiTT.patch"]:
         handle_git_patch (MU_BASECORE_PATH, patch_name, True)
 
     # Update Local Repo
@@ -506,7 +506,7 @@ def main ():
         sys.exit (1)
 
     # Apply Mu_Basecore Patches
-    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "ExitBootServices-Trace.patch", "Timer.patch", "Usb-Bus.patch", "Xhci-Native-Safety.patch", "Xhci-Native-Short-Event.patch", "Xhci-Native-MTK-Scheduler.patch"]:
+    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "ExitBootServices-Trace.patch", "Timer.patch", "Usb-Bus.patch", "Xhci-Native-Safety.patch", "Xhci-Native-Short-Event.patch", "Xhci-Native-MTK-Scheduler.patch", "UsbHub-MultiTT.patch"]:
         if not handle_git_patch (MU_BASECORE_PATH, patch_name, False):
             logger.error (f"Failed to Apply \"{patch_name}\" Git Patch!")
             sys.exit (1)

@@ -46,8 +46,18 @@ slot teardown. High-bandwidth transactions and MTK reserved context fields are
 checked. Direct full/low-speed root-port periodic endpoints use BPKTS=1 as in the
 MTK reference. Isochronous endpoints remain unsupported by the EDK2 engine;
 the Slot Context MTT bit follows the active hub interface protocol and is set only
-after successful SET_INTERFACE to protocol 2. The source UsbHub driver still
-does not select alternate setting 1, so multi-TT mode is not activated.
+after successful SET_INTERFACE to protocol 2. `UsbHubMultiTt.c` now selects a
+validated high-speed hub alternate setting 1 / interface protocol 2 before the
+hub queues its interrupt or powers downstream ports. Missing or invalid alternate
+settings keep the default single-TT mode; a failed request or controller-context
+update aborts hub initialization. The control-transfer fixture compiles this
+actual selector against mocked USB I/O, and the AArch64 source build verifies the
+object and exported definition in `UsbBusDxe.lib`; it does not model Configure
+Endpoint completion or hub hardware timing. If the device accepts alt 1 but the
+following native Configure Endpoint command fails, the native host latches a
+fault, refuses further submissions, attempts a quiesce, and retains DMA if halt
+cannot be proved. It does not send an automatic SET_INTERFACE rollback through
+an uncertain slot context.
 Native-only guards also exclude PCI binding code from the engine compilation.
 Ordinary PCI source builds retain their own lifecycle.
 
@@ -84,9 +94,7 @@ python tools/dali/build_usb_libraries.py --output ../.outputs/usb-libraries-nati
 ```
 
 This is a callable engine and library checkpoint. It is not a ready MT6991
-hardware backend: the source UsbHub driver still does not select multi-TT
-alternate setting 1, and no Dali production worker currently supplies its
-qualified board policy/DMA provider or calls Start. Native-path QEMU and
-DarwinBoot pre-final-map wiring remain required. The existing PCI/source QEMU
-gate is separate. These files remain outside the default FV and
-hardware_qualified=false.
+hardware backend: no Dali production worker currently supplies its qualified
+board policy/DMA provider or calls Start. Native-path QEMU and DarwinBoot
+pre-final-map wiring remain required. The existing PCI/source QEMU gate is
+separate. These files remain outside the default FV and hardware_qualified=false.

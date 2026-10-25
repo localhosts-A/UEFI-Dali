@@ -56,6 +56,21 @@ def main():
     command = [str(tools / 'BinWrappers/PosixLike/build'), '-p', 'daliPkg/UsbQemu.dsc',
                '-a', 'AARCH64', '-b', 'DEBUG', '-t', 'CLANGPDB', '-n', '4']
     subprocess.run(command, cwd=output, env=env, check=True)
+    usb_bus_dir = output / 'Build/DaliUsbQemu/DEBUG_CLANGPDB/AARCH64/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe'
+    usb_bus_archive = usb_bus_dir / 'OUTPUT/UsbBusDxe.lib'
+    ar = shutil.which('llvm-ar')
+    nm = shutil.which('llvm-nm')
+    if not ar or not nm or not usb_bus_archive.is_file():
+        raise RuntimeError('llvm-ar, llvm-nm and the actual UsbBusDxe archive are required for the multi-TT source gate')
+    members = subprocess.check_output([ar, 't', str(usb_bus_archive)], text=True).splitlines()
+    symbol_output = subprocess.check_output([nm, '--defined-only', str(usb_bus_archive)], text=True)
+    undefined_output = subprocess.check_output([nm, '--undefined-only', str(usb_bus_archive)], text=True)
+    if not any(member.endswith('/UsbHubMultiTt.obj') or member == 'UsbHubMultiTt.obj' for member in members):
+        raise RuntimeError('actual UsbBusDxe archive does not contain UsbHubMultiTt.obj')
+    if not any(line.split()[-1:] == ['UsbHubSelectMultiTtSetting'] for line in symbol_output.splitlines()):
+        raise RuntimeError('actual UsbBusDxe archive does not define UsbHubSelectMultiTtSetting')
+    if 'UsbHub.obj:' not in undefined_output or 'U UsbHubSelectMultiTtSetting' not in undefined_output:
+        raise RuntimeError('actual UsbHub object does not reference the multi-TT selector')
     artifacts = {}
     for name in NAMES:
         image = output / 'Build/DaliUsbQemu/DEBUG_CLANGPDB/AARCH64' / (name + '.efi')
@@ -74,7 +89,16 @@ def main():
                   'Platforms/Xiaomi/daliPkg/UsbQemu.dsc',
                   'Platforms/Xiaomi/daliPkg/Applications/UsbQemuTest/UsbQemuTest.c',
                   'Platforms/Xiaomi/daliPkg/Applications/UsbQemuTest/UsbQemuTest.inf',
-                  'tools/dali/build_usb_qemu.py')},
+                  'tools/dali/build_usb_qemu.py',
+                  'tools/dali/test_usb_hub_multitt.py',
+                  'tools/dali/fixtures/usb_hub_multitt_test.c',
+                  'tools/dali/README-usb-native-host.md',
+                  'Resources/MuPatches/UsbHub-MultiTT.patch')},
+              'usb_hub_multi_tt': {'archive': str(usb_bus_archive),
+                                   'archive_sha256': hashlib.sha256(usb_bus_archive.read_bytes()).hexdigest(),
+                                   'member': next(member for member in members if member.endswith('/UsbHubMultiTt.obj') or member == 'UsbHubMultiTt.obj'),
+                                   'defined_symbol': 'UsbHubSelectMultiTtSetting',
+                                   'referenced_by': 'UsbHub.obj'},
               'mu_reviewed_diff_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=edk)).hexdigest(),
               'mu_basecore_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=edk, text=True).strip(),
               'source_tree': source_tree(root), 'python': sys.version,
