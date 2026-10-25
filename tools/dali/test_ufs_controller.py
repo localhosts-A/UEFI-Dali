@@ -56,12 +56,17 @@ typedef size_t UINTN; typedef char CHAR8; typedef bool BOOLEAN;
 typedef struct {
   uint32_t hci[0x2a00/4], dme[65536], scenario, writes, reads, uics, sips, fences, stalled;
   uint64_t trace[1024]; size_t used; uint32_t reset_assert,reset_deassert,reset_held;
+  uint64_t sip_trace[8]; uint32_t device_low,device_high,low_held,release_waited,flow_errors,error_reads;
+  uint32_t stop_seen,stop_error_reads;
 } Port;
 static uint32_t read32(size_t a, void *ctx) {
   Port *p=ctx; ++p->reads;
   if (a==AO+0x104 || a==AO+4) return 0;
   if (a==AO+0x148) return p->scenario==16 ? 0 : p->reset_assert;
   if (a==AO+0x14c) return p->scenario==16 ? 0 : p->reset_deassert;
+  if (a>=HCI+0x38 && a<=HCI+0x48) {
+    ++p->error_reads; uint32_t value=p->hci[(a-HCI)/4]; p->hci[(a-HCI)/4]=0; return value;
+  }
   return a>=HCI && a<HCI+0x2a00 ? p->hci[(a-HCI)/4] : UINT32_MAX;
 }
 static bool write32(size_t a, uint32_t v, void *ctx) {
@@ -71,10 +76,13 @@ static bool write32(size_t a, uint32_t v, void *ctx) {
   if (a==AO+0x14c) { p->reset_deassert=p->scenario==16 ? p->reset_deassert|v : v; return true; }
   if (a<HCI || a>=HCI+0x2a00) return false;
   unsigned o=(a-HCI)/4;
+  if (a==HCI+0x24 && p->uics && !p->stop_seen) { p->stop_seen=1; p->stop_error_reads=p->error_reads; }
   if (p->scenario==8 && p->writes==8) return false;
   if (a==HCI+0x20) { if (p->scenario!=14) p->hci[o]&=~v; return true; }
   if (a==HCI+0x144) { p->hci[o]=p->scenario==7 ? 1 : 3; return true; }
   if (a==HCI+0x34) {
+    if (v==1 && !p->release_waited) ++p->flow_errors;
+    if (p->scenario==19 && v==0 && p->device_low && !p->device_high) return false;
     if (p->scenario==2 && v==1) v=0;
     if (p->scenario==6 && v==0) return true;
     p->hci[o]=v; p->hci[0x30/4]=v ? 8 : 0;
@@ -91,6 +99,10 @@ static bool write32(size_t a, uint32_t v, void *ctx) {
     else if (v==0x16 && p->scenario!=10) p->hci[0x30/4]|=1;
     p->hci[0x98/4]=p->scenario==4 ? 10 : 0;
     p->hci[0x20/4]|=p->scenario==5 ? 0x10400 : 0x400;
+    if (v==0x16 && (p->scenario==20 || p->scenario==21)) {
+      p->hci[0x20/4]=4; p->hci[0x38/4]=0x80000010;
+      if (p->scenario==21) for (unsigned i=1;i<5;i++) p->hci[(0x38+i*4)/4]=i==1 ? 0x80002000 : 0x80000000+i;
+    }
   }
   return true;
 }
@@ -98,10 +110,19 @@ static void fence(void *ctx) { ++((Port*)ctx)->fences; }
 static void stall(uint32_t us, void *ctx) {
   Port *p=ctx; p->stalled+=us;
   if (us==100) p->reset_held=(p->reset_assert&7)==7;
+  if (us>=10 && p->device_low && !p->device_high && p->hci[0x34/4]==0) p->low_held=1;
+  if (us>=10000 && p->device_high) p->release_waited=1;
 }
 static uint64_t sip(uint32_t svc,uint32_t sel,uint32_t a,uint32_t b,void *ctx) {
-  Port *p=ctx; ++p->sips;
-  if (svc!=0xc2000276 || (sel!=512 && sel!=8) || a>1 || b>1) return UINT64_MAX;
+  Port *p=ctx;
+  if (p->sips<8) p->sip_trace[p->sips]=((uint64_t)sel<<32)|((uint64_t)a<<16)|b;
+  ++p->sips;
+  if (svc!=0xc2000276 || (sel!=512 && sel!=8 && sel!=2) || a>1 || b>1) return UINT64_MAX;
+  if (sel==2) {
+    if (a==0) ++p->device_low;
+    else { ++p->device_high; if (!p->low_held) ++p->flow_errors; }
+    if ((p->scenario==17 && a==0) || (p->scenario==18 && a==1) || p->scenario==22) return UINT64_MAX;
+  }
   return p->scenario==1 ? UINT64_MAX : 0;
 }
 int run(const void *fdt, int enabled, const char *token, unsigned scenario,
@@ -130,6 +151,15 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
   out[23]=p.dme[0xd0a6]; out[24]=p.dme[0xd0a1]; out[25]=p.dme[0xd09e];
   out[26]=p.hci[0x140/4]; out[27]=p.hci[0x160/4]; out[28]=c.SipStatus;
   out[29]=p.reset_assert; out[30]=p.reset_deassert; out[31]=p.reset_held;
+  out[32]=c.DeviceResetAsserted; out[33]=c.DeviceResetReleaseAttempted; out[34]=c.DeviceResetReleased;
+  out[35]=c.DeviceResetCleanupAttempted; out[36]=c.DeviceResetCleanupStatus;
+  out[37]=p.device_low; out[38]=p.device_high; out[39]=p.low_held; out[40]=p.release_waited; out[41]=p.flow_errors;
+  out[42]=c.UicFailure.Captured; out[43]=c.UicFailure.InterruptStatus; out[44]=c.UicFailure.HostStatus; out[45]=c.UicFailure.HostEnable;
+  for (unsigned i=0;i<3;i++) out[46+i]=c.UicFailure.Arguments[i];
+  for (unsigned i=0;i<5;i++) out[49+i]=c.UicFailure.LayerErrors[i];
+  out[54]=p.error_reads; out[55]=c.SipSelector; out[56]=c.SipArg1; out[57]=c.SipArg2;
+  out[58]=p.stop_error_reads; out[59]=p.stop_seen;
+  for (unsigned i=0;i<4;i++) out[60+i]=p.sip_trace[i];
   memcpy(trace,p.trace,sizeof p.trace); return 0;
 }
 ''')
@@ -170,7 +200,7 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
 
     def run_case(self, scenario=0, data=None, enabled=True, token=TOKEN):
         data = self.bindings() if data is None else data
-        out, trace = (ctypes.c_uint64 * 32)(), (ctypes.c_uint64 * 1024)()
+        out, trace = (ctypes.c_uint64 * 64)(), (ctypes.c_uint64 * 1024)()
         self.lib.run(ctypes.create_string_buffer(data), enabled, token, scenario, out, trace)
         return list(out), list(zip(trace[:out[22]:2], trace[1:out[22]:2]))
 
@@ -196,7 +226,7 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
         out, trace = self.run_case()
         self.assertEqual((out[0], out[5], out[6], out[7]), (7, 0, 1, 0))
         self.assertEqual(out[2], 12)
-        self.assertEqual(out[3], 2)
+        self.assertEqual(out[3], 4)
         self.assertEqual(out[23:28], [0xd, 0, 0x100, 0x182, 0x02453070])
         self.assertEqual([v for a, v in trace if a == 0x168a0148], [0x1004, 0x1006, 0x1007])
         self.assertEqual([v for a, v in trace if a == 0x168a014c], [0x2001, 0x2003, 0x2007])
@@ -249,7 +279,7 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
 
     def test_reference_clock_ack_and_timeout_notification(self):
         out, _ = self.run_case(9)
-        self.assertEqual((out[0], out[3]), (7, 4))
+        self.assertEqual((out[0], out[3]), (7, 6))
         out, _ = self.run_case(7)
         self.assertEqual((out[0], out[2], out[3], out[8]), (3, 0, 4, 2))
         self.assertGreaterEqual(out[20], 3000)
@@ -260,3 +290,46 @@ int run(const void *fdt, int enabled, const char *token, unsigned scenario,
         self.assertEqual(out[0], 7)
         self.assertEqual((out[16], out[18]), (3, 3))
         self.assertGreaterEqual(out[20], 200700)
+        self.assertEqual((out[42], out[54], out[58], out[59]), (0, 0, 0, 1))
+
+    def test_device_reset_source_pulse_and_settle_precede_hce_enable(self):
+        out, trace = self.run_case()
+        self.assertEqual(out[32:42], [1, 1, 1, 0, 0, 1, 1, 1, 1, 0])
+        self.assertEqual(out[60:64], [512 << 32, (512 << 32) | (1 << 16), 2 << 32, (2 << 32) | (1 << 16)])
+        self.assertEqual([v for a, v in trace if a == 0x16810034][:2], [0, 1])
+        self.assertGreaterEqual(out[20], 15710)
+
+    def test_reset_failures_release_once_without_replay_or_fault_loss(self):
+        for scenario, result, released in ((17, 6, 1), (18, 6, 0), (19, 4, 1), (22, 6, 0)):
+            with self.subTest(scenario=scenario):
+                out, _ = self.run_case(scenario)
+                self.assertEqual((out[0], out[2], out[5], out[6], out[8]), (result, 0, 1, 0, 8))
+                self.assertEqual(out[37:39], [1, 1])
+                self.assertEqual(out[34], released)
+                self.assertEqual(out[1:4], out[13:16])
+                self.assertEqual(out[42], 0)
+        out, _ = self.run_case(17)
+        self.assertEqual((out[28], out[35], out[36]), ((1 << 64) - 1, 1, 0))
+        out, _ = self.run_case(18)
+        self.assertEqual(out[35], 0)  # Failed release is never submitted a second time.
+        out, _ = self.run_case(22)
+        self.assertEqual(out[36], (1 << 64) - 1)
+
+    def test_first_uic_failure_snapshot_precedes_stop_and_reads_layer_codes_once(self):
+        for scenario in (20, 21):
+            with self.subTest(scenario=scenario):
+                out, _ = self.run_case(scenario)
+                self.assertEqual((out[0], out[2], out[8], out[9], out[10]), (4, 6, 6, 0x16810020, 4))
+                self.assertEqual(out[42:46], [1, 4, 9, 1])
+                self.assertEqual(out[46:49], [0, 0, 0])
+                expected = [0x80000010, 0, 0, 0, 0] if scenario == 20 else [0x80000010, 0x80002000, 0x80000002, 0x80000003, 0x80000004]
+                self.assertEqual(out[49:54], expected)
+                self.assertEqual(out[54], 5)
+                self.assertEqual(out[58:60], [5, 1])
+                self.assertTrue(out[7])
+                self.assertEqual(out[12], 4)
+
+    def test_failure_snapshot_skips_uninitialized_power_and_hce_phases(self):
+        for scenario in (1, 2, 7, 17):
+            out, _ = self.run_case(scenario)
+            self.assertEqual((out[42], out[54]), (0, 0))

@@ -243,6 +243,19 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   MT6991_UFS_RESULT Result = Mt6991UfsStart (Fdt, TRUE, FixedPcdGetPtr (PcdDaliUfsStorageToken), &Io, &mControl);
   DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a link=%u stage=%u fault=%lx/%x\n",
     (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Result, mControl.Stage, mControl.FaultAddress, mControl.FaultValue));
+  DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a reset low=%u release-attempt=%u released=%u cleanup=%u/%lx sip=%x/%x/%x/%lx\n",
+    (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mControl.DeviceResetAsserted,
+    mControl.DeviceResetReleaseAttempted, mControl.DeviceResetReleased, mControl.DeviceResetCleanupAttempted,
+    mControl.DeviceResetCleanupStatus, mControl.SipSelector, mControl.SipArg1, mControl.SipArg2, mControl.SipStatus));
+  if (mControl.UicFailure.Captured) {
+    MT6991_UFS_UIC_FAILURE *S = &mControl.UicFailure;
+    DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a first-failure stage=%u opcode=%x is=%x hcs=%x hce=%x arg=%x/%x/%x\n",
+      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), mControl.FaultStage, mControl.UicOpcode,
+      S->InterruptStatus, S->HostStatus, S->HostEnable, S->Arguments[0], S->Arguments[1], S->Arguments[2]));
+    DEBUG ((DEBUG_WARN, "DALI-UFS-CONTROL: run=%a ue=%x/%x/%x/%x/%x\n",
+      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), S->LayerErrors[0], S->LayerErrors[1],
+      S->LayerErrors[2], S->LayerErrors[3], S->LayerErrors[4]));
+  }
   if (Result != Mt6991UfsLinkReady) { return EFI_DEVICE_ERROR; }
   EFI_STATUS Status = Mt6991UfsDmaUefiInit (&mDma, 0xFFFFFFFFULL);
   if (EFI_ERROR (Status)) { StopController (); return Status; }

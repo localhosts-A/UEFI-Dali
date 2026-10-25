@@ -70,10 +70,35 @@ polling idle (YIELD), retaining the upstream EL1 TLB flush sequence, until WFI
 wakeup on this handoff is separately validated. This is a power-efficiency
 limitation of the bring-up firmware.
 
-Physical UFS, USB device transport, touch and panel cold initialization remain
-unimplemented. The RAM volume validates firmware file access; it does not
-provide physical storage. DarwinBoot and XNU integration code is present but
-has not yet passed the Dali hardware checkpoint.
+Physical UFS has an opt-in read-only host implementation under qualification;
+the normal payload remains on the RAM volume. USB device transport, touch and
+panel cold initialization remain unimplemented. The source-XNU platform
+checkpoint has passed; physical UFS and its XNU handoff remain unqualified.
+
+### UFS control diagnostics
+
+The `read-only-blockio` profile defaults off and has no media-write authority.
+The first physical attempt stopped at LINK_STARTUP with IS=4, before DMA setup
+or media commands. Complete original boot_b, Android B/root and all 18 original
+partition hashes were restored. IS=4 alone does not establish the failing layer
+or whether the indication is fatal.
+
+The controller now includes the fixed MiCode initial device-reset sequence:
+SiP service `0xc2000276`, selector `2`, reset low, HCE stop, at least 10 us low,
+reset high and 15 ms settling before HCI enable. Assertion/stop failure permits
+one cleanup release; a failed release is never retried. The first failure and
+secure-monitor status remain saved. This follows `ufs-mediatek.c:2033-2058`
+at device_modules `e45c319` and `ufshcd.c:10555-10561` at Linux `f089d58`.
+
+Startup failures in the initialized UIC phases capture IS/HCS/HCE, all three
+UIC arguments and the five layer-error registers once, before stop writes.
+These reads preserve the original fault address/value. Early power/HCE and
+standalone stop failures do not sample layer errors. Separate
+`DALI-UFS-CONTROL` records retain the snapshot without changing the strict
+read-only qualification trace. The error mask and no-replay policy remain
+unchanged. Native tests cover pulse/settle order, failed release, cleanup,
+read-clear register ordering and first-fault preservation; hardware validation
+of this revision is pending.
 
 ## Validated UEFI milestone (2026-10-24)
 

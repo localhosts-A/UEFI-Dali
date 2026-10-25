@@ -5,7 +5,7 @@
 #include "UfsProbe.h"
 
 // Fixed MiCode device_modules e45c319: ufs-mediatek.c:242-347,391-455,
-// 1686-1692,1931-2030; ufs-mediatek-sip.h; mtk_sip_svc.h. Fixed Linux
+// 1686-1692,1931-2058; ufs-mediatek-sip.h; mtk_sip_svc.h. Fixed Linux
 // f089d58: include/ufs/ufshci.h, unipro.h and ufshcd.c:4741-4793.
 #define UFS_SIP 0xC2000276U
 #define UFS_ERROR_MASK 0x70884U
@@ -55,13 +55,32 @@ STATIC BOOLEAN Bindings (CONST VOID *Fdt) {
   return TRUE;
 }
 
-STATIC BOOLEAN Fail (MT6991_UFS_CONTROLLER *C, MT6991_UFS_RESULT Result) {
+STATIC BOOLEAN RecordFailure (MT6991_UFS_CONTROLLER *C, MT6991_UFS_RESULT Result, BOOLEAN CaptureUic) {
   if (!C->Failed) {
     C->Result = Result; C->FaultStage = C->Stage;
     C->FaultAddress = C->LastAddress; C->FaultValue = C->LastValue;
+    // Only the real initialized instance may read these registers. In
+    // particular, skip early power/reset failures and Stop's temporary context.
+    if (CaptureUic && C->Attempted && C->Touched && C->Io.Read32 != NULL && !C->UicFailure.Captured &&
+        (C->Stage == Mt6991UfsPreLink || C->Stage == Mt6991UfsLinkStartup || C->Stage == Mt6991UfsPostLink)) {
+      MT6991_UFS_UIC_FAILURE *S = &C->UicFailure;
+      C->Io.Fence (C->Io.Context);
+      // Direct callback reads preserve LastAddress/Value and the original fault.
+      S->InterruptStatus = C->Io.Read32 (DALI_UFS_HCI + 0x20, C->Io.Context);
+      S->HostStatus = C->Io.Read32 (DALI_UFS_HCI + 0x30, C->Io.Context);
+      S->HostEnable = C->Io.Read32 (DALI_UFS_HCI + 0x34, C->Io.Context);
+      for (UINTN I = 0; I < 3; I++) { S->Arguments[I] = C->Io.Read32 (DALI_UFS_HCI + 0x94 + I * 4, C->Io.Context); }
+      for (UINTN I = 0; I < 5; I++) { S->LayerErrors[I] = C->Io.Read32 (DALI_UFS_HCI + 0x38 + I * 4, C->Io.Context); }
+      C->Io.Fence (C->Io.Context);
+      S->Captured = TRUE;
+    }
   }
   C->Failed = TRUE; C->Ready = FALSE;
   return FALSE;
+}
+
+STATIC BOOLEAN Fail (MT6991_UFS_CONTROLLER *C, MT6991_UFS_RESULT Result) {
+  return RecordFailure (C, Result, TRUE);
 }
 
 STATIC UINT32 Read (MT6991_UFS_CONTROLLER *C, UINTN Address) {
@@ -90,8 +109,33 @@ STATIC BOOLEAN Wait (MT6991_UFS_CONTROLLER *C, UINT32 Offset, UINT32 Mask,
 
 STATIC BOOLEAN Sip (MT6991_UFS_CONTROLLER *C, UINT32 Selector, UINT32 A, UINT32 B) {
   C->Touched = TRUE;
+  C->SipSelector = Selector; C->SipArg1 = A; C->SipArg2 = B;
   C->SipStatus = C->Io.Sip (UFS_SIP, Selector, A, B, C->Io.Context);
   return C->SipStatus == 0 || Fail (C, Mt6991UfsSipError);
+}
+
+STATIC BOOLEAN DeviceReset (MT6991_UFS_CONTROLLER *C) {
+  // Fixed Linux ufshcd_init resets the device before its first HBA enable.
+  // MTK ufs_mtk_device_reset: selector BIT(1), active-low pulse, HBA stop in
+  // the low interval, 10..15us low and 10..15ms after release.
+  C->DeviceResetAsserted = Sip (C, 2, 0, 0);
+  BOOLEAN Stopped = C->DeviceResetAsserted && Write (C, DALI_UFS_HCI + 0x34, 0) &&
+    Wait (C, 0x34, 1, 0, 100000);
+  C->Io.Stall (10, C->Io.Context);
+  C->DeviceResetReleaseAttempted = TRUE;
+  if (!Stopped) {
+    // One first deassertion for cleanup, even if assertion/HBA stop failed.
+    // Preserve the original failure/SipStatus; do not retry a failed release.
+    C->DeviceResetCleanupAttempted = TRUE;
+    C->DeviceResetCleanupStatus = C->Io.Sip (UFS_SIP, 2, 1, 0, C->Io.Context);
+    C->DeviceResetReleased = C->DeviceResetCleanupStatus == 0;
+    if (C->DeviceResetReleased) { C->Io.Stall (15000, C->Io.Context); }
+    return FALSE;
+  }
+  if (!Sip (C, 2, 1, 0)) { return FALSE; }
+  C->DeviceResetReleased = TRUE;
+  C->Io.Stall (15000, C->Io.Context);
+  return TRUE;
 }
 
 STATIC BOOLEAN Rmw (MT6991_UFS_CONTROLLER *C, UINT32 Offset, UINT32 Mask, UINT32 Value) {
@@ -178,7 +222,9 @@ MT6991_UFS_RESULT Mt6991UfsStop (MT6991_UFS_CONTROLLER *C) {
     C->StopResult = Q.Result;
     if (!C->Failed) {
       C->LastAddress = Q.FaultAddress; C->LastValue = Q.FaultValue;
-      Fail (C, Q.Result);
+      // Queue/HCE writes have already started. Keep the stop fault without
+      // misrepresenting a post-stop sample as the first UIC failure snapshot.
+      RecordFailure (C, Q.Result, FALSE);
     }
     return C->StopResult;
   }
@@ -228,6 +274,8 @@ MT6991_UFS_RESULT Mt6991UfsStart (CONST VOID *Fdt, BOOLEAN Enabled, CONST CHAR8 
     C->Io.Stall (32, C->Io.Context);
     if (!Sip (C, 1U << 3, 1, 1)) { goto Failed; }
   }
+  C->Stage = Mt6991UfsDeviceReset;
+  if (!DeviceReset (C)) { goto Failed; }
   C->Stage = Mt6991UfsHostReset;
   // Live ti,syscon-reset IDs 3/2/1 -> bits 2/1/0, reversed on release.
   if (!ResetBit (C, 0x148, 4) || !ResetBit (C, 0x148, 2) ||
