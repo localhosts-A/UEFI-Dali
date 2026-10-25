@@ -13,6 +13,7 @@ EFI_STATUS XhcFlushAsyncIntMap(USB_XHCI_INSTANCE *, URB *);
 typedef struct {
   USB_XHCI_INSTANCE Raw;
   DALI_USB_NATIVE_HOST *Owner;
+  UINT32 LastShortEndpointMask[256];
 } ENGINE;
 #define RAW(H) (&((ENGINE *)(H)->Engine)->Raw)
 STATIC DALI_USB_NATIVE_HOST *Host(EFI_USB2_HC_PROTOCOL *P) {
@@ -38,6 +39,36 @@ EFI_STATUS DaliNativeXhciCheck(USB_XHCI_INSTANCE *X) {
 }
 VOID DaliNativeXhciCommandFailed(USB_XHCI_INSTANCE *X, EFI_STATUS Status) {
   Fault(BASE_CR(X,ENGINE,Raw)->Owner,Status);
+}
+VOID DaliNativeXhciRecordShortCompletion(USB_XHCI_INSTANCE *X, UINT8 SlotId,
+                                          UINT8 EndpointId, BOOLEAN Short) {
+  if (X==NULL || SlotId==0 || EndpointId==0 || EndpointId>31) { return; }
+  ENGINE *E=BASE_CR(X,ENGINE,Raw);
+  DALI_USB_NATIVE_HOST *H=E->Owner;
+  USB_DEV_CONTEXT *D=&X->UsbDevContext[SlotId];
+  if (H==NULL || H->Engine!=E || H->Closed || !D->Enabled || D->SlotId!=SlotId) { return; }
+  UINT32 Mask=(UINT32)1U<<EndpointId;
+  if (Short) { E->LastShortEndpointMask[SlotId]|=Mask; }
+  else { E->LastShortEndpointMask[SlotId]&=~Mask; }
+}
+BOOLEAN DaliNativeXhciIgnoreSpuriousSuccess(USB_XHCI_INSTANCE *X, UINT8 SlotId,
+                                             UINT8 EndpointId, UINT8 CompletionCode) {
+  if (X==NULL || CompletionCode!=TRB_COMPLETION_SUCCESS || SlotId==0 ||
+      EndpointId==0 || EndpointId>31) { return FALSE; }
+  ENGINE *E=BASE_CR(X,ENGINE,Raw);
+  DALI_USB_NATIVE_HOST *H=E->Owner;
+  USB_DEV_CONTEXT *D=&X->UsbDevContext[SlotId];
+  UINT32 Mask=(UINT32)1U<<EndpointId;
+  if (H==NULL || H->Engine!=E || H->Closed || !D->Enabled || D->SlotId!=SlotId ||
+      !(E->LastShortEndpointMask[SlotId]&Mask)) { return FALSE; }
+  E->LastShortEndpointMask[SlotId]&=~Mask;
+  return TRUE;
+}
+VOID DaliNativeXhciClearShortCompletions(USB_XHCI_INSTANCE *X, UINT8 SlotId) {
+  if (X==NULL || SlotId==0) { return; }
+  ENGINE *E=BASE_CR(X,ENGINE,Raw);
+  DALI_USB_NATIVE_HOST *H=E->Owner;
+  if (H!=NULL && H->Engine==E && !H->Closed) { E->LastShortEndpointMask[SlotId]=0; }
 }
 STATIC EFI_STATUS Enter(DALI_USB_NATIVE_HOST *H, BOOLEAN Cleanup, EFI_TPL *Old) {
   if (H==NULL || CurrentTpl()>TPL_NOTIFY) { return EFI_UNSUPPORTED; }
@@ -154,6 +185,8 @@ STATIC VOID FreeUsers(DALI_USB_NATIVE_HOST *H) {
     if (D->ActiveAlternateSetting!=NULL) { FreePool(D->ActiveAlternateSetting); }
     ZeroMem(D,sizeof *D);
   }
+  ZeroMem(((ENGINE *)H->Engine)->LastShortEndpointMask,
+          sizeof ((ENGINE *)H->Engine)->LastShortEndpointMask);
   // Context/ring DMA allocations belong to MemPool, freed exactly once below.
   XhcFreeSched(X);
 }

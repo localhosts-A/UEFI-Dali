@@ -64,6 +64,8 @@ def main():
         'DaliUsbNativeHostLib': (('UsbNativeHostLib', 'MuEngine', 'MuSchedule', 'MuRegister', 'MuMemory'),
             ('DaliUsbNativeHostStart', 'DaliUsbNativeHostStop', 'DaliUsbNativeHostPoll',
              'DaliUsbNativeHostPrepareHandoff', 'DaliNativeXhciCommandFailed', 'DaliNativeXhciCheck',
+             'DaliNativeXhciRecordShortCompletion', 'DaliNativeXhciIgnoreSpuriousSuccess',
+             'DaliNativeXhciClearShortCompletions',
              'XhcControlTransfer', 'XhcBulkTransfer', 'XhcCreateTransferTrb', 'UsbHcInitMemPool')),
         'DaliUsbPlatformLib': (('UsbCalibration', 'UsbClockResources', 'UsbVusbResources', 'UsbI2cResources'), ('DaliUsbReadCalibration', 'DaliUsbReadClockResources', 'DaliUsbReadVusbResources', 'DaliUsbReadI2cResources')),
         'BaseFdtLib': (('fdt_check', 'FdtLib'), ('fdt_check_full', 'FdtGetProp')),

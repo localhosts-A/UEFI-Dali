@@ -8,6 +8,7 @@
 // Include the actual source unit to exercise its private descriptor validator.
 #include "../../../Platforms/Xiaomi/daliPkg/Library/UsbNativeHostLib/MuEngine.c"
 BOOLEAN XhcCheckUrbResult(USB_XHCI_INSTANCE *, URB *);
+BOOLEAN DaliNativeXhciIgnoreSpuriousSuccess(USB_XHCI_INSTANCE *, UINT8, UINT8, UINT8);
 static DALI_USB_NATIVE_HOST host;
 static EFI_TPL tpl=TPL_APPLICATION;
 static struct {
@@ -15,7 +16,7 @@ static struct {
 } events[8];
 static UINTN event_ops,fail_event,installs,uninstalls,disconnects;
 static BOOLEAN fail_install,fail_uninstall;
-static UINTN callbacks;
+static UINTN callbacks,short_callbacks;
 static BOOLEAN cancel_in_callback;
 static EFI_DEVICE_PATH_PROTOCOL path={END_DEVICE_PATH_TYPE,END_ENTIRE_DEVICE_PATH_SUBTYPE,{4,0}};
 EFI_GUID gEfiUsb2HcProtocolGuid={0},gEfiDevicePathProtocolGuid={1};
@@ -88,7 +89,7 @@ static void native_reset(void) {
     .Stall=stall,.CreateEvent=create_event,.CloseEvent=close_event,.SetTimer=timer,
     .InstallMultipleProtocolInterfaces=install,.UninstallMultipleProtocolInterfaces=uninstall,.DisconnectController=disconnect};
   m.hc_autoreset=TRUE;m.regs[0]=0x01000040;m.regs[1]=(2U<<24)|(1U<<8)|8;
-  callbacks=0;cancel_in_callback=FALSE;
+  callbacks=short_callbacks=0;cancel_in_callback=FALSE;
   m.regs[2]=2U<<27;m.regs[4]=0x280U<<16;m.regs[5]=0x800;m.regs[6]=0x900;
   m.regs[0x48/4]=1;m.regs[0xa00/4]=0x02000002;m.regs[0xa04/4]=0x20425355;m.regs[0xa08/4]=0x0201;
 }
@@ -191,16 +192,38 @@ static EFI_STATUS EFIAPI callback(VOID *data,UINTN bytes,VOID *context,UINT32 re
   }
   return EFI_SUCCESS;
 }
-static URB *submit_async(void) {
+static EFI_STATUS EFIAPI short_callback(VOID *data,UINTN bytes,VOID *context,UINT32 result) {
+  assert(context==&host && bytes==5 && !result && data && host.CallbackDepth==1 && !host.Busy);
+  for(unsigned n=0;n<5;n++)assert(((UINT8 *)data)[n]==0x5a);
+  short_callbacks++;
+  return EFI_SUCCESS;
+}
+static URB *submit_async_callback(EFI_ASYNC_USB_TRANSFER_CALLBACK transfer_callback) {
   UINT8 toggle=0;assert(host.Protocol.AsyncInterruptTransfer(&host.Protocol,1,0x81,EFI_USB_SPEED_FULL,8,
-    TRUE,&toggle,10,8,NULL,callback,&host)==EFI_SUCCESS);
+    TRUE,&toggle,10,8,NULL,transfer_callback,&host)==EFI_SUCCESS);
   USB_XHCI_INSTANCE *x=host.Engine;assert(!IsListEmpty(&x->AsyncIntTransfers));
   return BASE_CR(GetFirstNode(&x->AsyncIntTransfers),URB,UrbList);
 }
+static URB *submit_async(void) {return submit_async_callback(callback);}
 static void complete_async(URB *u) {
   USB_XHCI_INSTANCE *x=host.Engine;
   for(unsigned n=0;n<64;n++)if(m.dma[n].live && m.dma[n].address==(UINT64)(UINTN)u->DataPhy)memset(m.dma[n].cpu,0x5a,8);
   EFI_PHYSICAL_ADDRESS address=UsbHcGetPciAddrForHostAddr(x->MemPool,u->TrbEnd,sizeof(TRB_TEMPLATE),FALSE);
+  EVT_TRB_TRANSFER *event=(VOID *)x->EventRing.EventRingDequeue;
+  *event=(EVT_TRB_TRANSFER){.TRBPtrLo=(UINT32)address,.TRBPtrHi=(UINT32)(address>>32),.Length=0,
+    .Completecode=TRB_COMPLETION_SUCCESS,.CycleBit=x->EventRing.EventRingCCS,.Type=TRB_TYPE_TRANS_EVENT,.EndpointId=3,.SlotId=1};
+}
+static void complete_async_short(URB *u) {
+  USB_XHCI_INSTANCE *x=host.Engine;
+  for(unsigned n=0;n<64;n++)if(m.dma[n].live && m.dma[n].address==(UINT64)(UINTN)u->DataPhy)memset(m.dma[n].cpu,0x5a,5);
+  EFI_PHYSICAL_ADDRESS address=UsbHcGetPciAddrForHostAddr(x->MemPool,u->TrbEnd,sizeof(TRB_TEMPLATE),FALSE);
+  EVT_TRB_TRANSFER *event=(VOID *)x->EventRing.EventRingDequeue;
+  *event=(EVT_TRB_TRANSFER){.TRBPtrLo=(UINT32)address,.TRBPtrHi=(UINT32)(address>>32),.Length=3,
+    .Completecode=TRB_COMPLETION_SHORT_PACKET,.CycleBit=x->EventRing.EventRingCCS,.Type=TRB_TYPE_TRANS_EVENT,.EndpointId=3,.SlotId=1};
+}
+static void spurious_success(void) {
+  USB_XHCI_INSTANCE *x=host.Engine;
+  EFI_PHYSICAL_ADDRESS address=UsbHcGetPciAddrForHostAddr(x->MemPool,x->CmdRing.RingSeg0,sizeof(TRB_TEMPLATE),FALSE);
   EVT_TRB_TRANSFER *event=(VOID *)x->EventRing.EventRingDequeue;
   *event=(EVT_TRB_TRANSFER){.TRBPtrLo=(UINT32)address,.TRBPtrHi=(UINT32)(address>>32),.Length=0,
     .Completecode=TRB_COMPLETION_SUCCESS,.CycleBit=x->EventRing.EventRingCCS,.Type=TRB_TYPE_TRANS_EVENT,.EndpointId=3,.SlotId=1};
@@ -233,6 +256,19 @@ static void malformed_completion(void) {
   assert(host.Faulted && c.HaltProven && m.frees==frees && !callbacks);
   finish();
 }
+static void short_completion_spurious_success(void) {
+  native_reset();assert(start()==EFI_SUCCESS);make_slot();URB *u=submit_async_callback(short_callback);
+  complete_async_short(u);
+  assert(DaliUsbNativeHostPoll(&host)==EFI_SUCCESS && short_callbacks==1 && !callbacks);
+  assert(!u->Finished && !u->DaliShortSeen);
+  assert(DaliNativeXhciIgnoreSpuriousSuccess(host.Engine,1,3,TRB_COMPLETION_SUCCESS));
+  complete_async_short(u);
+  assert(DaliUsbNativeHostPoll(&host)==EFI_SUCCESS && short_callbacks==2 && !callbacks);
+  spurious_success();
+  assert(DaliUsbNativeHostPoll(&host)==EFI_SUCCESS && short_callbacks==2 && !callbacks);
+  assert(!DaliNativeXhciIgnoreSpuriousSuccess(host.Engine,1,3,TRB_COMPLETION_SUCCESS));
+  finish();
+}
 static void ebs_latch(void) {
   native_reset();assert(start()==EFI_SUCCESS);UINTN frees=m.frees;
   for(unsigned n=0;n<8;n++)if(events[n].live && events[n].type==EVT_SIGNAL_EXIT_BOOT_SERVICES) {
@@ -244,7 +280,7 @@ static void ebs_latch(void) {
   assert(DaliUsbNativeHostStop(&host)==EFI_UNSUPPORTED && DaliUsbNativeHostPrepareHandoff(&host)==EFI_UNSUPPORTED && m.ops==ops);
 }
 int main(void) {
-  lifecycle();failures();descriptors();async_lifecycle();malformed_completion();ebs_latch();native_reset();reset();
-  puts("PASS: actual native USB2 HC lifecycle, async remap/cancel, malformed event-length fault and 32-bit DMA retention; register model only");
+  lifecycle();failures();descriptors();async_lifecycle();malformed_completion();short_completion_spurious_success();ebs_latch();native_reset();reset();
+  puts("PASS: actual native USB2 HC lifecycle, async remap/cancel, short-event quirk and malformed event-length fault; register model only");
   return 0;
 }

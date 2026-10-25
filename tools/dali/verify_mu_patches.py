@@ -16,6 +16,7 @@ PATCH_NAMES = (
     "Timer.patch",
     "Usb-Bus.patch",
     "Xhci-Native-Safety.patch",
+    "Xhci-Native-Short-Event.patch",
 )
 
 

@@ -1,0 +1,121 @@
+diff --git a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
+index f73e868303..50fa802f92 100644
+--- a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
++++ b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.c
+@@ -18,6 +18,9 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ // command errors can authorize source cleanup. No PCI behavior is changed.
+ VOID DaliNativeXhciCommandFailed (USB_XHCI_INSTANCE *Xhc, EFI_STATUS Status);
+ EFI_STATUS DaliNativeXhciCheck (USB_XHCI_INSTANCE *Xhc);
++VOID DaliNativeXhciRecordShortCompletion (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId, UINT8 EndpointId, BOOLEAN Short);
++BOOLEAN DaliNativeXhciIgnoreSpuriousSuccess (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId, UINT8 EndpointId, UINT8 CompletionCode);
++VOID DaliNativeXhciClearShortCompletions (USB_XHCI_INSTANCE *Xhc, UINT8 SlotId);
+ #endif
+ 
+ /**
+@@ -279,6 +282,7 @@ XhcCreateTransferTrb (
+   Urb->EndDone   = FALSE;
+   Urb->Completed = 0;
+   Urb->Result    = EFI_USB_NOERROR;
++  Urb->DaliShortSeen = FALSE;
+ 
+   Dci = XhcEndpointToDci (Urb->Ep.EpAddr, (UINT8)(Urb->Ep.Direction));
+   ASSERT (Dci < 32);
+@@ -1253,9 +1257,22 @@ XhcCheckUrbResult (
+     } else if (IsAsyncIntTrb (Xhc, TRBPtr, &AsyncUrb)) {
+       CheckedUrb = AsyncUrb;
+     } else {
++#ifdef DALI_NATIVE_XHCI
++      if ((EvtTrb->Type == TRB_TYPE_TRANS_EVENT) &&
++          DaliNativeXhciIgnoreSpuriousSuccess (Xhc, EvtTrb->SlotId, EvtTrb->EndpointId, EvtTrb->Completecode)) {
++        continue;
++      }
++#endif
+       continue;
+     }
+ 
++#ifdef DALI_NATIVE_XHCI
++    if ((EvtTrb->Type == TRB_TYPE_TRANS_EVENT) &&
++        (EvtTrb->Completecode != TRB_COMPLETION_SUCCESS) &&
++        (EvtTrb->Completecode != TRB_COMPLETION_SHORT_PACKET)) {
++      DaliNativeXhciRecordShortCompletion (Xhc, EvtTrb->SlotId, EvtTrb->EndpointId, FALSE);
++    }
++#endif
+     CheckedUrb->Ring->RingDequeue = TRBPtr;         // MU_CHANGE - 274185
+ 
+     switch (EvtTrb->Completecode) {
+@@ -1327,6 +1344,11 @@ XhcCheckUrbResult (
+           }
+ 
+           CheckedUrb->Completed += TrbLength - EvtTrb->Length;
++#ifdef DALI_NATIVE_XHCI
++          if (EvtTrb->Completecode == TRB_COMPLETION_SHORT_PACKET) {
++            CheckedUrb->DaliShortSeen = TRUE;
++          }
++#endif
+         }
+ 
+         break;
+@@ -1352,6 +1374,11 @@ XhcCheckUrbResult (
+     if (CheckedUrb->StartDone && CheckedUrb->EndDone) {
+       CheckedUrb->Finished = TRUE;
+       CheckedUrb->EvtTrb   = (TRB_TEMPLATE *)EvtTrb;
++#ifdef DALI_NATIVE_XHCI
++      if (EvtTrb->Type == TRB_TYPE_TRANS_EVENT) {
++        DaliNativeXhciRecordShortCompletion (Xhc, EvtTrb->SlotId, EvtTrb->EndpointId, CheckedUrb->DaliShortSeen);
++      }
++#endif
+     }
+   }
+ 
+@@ -3495,6 +3522,9 @@ XhcSetConfigCmd (
+     DEBUG ((DEBUG_ERROR, "XhcSetConfigCmd: Config Endpoint Failed, Status = %r\n", Status));
+   } else {
+     Xhc->UsbDevContext[SlotId].ActiveConfiguration = ConfigDesc->ConfigurationValue;
++#ifdef DALI_NATIVE_XHCI
++    DaliNativeXhciClearShortCompletions (Xhc, SlotId);
++#endif
+   }
+ 
+   return Status;
+@@ -3589,6 +3619,9 @@ XhcSetConfigCmd64 (
+     DEBUG ((DEBUG_ERROR, "XhcSetConfigCmd64: Config Endpoint Failed, Status = %r\n", Status));
+   } else {
+     Xhc->UsbDevContext[SlotId].ActiveConfiguration = ConfigDesc->ConfigurationValue;
++#ifdef DALI_NATIVE_XHCI
++    DaliNativeXhciClearShortCompletions (Xhc, SlotId);
++#endif
+   }
+ 
+   return Status;
+@@ -3980,6 +4013,9 @@ XhcSetInterface (
+       // Update the active AlternateSetting.
+       //
+       Xhc->UsbDevContext[SlotId].ActiveAlternateSetting[(UINT8)Request->Index] = (UINT8)Request->Value;
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciClearShortCompletions (Xhc, SlotId);
++#endif
+     }
+   }
+ 
+@@ -4188,6 +4224,9 @@ XhcSetInterface64 (
+       // Update the active AlternateSetting.
+       //
+       Xhc->UsbDevContext[SlotId].ActiveAlternateSetting[(UINT8)Request->Index] = (UINT8)Request->Value;
++#ifdef DALI_NATIVE_XHCI
++      DaliNativeXhciClearShortCompletions (Xhc, SlotId);
++#endif
+     }
+   }
+ 
+diff --git a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.h b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.h
+index 27380c3e6f..7f49aa3472 100644
+--- a/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.h
++++ b/MdeModulePkg/Bus/Pci/XhciDxe/XhciSched.h
+@@ -197,6 +197,7 @@ typedef struct _URB {
+   BOOLEAN                            StartDone;
+   BOOLEAN                            EndDone;
+   BOOLEAN                            Finished;
++  BOOLEAN                            DaliShortSeen;
+ 
+   TRB_TEMPLATE                       *EvtTrb;
+ } URB;

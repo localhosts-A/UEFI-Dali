@@ -38,8 +38,9 @@ or release providers before its halt.
 Resources/MuPatches/Xhci-Native-Safety.patch reproduces checked source
 allocation failures, partial scheduler cleanup, bounded configuration-cache
 validation, value-based configuration lookup and retained slot cleanup.
-Native-only guards also exclude PCI binding code from the engine compilation.
-Ordinary PCI source builds retain their own lifecycle.
+Xhci-Native-Short-Event.patch adds the one-event MTK short-transfer quirk to the
+native event decoder. Native-only guards also exclude PCI binding code from the
+engine compilation. Ordinary PCI source builds retain their own lifecycle.
 
 The production tests compile the real engine with DEBUG assertions and
 ASan/UBSan, using modeled Boot Services/MMIO/DMA/ownership. They exercise
@@ -51,7 +52,11 @@ callback cancellation and failed cancellation/remap. The IO regression adds
 12 before/applied EBS positions during checked rearm.
 The actual source event decoder also rejects a residual length larger than its
 TRB or completed bytes larger than the user's buffer; native mode stops and
-proves halt before returning DMA ownership after a malformed completion.
+proves halt before returning DMA ownership after a malformed completion. The
+Dali-native event path records completed short TDs and ignores only the next
+unmatched successful event for that same slot/endpoint. A new matched TD
+completion or successful configuration change clears the one-event marker; the
+ordinary PCI source path does not enable this MTK quirk.
 
 Run from this isolated firmware tree:
 
@@ -64,8 +69,8 @@ python tools/dali/build_usb_libraries.py --output ../.outputs/usb-libraries-nati
 
 This is a callable engine and library checkpoint. No Dali production worker
 currently supplies its qualified board policy/DMA provider or calls Start.
-The MTK USB2 interrupt/TT bandwidth scheduler and short-event quirk still
-need a native binding; this generic engine must not be treated as a ready
-MT6991 hardware backend. Native-path QEMU and DarwinBoot pre-final-map wiring
-remain required. The existing PCI/source QEMU gate is separate. These files
-remain outside the default FV and hardware_qualified=false.
+The MTK USB2 interrupt/TT bandwidth scheduler still needs a native binding, so
+the engine is not a ready MT6991 hardware backend. Native-path QEMU and
+DarwinBoot pre-final-map wiring remain required. The existing PCI/source QEMU
+gate is separate. These files remain outside the default FV and
+hardware_qualified=false.
