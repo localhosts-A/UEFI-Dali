@@ -13,6 +13,14 @@ GENERIC = Path(os.environ.get('UNIXNU_ROOT', ROOT.parent / 'UniXNU'))
 
 class UsbCalibrationTests(unittest.TestCase):
     def test_actual_fdt_calibration(self):
+        self.check_fixture('usb_calibration_fdt_test.c', 'production UEFI calibration graph',
+                           'saved Dali FDT calibration acquisition')
+
+    def test_actual_fdt_clock_resources(self):
+        self.check_fixture('usb_clock_fdt_test.c', 'production UEFI clock resource graph',
+                           'saved Dali FDT clock resource acquisition')
+
+    def check_fixture(self, fixture, marker, saved_marker):
         cc = shutil.which(os.environ.get('CC', 'clang'))
         self.assertIsNotNone(cc)
         libfdt = ROOT / 'Mu_Basecore/MdePkg/Library/BaseFdtLib/libfdt/libfdt'
@@ -61,8 +69,9 @@ typedef uint64_t EFI_STATUS;
                               '-I', str(DEVICE / 'drivers/DaliUsb/include'),
                               '-I', str(GENERIC / 'drivers/UsbCore/include'),
                               str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbCalibration.c'),
+                              str(ROOT / 'Platforms/Xiaomi/daliPkg/Library/UsbPlatformLib/UsbClockResources.c'),
                               str(DEVICE / 'drivers/DaliUsb/DaliUsbCalibration.c'),
-                              str(ROOT / 'tools/dali/fixtures/usb_calibration_fdt_test.c'),
+                              str(ROOT / 'tools/dali/fixtures' / fixture),
                               *objects, '-o', str(binary)]
             ran = subprocess.run(command, text=True, capture_output=True, timeout=60)
             self.assertEqual(ran.returncode, 0, ran.stderr)
@@ -72,9 +81,9 @@ typedef uint64_t EFI_STATUS;
                 args.append(saved)
             ran = subprocess.run(args, text=True, capture_output=True, timeout=30)
             self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
-            self.assertIn('PASS: production UEFI calibration graph', ran.stdout)
+            self.assertIn('PASS: ' + marker, ran.stdout)
             if saved:
-                self.assertIn('PASS: saved Dali FDT calibration acquisition', ran.stdout)
+                self.assertIn('PASS: ' + saved_marker, ran.stdout)
             print(ran.stdout.strip())
 
 

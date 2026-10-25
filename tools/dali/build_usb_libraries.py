@@ -54,7 +54,7 @@ def main():
                         'dali_usb_i2c6_init', 'dali_nxp_io_bind', 'dali_usb_phy_power_on', 'dali_usb_domains_power_on',
                         'dali_usb_clocks_enable', 'dali_usb_hwrsc_enable', 'dali_usb_ippc_enable', 'dali_usb_ippc_stop', 'dali_usb_calibration_decode', 'dali_usb_clock_rates_read')),
         'DaliUsbPmicLib': (('UsbPmicLib',), ('DaliUsbPmicOpen', 'DaliUsbPmicClose')),
-        'DaliUsbPlatformLib': (('UsbCalibration',), ('DaliUsbReadCalibration',)),
+        'DaliUsbPlatformLib': (('UsbCalibration', 'UsbClockResources'), ('DaliUsbReadCalibration', 'DaliUsbReadClockResources')),
         'BaseFdtLib': (('fdt_check', 'FdtLib'), ('fdt_check_full', 'FdtGetProp')),
     }
     for name, (objects, symbols) in required.items():

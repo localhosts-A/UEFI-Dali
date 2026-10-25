@@ -14,3 +14,28 @@ EFI_STATUS DaliUsbReadCalibration (
   IN CONST VOID *Fdt, IN UINTN FdtSize,
   OUT struct dali_xsphy_calibration *Out
   );
+
+enum DALI_USB_CLOCK_BANK {
+  DaliUsbClockVlp, DaliUsbClockTop, DaliUsbClockApmixed,
+  DaliUsbClockImpw, DaliUsbClockPerao, DaliUsbClockBankCount
+};
+typedef struct { UINT32 Base, Size; } DALI_USB_MMIO_RANGE;
+typedef struct {
+  DALI_USB_MMIO_RANGE Bank[DaliUsbClockBankCount];
+  UINT32 ReferenceHz;
+  struct dali_xsphy_calibration Calibration;
+} DALI_USB_CLOCK_RESOURCES;
+/* Same immutable, aligned bounded FDT contract as ReadCalibration. Return a
+ * pointer-free physical resource description for the actual USB0 VLP/TOP,
+ * PHY/xHCI fixed26MHz and I2C6 main/APDMA clock paths, after exact enabled
+ * provider/window/ID/specifier/name/consumer graph validation and calibration
+ * acquisition. No MMIO access, mapping, source vote, allocation or retained FDT
+ * pointers. Output changes only on complete success, and must be distinct from
+ * the snapshot. Caller still needs device-memory mappings, held powered sources,
+ * source-stability/shared-provider leases and real runtime rate/pin/DMA checks.
+ * A validated fixed-clock declaration is not physical frequency qualification.
+ * This interface does not qualify supplies, Type-C/ADC, power domains or DMA. */
+EFI_STATUS DaliUsbReadClockResources (
+  IN CONST VOID *Fdt, IN UINTN FdtSize,
+  OUT DALI_USB_CLOCK_RESOURCES *Out
+  );
