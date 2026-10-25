@@ -10,6 +10,7 @@
 
 typedef void VOID;
 typedef uint8_t UINT8;
+typedef uint16_t UINT16;
 typedef uint32_t UINT32;
 typedef uint64_t UINT64;
 typedef size_t UINTN;
@@ -48,6 +49,7 @@ typedef struct { UINT32 Unused; } EFI_SYSTEM_TABLE;
 #define EFI_ERROR(s) (((s) >> 63) != 0)
 #define BIT0 1U
 #define BIT4 0x10U
+#define BIT14 0x4000U
 #define BIT18 0x40000U
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define DEBUG(args) ((void)0)
@@ -73,6 +75,10 @@ static NOTIFY exit_notify;
 static unsigned creates, installs, closes, commands, acks, data_reads, status_reads, delays;
 static UINT32 sw_state;
 static UINT8 key_raw = 0x1e;
+static UINT8 mt6379[0xe00];
+static UINT32 active_command;
+static bool bad_fdt, bad_ranges, missing_mt6379, disabled_pmif, disabled_pmic, bad_cells, bad_names;
+static UINT32 route_mask = 0x85c0;
 static bool command_pending, respond = true, nack, hold_ack;
 static unsigned response_after = 1, response_polls;
 
@@ -121,13 +127,19 @@ static UINT32 MmioRead32(UINTN address)
     if (command_pending && respond && ++response_polls >= response_after) sw_state = 12U | (nack ? BIT18 : 0);
     return sw_state;
   }
-  assert(address == DALI_PMIF_BASE + 0x894); ++data_reads; return key_raw;
+  assert(address == DALI_PMIF_BASE + 0x894); ++data_reads;
+  if (((active_command >> 24) & 15) == 4) return key_raw;
+  UINT32 reg = active_command & 0xffff;
+  UINT32 value = mt6379[reg];
+  if (active_command & 0x10000) value |= (UINT32)mt6379[reg + 1] << 8;
+  return value;
 }
 static UINT32 MmioWrite32(UINTN address, UINT32 value)
 {
   assert(current_tpl == TPL_HIGH_LEVEL && mBusy == 1 && mOwner);
   if (address == DALI_PMIF_BASE + 0x880) {
-    assert(value == 0xc400001e && sw_state == 0 && !command_pending);
+    assert((value == 0xc400001e || (value & 0xdffe0000U) == 0xce000000U) && sw_state == 0 && !command_pending);
+    assert((value & 0xffff) <= 0xdfe); active_command = value;
     command_pending = true; response_polls = 0; sw_state = 2; ++commands;
   } else {
     assert(address == DALI_PMIF_BASE + 0x8a4 && value == 1 && (sw_state & 14) == 12);
@@ -136,40 +148,60 @@ static UINT32 MmioWrite32(UINTN address, UINT32 value)
   return value;
 }
 static UINTN MicroSecondDelay(UINTN us)
-{ assert(current_tpl == TPL_HIGH_LEVEL && us == 10); ++delays; return us; }
+{ assert(current_tpl == TPL_HIGH_LEVEL && (us == 10 || us == 8)); ++delays; return us; }
+static VOID MemoryFence(VOID) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+static VOID *ZeroMem(VOID *buffer, UINTN length) { return memset(buffer, 0, length); }
+static INT32 FdtCheckHeader(CONST VOID *fdt) { return !fdt || bad_fdt ? -1 : 0; }
 /* FDT API seam supplies one valid fixed board contract; production owns the
  * exact compatibility/resource/routing/key checks. No parser is replaced in FW. */
 static INT32 FdtPathOffset(CONST VOID *fdt, CONST CHAR8 *path)
 {
   assert(fdt);
+  if (!strcmp(path, "/")) return 0;
   if (!strcmp(path, "/spmi@1c01a000")) return 1;
   if (!strcmp(path, "/spmi@1c01a000/pmic@4")) return 2;
   if (!strcmp(path, "/spmi@1c01a000/pmic@4/mt6363keys")) return 3;
   if (!strcmp(path, "/spmi@1c01a000/pmic@4/mt6363keys/power")) return 4;
   if (!strcmp(path, "/spmi@1c01a000/pmic@4/mt6363keys/home")) return 5;
+  if (!strcmp(path, "/spmi@1c01a000/mt6379@e")) return missing_mt6379 ? -1 : 6;
   return -1;
 }
 static INT32 FdtStringListSearch(CONST VOID *fdt, INT32 node, CONST CHAR8 *property, CONST CHAR8 *value)
 {
-  assert(fdt && !strcmp(property, "compatible"));
+  assert(fdt);
+  if (!strcmp(property, "reg-names")) {
+    if (bad_names || node != 1) return -1;
+    return !strcmp(value,"pmif") ? 0 : !strcmp(value,"spmimst") ? 1 : !strcmp(value,"pmif-p") ? 2 : !strcmp(value,"spmimst-p") ? 3 : -1;
+  }
+  assert(!strcmp(property, "compatible"));
   return (node == 1 && !strcmp(value, "mediatek,mt6991-spmi")) ||
     (node == 2 && !strcmp(value, "mediatek,mt6363")) ||
-    (node == 3 && !strcmp(value, "mediatek,mt6363-keys")) ? 0 : -1;
+    (node == 3 && !strcmp(value, "mediatek,mt6363-keys")) ||
+    (node == 6 && !strcmp(value, "mediatek,mt6379")) ? 0 : -1;
 }
 static CONST VOID *FdtGetProp(CONST VOID *fdt, INT32 node, CONST CHAR8 *property, INT32 *length)
 {
   static CONST UINT32 ranges[] = {0,0x1c01a000,0,0x8ff,0,0x1c01c000,0,0x100,0,0x1c018000,0,0x8ff,0,0x1c01c800,0,0x100};
-  static CONST UINT32 sid[] = {4,0}, mask = 0x85c0, power = 116, home = 114;
+  static CONST UINT32 sid[] = {4,0}, usb_sid[] = {14,0}, power = 116, home = 114;
+  static CONST UINT32 two = 2, zero = 0, invalid = 1;
   assert(fdt);
-  if (node == 1 && !strcmp(property, "reg")) { *length = sizeof(ranges); return ranges; }
-  if (node == 1 && !strcmp(property, "spmi-dev-mask")) { *length = 4; return &mask; }
+  if (!strcmp(property, "status")) {
+    if ((node == 1 && disabled_pmif) || (node == 6 && disabled_pmic)) { *length = 9; return "disabled"; }
+    *length = 0; return NULL;
+  }
+  if ((node == 0 || node == 1) && !strcmp(property, "#address-cells")) { *length = 4; return bad_cells ? &invalid : &two; }
+  if ((node == 0 || node == 1) && !strcmp(property, "#size-cells")) { *length = 4; return bad_cells ? &invalid : node == 0 ? &two : &zero; }
+  if (node == 1 && !strcmp(property, "reg")) { *length = bad_ranges ? 4 : sizeof(ranges); return ranges; }
+  if (node == 1 && !strcmp(property, "spmi-dev-mask")) { *length = 4; return &route_mask; }
   if (node == 2 && !strcmp(property, "reg")) { *length = sizeof(sid); return sid; }
+  if (node == 6 && !strcmp(property, "reg")) { *length = sizeof(usb_sid); return usb_sid; }
   if ((node == 4 || node == 5) && !strcmp(property, "linux,keycodes")) { *length = 4; return node == 4 ? &power : &home; }
   *length = 0; return NULL;
 }
 static UINT32 Fdt32ToCpu(UINT32 value) { return value; }
 
 #include "PmicKeys.c"
+#include "UsbPmicLib.c"
 
 static VOID test_publication(VOID)
 {
@@ -255,12 +287,64 @@ static VOID test_ebs(VOID)
   exit_notify(&exit_notify, NULL);
   assert(published->TryAcquire(published, &usb) == EFI_NOT_READY && commands == before);
 }
+static VOID test_usb_binding(VOID)
+{
+  DALI_USB_PMIC context = {0}; UINT8 raw = 0x55, bytes[2] = {0xa5, 0x5a};
+  unsigned before = commands;
+  assert(DaliUsbPmicOpen(NULL, &raw) == EFI_INVALID_PARAMETER);
+  bad_fdt = true;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED);
+  bad_fdt = false; bad_ranges = true;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED);
+  bad_ranges = false; route_mask |= BIT14;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED);
+  route_mask &= ~BIT14; missing_mt6379 = true;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED && commands == before);
+  missing_mt6379 = false; nack = false; mt6379[0] = 0x73; mt6379[0x400] = 0xcf; mt6379[0x401] = 0x29;
+  disabled_pmif = true;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED);
+  disabled_pmif = false; disabled_pmic = true;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED);
+  disabled_pmic = false; bad_cells = true;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED);
+  bad_cells = false; bad_names = true;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED && commands == before);
+  bad_names = false;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_SUCCESS && context.Ready && context.Transport.revision == 3 && !context.Token.Active);
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_ALREADY_STARTED);
+  assert(dali_mt6379_read(&context.Transport, 0x400, bytes, 2) == USB_OK && bytes[0] == 0xcf && bytes[1] == 0x29);
+  DaliPmicKeysInitialize(&raw); /* Re-enable keypad after the deliberate NACK. */
+  respond = false; bytes[0] = 0xa5; before = commands;
+  assert(dali_mt6379_read(&context.Transport, 0x400, bytes, 2) == USB_TIMEOUT && context.Transport.pending_owned && bytes[0] == 0xa5);
+  assert(mReserved == &context.Token && !context.Token.Active && current_tpl == TPL_NOTIFY);
+  assert(DaliPmicKeysPoll(1000000000, &raw) == EFI_NOT_READY && commands == before + 1);
+  assert(DaliUsbPmicClose(&context) == EFI_TIMEOUT && context.Bus && context.Transport.pending_owned);
+  respond = true;
+  assert(DaliUsbPmicClose(&context) == EFI_SUCCESS && !context.Bus && !mReserved);
+  assert(DaliPmicKeysPoll(1020000000, &raw) == EFI_SUCCESS && raw == 0x1e);
+  respond = false;
+  assert(DaliPmicKeysPoll(1040000000, &raw) == EFI_TIMEOUT && mPendingOwned);
+  before = commands;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_NOT_READY && !context.Bus && commands == before);
+  respond = true;
+  assert(DaliPmicKeysPoll(1060000000, &raw) == EFI_NOT_READY && !mPendingOwned && !mReserved);
+  // A partial open can own an unanswered identification read, and must retain
+  // its context until close explicitly recovers that same command.
+  respond = false;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_TIMEOUT && context.Bus && !context.Ready && context.Transport.pending_owned);
+  respond = true;
+  assert(DaliUsbPmicClose(&context) == EFI_SUCCESS && !mReserved);
+  mt6379[0] = 0;
+  assert(DaliUsbPmicOpen(&context, &raw) == EFI_UNSUPPORTED && context.Transport.initialized && !context.Ready);
+  assert(DaliUsbPmicClose(&context) == EFI_SUCCESS && !context.Bus);
+  assert(DaliUsbPmicClose(&context) == EFI_SUCCESS);
+}
 int main(void)
 {
   UINT8 raw = 0x55;
   DaliPmicKeysInitialize(&raw);
   assert(DaliPmicKeysPoll(0, &raw) == EFI_NOT_READY && mReady && raw == 0x55 && !commands);
-  test_publication(); test_leases(); test_keypad(); test_ebs();
+  test_publication(); test_leases(); test_keypad(); test_usb_binding(); test_ebs();
   puts("PASS: production DXE shared PMIF leases/keypad ownership/TPL/EBS; Boot Services/MMIO model only");
   return 0;
 }

@@ -8,6 +8,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "Platforms/Xiaomi/daliPkg"
+GENERIC = Path(os.environ.get("UNIXNU_ROOT", ROOT.parent / "UniXNU"))
+DEVICE = Path(os.environ.get("DALI_DEVICE_ROOT", ROOT.parent / "UniXNU-Dali"))
 
 
 class PmicBusTests(unittest.TestCase):
@@ -25,13 +27,19 @@ class PmicBusTests(unittest.TestCase):
                 header = base / name
                 header.parent.mkdir(parents=True, exist_ok=True)
                 header.write_text("/* Test-only ABI seam. */\n")
+            (base / "Library/BaseMemoryLib.h").write_text("/* Test-only ABI seam. */\n")
             binary = base / "pmif-bus-test"
             command = [compiler, "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
                        "-Wconversion", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                        "-I", str(base), "-I", str(PACKAGE / "Include"),
                        "-I", str(PACKAGE / "Drivers/PmicBusDxe"),
                        "-I", str(PACKAGE / "Library/KeypadDeviceLib"),
-                       str(ROOT / "tools/dali/fixtures/pmif_bus_test.c"), "-o", str(binary)]
+                       "-I", str(PACKAGE / "Library/UsbPmicLib"),
+                       "-I", str(GENERIC / "drivers/UsbCore/include"),
+                       "-I", str(DEVICE / "drivers/DaliUsb/include"),
+                       str(ROOT / "tools/dali/fixtures/pmif_bus_test.c"),
+                       str(GENERIC / "drivers/UsbCore/UsbCore.c"),
+                       str(DEVICE / "drivers/DaliUsb/DaliUsbPmif.c"), "-o", str(binary)]
             built = subprocess.run(command, text=True, capture_output=True, timeout=60)
             self.assertEqual(built.returncode, 0, built.stderr)
             ran = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)

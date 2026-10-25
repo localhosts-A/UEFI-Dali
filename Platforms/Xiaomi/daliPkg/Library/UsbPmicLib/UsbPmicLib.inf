@@ -1,0 +1,28 @@
+[Defines]
+  INF_VERSION = 0x00010019
+  BASE_NAME = DaliUsbPmicLib
+  FILE_GUID = 12DA213F-9E7E-48A7-8903-9C2E72579E98
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = DaliUsbPmicLib|DXE_DRIVER UEFI_APPLICATION
+[Sources]
+  UsbPmicLib.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  daliPkg/dali.dec
+  UsbCore/UsbCore.dec
+  DaliUsb/DaliUsb.dec
+[LibraryClasses]
+  DaliUsbLib
+  BaseLib
+  BaseMemoryLib
+  FdtLib
+  IoLib
+  TimerLib
+  UefiBootServicesTableLib
+[Protocols]
+  gDaliPmicBusProtocolGuid ## CONSUMES
+[BuildOptions]
+  *_*_*_CC_FLAGS = -DUNIXNU_USB_EDK2

@@ -68,8 +68,32 @@ the service to new requests; USB must quiesce before the final memory map.
 Production C model tests cover leases, TPL restoration, incorrect releases,
 keypad read/NACK/timeout/late response/failed valid-clear, foreign responses and
 EBS retries. This is not physical keypad requalification or USB qualification.
-The SID14 USB adapter, resource/PHY/DMA backend and USB profile remain pending;
+`DaliUsbPmicLib` now binds the real SID14 PMIF implementation to that singleton.
+Open validates enabled FDT nodes, root/SPMI cells, the complete PMIF register
+and reg-name order, SID14 M routing and actual PMIC DEV_INFO vendor nibble before
+publishing a ready transport. A failed identification can retain a pending read;
+Close explicitly recovers that owner's command before releasing the context.
+Release-invariant failure remains faulted. Close only releases bus ownership;
+the caller must first stop dependent USB/TCPC/VBUS objects and power safely.
+This library is not yet called by an installed USB DXE controller. The
+resource/PHY/DMA backend, actual role worker and USB profile remain pending;
 ordinary USB functionality is still disabled.
+
+Build actual EDK2 core, device and UEFI PMIF libraries independently:
+
+```sh
+/path/to/mu-venv/bin/python tools/dali/build_usb_libraries.py \
+  --generic ../UniXNU --device ../UniXNU-Dali --edk2 Mu_Basecore \
+  --output ../.outputs/usb-edk2
+```
+
+The output must be outside source/dependency trees. The build validates actual
+archive members and production symbol definitions and records their hashes.
+It compiles libraries only; no EFI image linking or hardware access is performed.
+The combined `test_pmif_bus.py` fixture requires the same pinned sibling generic
+and device checkouts (or explicit `UNIXNU_ROOT` / `DALI_DEVICE_ROOT` paths), and
+exercises real USB core/PMIF/adapter/keypad/DXE code with Boot Services/FDT/MMIO
+seams. It does not validate physical PMIF, PHY, Type-C or USB functionality.
 
 After UniXNU's Exit action, firmware provides a ten-second window to hold only
 volume-down, then issues the keyed RGU software reset. This retained ramoops
