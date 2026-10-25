@@ -6,6 +6,18 @@ It publishes EFI_USB2_HC_PROTOCOL and a caller-owned device path on a new
 handle. It does not publish PCI I/O or call the source PCI DriverBinding,
 Start/Stop, reset, cancellation or timer lifecycle.
 
+`DaliUsbNativeHostWorkerDxe` is the opt-in consumer. Its independent
+`DALI_USB_NATIVE_HOST` build flag requires both the USB class stack and
+ResourceContext. The worker reads the rev5 xHCI range, acquires a persistent
+provider lease, validates every mandatory qualification bit and the exact
+`0x16700000/0x1000` window, then opens MMIO/DMA and starts the engine. Its
+provider contract covers powered MMIO, clocks, domain, PHY, host role, connector,
+VBUS, exclusive controller/IRQ, translated 32-bit DMA, cache policy and stable
+source clocks. A missing/not-ready host role remains stopped and can be retried
+through the installed worker protocol. Stop retains the lease if host halt, IO
+close or provider release fails. The provider must not force a Type-C role or
+VBUS transition.
+
 The context must be persistent, zeroed, noncopyable and used on the BSP. An
 already-open IO provider must continuously hold the actual MMIO mapping,
 clock/domain/PHY/role/connector/IRQ ownership and qualified device DMA/cache
@@ -98,11 +110,12 @@ python tools/dali/test_usb_xhci_io.py
 python tools/dali/build_usb_libraries.py --output ../.outputs/usb-libraries-native-host
 ```
 
-This is a callable engine, library and pre-final-map protocol checkpoint. QEMU
+This is a callable engine, fail-closed consumer, library and pre-final-map protocol checkpoint. QEMU
 tests exercise DarwinBoot with a one-shot mock native provider and with no
 native provider; the latter uses QEMU's standard USB2 host-controller protocol.
 Neither run emulates the native Dali controller. It is not a ready MT6991
-hardware backend: no Dali production worker currently supplies its qualified
-board policy/DMA provider or calls Start. Native-path QEMU remains required.
+hardware backend: the worker protocol has no production board provider, so the
+worker's Depex remains unsatisfied and it is not dispatched in the current FV.
+No qualified board policy/DMA provider or native-path QEMU run exists.
 The existing PCI/source USB-storage QEMU gate is separate. These files remain
 outside the default FV and hardware_qualified=false.

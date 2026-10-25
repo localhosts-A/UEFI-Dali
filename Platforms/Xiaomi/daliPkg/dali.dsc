@@ -17,6 +17,17 @@
 !ifndef DALI_USB_RESOURCE_CONTEXT
   DEFINE DALI_USB_RESOURCE_CONTEXT = FALSE
 !endif
+!ifndef DALI_USB_NATIVE_HOST
+  DEFINE DALI_USB_NATIVE_HOST = FALSE
+!endif
+!if $(DALI_USB_NATIVE_HOST) == TRUE
+  !if $(DALI_USB_HOST_STACK) != TRUE
+    !error DALI_USB_NATIVE_HOST requires DALI_USB_HOST_STACK=TRUE
+  !endif
+  !if $(DALI_USB_RESOURCE_CONTEXT) != TRUE
+    !error DALI_USB_NATIVE_HOST requires DALI_USB_RESOURCE_CONTEXT=TRUE
+  !endif
+!endif
 !ifndef DALI_UFS_PROBE
   DEFINE DALI_UFS_PROBE = FALSE
 !endif
@@ -61,6 +72,9 @@
 [Components]
 !if $(DALI_USB_RESOURCE_CONTEXT) == TRUE
   daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.inf
+!endif
+!if $(DALI_USB_NATIVE_HOST) == TRUE
+  daliPkg/Drivers/UsbNativeHostWorkerDxe/UsbNativeHostWorkerDxe.inf
 !endif
 !if $(DALI_USB_HOST_STACK) == TRUE
   MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf

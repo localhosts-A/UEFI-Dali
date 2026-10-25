@@ -180,6 +180,12 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         if usb_context not in ("true", "false"):
             raise ValueError("DALI_USB_RESOURCE_CONTEXT must be true or false")
         self.env.SetValue ("BLD_*_DALI_USB_RESOURCE_CONTEXT", "TRUE" if usb_context == "true" else "FALSE", "Opt-in USB CPU mappings/private FDT context")
+        usb_native = os.environ.get("DALI_USB_NATIVE_HOST", "false")
+        if usb_native not in ("true", "false"):
+            raise ValueError("DALI_USB_NATIVE_HOST must be true or false")
+        if usb_native == "true" and (usb_stack != "true" or usb_context != "true"):
+            raise ValueError("DALI_USB_NATIVE_HOST=true requires DALI_USB_HOST_STACK=true and DALI_USB_RESOURCE_CONTEXT=true")
+        self.env.SetValue ("BLD_*_DALI_USB_NATIVE_HOST", "TRUE" if usb_native == "true" else "FALSE", "Opt-in fail-closed native USB2 host consumer")
         ufs_probe = os.environ.get("DALI_UFS_PROBE", "false")
         if ufs_probe not in ("true", "false"):
             raise ValueError("DALI_UFS_PROBE must be true or false")

@@ -26,12 +26,18 @@ def main():
     parser.add_argument('--build', type=Path, required=True, help='DEBUG_CLANGPDB directory with AARCH64 images')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--resource-context', action='store_true', help='also verify the opt-in native CPU mapping/FDT context')
+    parser.add_argument('--native-host-worker', action='store_true', help='also verify the opt-in fail-closed native host consumer')
     args = parser.parse_args()
+    if args.native_host_worker and not args.resource_context:
+        parser.error('--native-host-worker requires --resource-context')
     fd = args.fd.read_bytes(); modules = {}
     inputs = [(name, inf, root / 'Mu_Basecore' / inf) for name, inf in MODULES.items()]
     if args.resource_context:
         inf = 'Platforms/Xiaomi/daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.inf'
         inputs.append(('DaliUsbResourceContextDxe', inf, root / inf))
+    if args.native_host_worker:
+        inf = 'Platforms/Xiaomi/daliPkg/Drivers/UsbNativeHostWorkerDxe/UsbNativeHostWorkerDxe.inf'
+        inputs.append(('DaliUsbNativeHostWorkerDxe', inf, root / inf))
     for name, inf, source in inputs:
         matches = re.findall(r'^\s*FILE_GUID\s*=\s*([0-9a-fA-F-]{36})\s*$', source.read_text(), re.M)
         if len(matches) != 1:
@@ -47,6 +53,7 @@ def main():
     result = {'scope': 'Dali opt-in source USB/class FV assembly; no native controller/DMA/role or hardware qualification',
               'hardware_qualified': False, 'final_fd': str(args.fd.resolve()),
               'resource_context_requested': args.resource_context,
+              'native_host_worker_requested': args.native_host_worker,
               'final_fd_sha256': hashlib.sha256(fd).hexdigest(), 'modules': modules,
               'verifier_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'parser_sha256': hashlib.sha256((Path(__file__).parent / 'firmware_volume.py').read_bytes()).hexdigest()}

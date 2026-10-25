@@ -1,0 +1,26 @@
+[Defines]
+  INF_VERSION = 0x00010019
+  BASE_NAME = DaliUsbNativeHostWorkerDxe
+  FILE_GUID = 763E0C70-681F-4974-86BB-4880F1EF1A4D
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DaliUsbNativeHostWorkerInitialize
+[Sources]
+  UsbNativeHostWorkerDxe.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  daliPkg/dali.dec
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  BaseMemoryLib
+  DebugLib
+  DaliUsbNativeHostLib
+  DaliUsbXhciIoLib
+[Protocols]
+  gDaliUsbResourceContextProtocolGuid ## CONSUMES
+  gDaliUsbNativeHostProviderProtocolGuid ## CONSUMES
+  gDaliUsbNativeHostWorkerProtocolGuid ## PRODUCES
+[Depex]
+  gDaliUsbResourceContextProtocolGuid AND gDaliUsbNativeHostProviderProtocolGuid

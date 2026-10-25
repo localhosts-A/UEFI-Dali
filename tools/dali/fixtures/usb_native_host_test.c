@@ -1,7 +1,9 @@
 // Real lifecycle/HC protocol, source scheduler/register/memory/transfer objects.
+#ifndef DALI_USB_NATIVE_WORKER_TEST
 #define main io_model_regressions
 #include "usb_xhci_io_test.c"
 #undef main
+#endif
 #include <stdarg.h>
 #include <Library/DaliUsbNativeHostLib.h>
 #include <Library/SynchronizationLib.h>

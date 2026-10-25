@@ -29,9 +29,10 @@ typedef struct {
  * Ports must identify USB2 standard-speed-ID ports in HC Supported Protocol
  * capabilities. This engine requires 4KiB HC pages and implements native USB2
  * interrupt endpoint admission for high-speed and external-TT full/low-speed
- * routes. Isochronous endpoints remain unsupported, and the source hub driver
- * still must select alternate setting 1 before multi-TT routing is active. No
- * hardware qualification is asserted.
+ * routes. Isochronous endpoints remain unsupported. The source hub driver now
+ * selects a validated high-speed multi-TT alternate setting before downstream
+ * traffic; the controller's MTT state changes only after successful configuration.
+ * No hardware qualification is asserted.
  * PrepareHandoff irreversibly rejects submissions and freshly proves halt,
  * without allocation/free. Start publishes this callback through the shared
  * DaliUsbNativeHostHandoff protocol; DarwinBoot calls it before the final
