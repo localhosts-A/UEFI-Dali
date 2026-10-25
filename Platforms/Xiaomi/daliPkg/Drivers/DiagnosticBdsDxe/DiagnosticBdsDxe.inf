@@ -22,6 +22,7 @@
   DebugLib
   MemoryAllocationLib
   Mt6991PlatformLib
+  Mt6991UfsDmaLib
   UefiBootManagerLib
   UefiLib
   TimerLib

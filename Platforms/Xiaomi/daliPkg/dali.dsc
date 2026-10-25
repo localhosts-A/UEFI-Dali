@@ -24,6 +24,7 @@
   CpuLib|daliPkg/Library/PollingCpuLib/PollingCpuLib.inf
   KeypadDeviceLib|daliPkg/Library/KeypadDeviceLib/KeypadDeviceLib.inf
   UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
+  Mt6991UfsDmaLib|MT6991Pkg/Library/UfsDmaLib/UfsDmaLib.inf
 
 [PcdsFixedAtBuild]
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled|$(DALI_UFS_PROBE)

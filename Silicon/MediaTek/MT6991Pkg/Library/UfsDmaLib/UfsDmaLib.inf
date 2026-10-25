@@ -1,0 +1,20 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = Mt6991UfsDmaLib
+  FILE_GUID = 6DD0FA9F-1B5A-4B2A-A354-653F38A79FE7
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = Mt6991UfsDmaLib|DXE_DRIVER DXE_RUNTIME_DRIVER UEFI_DRIVER
+[Sources]
+  UfsDma.c
+  UfsDmaUefi.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DxeServicesTableLib
+  UefiBootServicesTableLib
+[Protocols]
+  gEfiCpuArchProtocolGuid
