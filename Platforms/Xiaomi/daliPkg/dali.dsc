@@ -51,6 +51,7 @@
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosProcessorPartNumber|"MT6991"
 
 [Components]
+!if $(DALI_UFS_READ_ONLY) == TRUE
   MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe.inf {
     <LibraryClasses>
       # Media evidence needs real SHA-256 even when Secure Boot is disabled.
@@ -60,6 +61,9 @@
       IntrinsicLib|CryptoPkg/Library/IntrinsicLib/IntrinsicLib.inf
       RngLib|SiliciumPkg/Library/DxeRngLib/DxeRngLib.inf
   }
+!else
+  MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe.inf
+!endif
   MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruDxe.inf
   MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
   MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
