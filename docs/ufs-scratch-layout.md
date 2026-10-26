@@ -1,4 +1,4 @@
-# Live boot_b layout gate
+# Live partition layout gate
 
 `DaliUfsInspectScratchLayout` reads the selected LUN through a bounded callback.
 The scratch BlockIo publisher calls it through the actual read-only parent
@@ -15,18 +15,30 @@ The bounded profile supports at most 1024 entries and 128 KiB of entry data.
 Unsupported larger tables fail closed.
 
 Every active partition needs a nonzero unique GUID and a valid usable range.
-Overlaps and duplicate GUIDs are refused. There must be exactly one complete
-UTF-16 `boot_b` name, with the expected canonical GUID, start and length. GPT
+Overlaps and duplicate GUIDs are refused. The explicit grant target selects
+exactly one complete UTF-16 `boot_b` or `expdb` name, with the expected canonical GUID, start and length. GPT
 read-only bit 60 and unknown or active Unit Descriptor write protection refuse
 the layout. A zero disk GUID is accepted as observed on Android; it supplies no
-device identity. The observed partition determines the final one-MiB scratch
-window followed by a one-MiB guard. The existing grant shape gate also keeps
-the candidate extent before scratch.
+device identity. Legacy boot_b policy determines the final one-MiB scratch
+window followed by a one-MiB guard and keeps the candidate extent before scratch.
+
+The separately selected expdb policy permits only one MiB at partition-relative
+offset one MiB. The first MiB and all remaining bytes after the test window are
+outside the grant, including at least four MiB at the partition tail. The legacy
+`BootStartLba` and `BootBlocks` internal field names describe the selected
+partition; `CandidateBytes` must be zero for expdb, since the boot image is not
+stored there. Candidate/source SHA bindings remain required independently.
+Unknown target values and cross-profile reuse fail closed. This temporary test
+policy is explicitly user-requested; it does not identify reserved free space
+in the MediaTek expdb format. A complete original backup and verified restoration
+are required before the target can be used on hardware.
 
 The output is an observed layout, not a write grant. Candidate/source measurement,
 UFS device identity, original-image AVB/zero-scratch validation, a fresh token and
 evidence export before restoration remain separate authorization requirements.
 The host still has no runtime grant producer and its static grant remains zero.
+The new expdb wire format and XNU integration are also pending; changing a LUN
+or LBA in an existing boot_b grant cannot select expdb.
 
 Prepublication reads set the child's busy state. A reentrant shutdown closes
 admission and returns NOT_READY until the read returns. A shutdown requested

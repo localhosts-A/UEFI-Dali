@@ -167,6 +167,13 @@ void wire(unsigned which,uint64_t *out) {
   q[0]=1;q[1]=0x41;q[2]=2;q[3]=0x72;be32(q+12,4096);q[16]=0x2a;be32(q+18,434432);be16(q+23,1);
   g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true,true,false};memset(host,0x5a,sizeof host);
   if(which!=28)grant_init(&grant);
+  if(which>=34){
+   grant.Target=MT6991_UFS_TARGET_EXPDB;grant.BootStartLba=2184;grant.BootBlocks=32768;grant.CandidateBytes=0;
+   grant.ScratchStartLba=2440;grant.ScratchBlocks=256;grant.TailGuardBlocks=32256;
+   be32(q+18,which==35?2439:which==36?2696:which==37?2695:which==40?34951:2440);
+   if(which==38)grant.Target=MT6991_UFS_TARGET_BOOT_B;
+   if(which==39)grant.Target=2;
+  }
   if(which==30)be32(q+18,434688);
   if(which==31)g[2].WriteProtectionKnown=false;
   if(which==32)q[17]=8;
@@ -218,6 +225,13 @@ void wire(unsigned which,uint64_t *out) {
         out = self.wire(0)
         self.assertEqual(out[:7], [0, 0, 0, 1, 64577536, 4096, 1])
         self.assertEqual(out[7], 3)
+
+    def test_expdb_owned_descriptor_path_cannot_write_head_or_tail_or_reuse_boot_profile(self):
+        for mode in (34,37):
+            out=self.wire(mode)
+            self.assertEqual(out[0:4],[0,0,0,1])
+        for mode in (35,36,38,39,40):
+            self.assertNotEqual(self.wire(mode)[0],0,mode)
 
     def test_unowned_overlapping_and_hostile_descriptors_never_submit(self):
         for case in range(1, 11):

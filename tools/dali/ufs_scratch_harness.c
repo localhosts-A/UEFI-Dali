@@ -30,7 +30,8 @@ static UINT32 crc(CONST UINT8 *p,unsigned n){
 static void layout_fixture(void){
  memset(gpt_entries,0,sizeof gpt_entries);memset(gpt_entries,1,16);memset(gpt_entries+16,4,16);
  put64(gpt_entries+32,grant.BootStartLba);put64(gpt_entries+40,grant.BootStartLba+grant.BootBlocks-1);
- const char *name="boot_b";for(unsigned i=0;i<6;i++)gpt_entries[56+2*i]=name[i];
+ const char *name=grant.Target==MT6991_UFS_TARGET_EXPDB?"expdb":"boot_b";
+ for(unsigned i=0;i<strlen(name);i++)gpt_entries[56+2*i]=name[i];
  unsigned block=grant.BlockSize,array_blocks=(512+block-1)/block;
  for(unsigned i=0;i<2;i++){
   UINT8 *h=i?gpt_backup:gpt_primary;memset(h,0,4096);memcpy(h,"EFI PART",8);
@@ -152,6 +153,10 @@ VOID run (unsigned which, UINT64 *out) {
   if(which==3){grant.CapacityBlocks=0x200000000ULL;grant.BootStartLba=0x100000000ULL;}
   grant.ScratchBlocks=grant.TailGuardBlocks=1024*1024/grant.BlockSize;
   grant.ScratchStartLba=grant.BootStartLba+grant.BootBlocks-2*grant.ScratchBlocks;
+  if(which==40){
+   grant.Target=MT6991_UFS_TARGET_EXPDB;grant.BootStartLba=2184;grant.BootBlocks=32768;grant.CandidateBytes=0;
+   grant.ScratchStartLba=2440;grant.TailGuardBlocks=32256;
+  }
   geometry[2]=(MT6991_UFS_GEOMETRY){grant.CapacityBlocks,grant.BlockSize,TRUE,TRUE,FALSE};
   media=(EFI_BLOCK_IO_MEDIA){.MediaId=123,.MediaPresent=TRUE,.ReadOnly=TRUE,.BlockSize=grant.BlockSize,.IoAlign=8,.LastBlock=grant.CapacityBlocks-1};
   parent=(EFI_BLOCK_IO_PROTOCOL){.Media=&media,.ReadBlocks=root_read};scsi=(EFI_SCSI_IO_PROTOCOL){.IoAlign=8,.ExecuteScsiCommand=execute};

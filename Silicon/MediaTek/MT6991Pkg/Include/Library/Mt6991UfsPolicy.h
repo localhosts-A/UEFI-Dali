@@ -8,6 +8,8 @@ typedef struct {
   BOOLEAN Valid, WriteProtectionKnown, WriteProtected;
 } MT6991_UFS_GEOMETRY;
 #define MT6991_UFS_COMMAND_TIMEOUT_100NS 30000000ULL
+#define MT6991_UFS_TARGET_BOOT_B 0U
+#define MT6991_UFS_TARGET_EXPDB 1U
 EFI_STATUS Mt6991UfsBoundTimeout (UINT64 *Timeout);
 typedef struct {
   // Populated only by a future verified layout/identity path. This layer checks
@@ -20,6 +22,9 @@ typedef struct {
   UINT32 BlockSize;
   UINT64 CapacityBlocks, BootStartLba, BootBlocks, CandidateBytes;
   UINT64 ScratchStartLba, ScratchBlocks, TailGuardBlocks;
+  // Explicit partition policy; legacy zero is boot_b. Expdb never uses the
+  // boot-image extent field: CandidateBytes must be zero for that target.
+  UINT32 Target;
 } MT6991_UFS_SCRATCH_GRANT;
 typedef struct {
   UINT8 *Trd, *Request, *Response, *Data;

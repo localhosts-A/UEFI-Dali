@@ -21,7 +21,7 @@ class Grant(c.Structure):
                 ('source', c.c_ubyte * 32), ('guid', c.c_ubyte * 16), ('block', c.c_uint32),
                 ('capacity', c.c_uint64), ('boot_start', c.c_uint64), ('boot_blocks', c.c_uint64),
                 ('candidate_bytes', c.c_uint64), ('scratch_start', c.c_uint64),
-                ('scratch_blocks', c.c_uint64), ('guard_blocks', c.c_uint64)]
+                ('scratch_blocks', c.c_uint64), ('guard_blocks', c.c_uint64), ('target', c.c_uint32)]
 
 
 class Layout(c.Structure):
@@ -30,7 +30,7 @@ class Layout(c.Structure):
                 ('primary_crc', c.c_uint32), ('backup_crc', c.c_uint32),
                 ('capacity', c.c_uint64), ('boot_start', c.c_uint64), ('boot_blocks', c.c_uint64),
                 ('scratch_start', c.c_uint64), ('scratch_blocks', c.c_uint64), ('guard_blocks', c.c_uint64),
-                ('guid', c.c_ubyte * 16)]
+                ('guid', c.c_ubyte * 16), ('target', c.c_uint32)]
 
 
 READ = c.CFUNCTYPE(c.c_uint64, c.c_void_p, c.c_ubyte, c.c_uint64, c.c_size_t, c.c_void_p)
@@ -265,6 +265,34 @@ UINTN layout_size(VOID){return sizeof(DALI_UFS_LAYOUT);}
         self.media()
         self.assertEqual(self.inspect(WORK_BYTES-1)[0], ERROR|5)
         self.assertEqual(self.reads, [])
+
+    def expdb(self):
+        self.media(4096, boot_start=2184)
+        self.boot_blocks = 128*1024*1024//self.block
+        self.entry(0, 2184, 2184+self.boot_blocks-1, 'expdb', self.boot_guid)
+        self.entry(1, 2184+self.boot_blocks, 2184+self.boot_blocks+10, 'other', uuid.UUID(int=2))
+        self.grant.target=1; self.grant.boot_blocks=self.boot_blocks; self.grant.candidate_bytes=0
+        self.grant.scratch_start=2184+self.grant.scratch_blocks
+        self.grant.guard_blocks=self.boot_blocks-2*self.grant.scratch_blocks
+        self.rebuild()
+
+    def test_expdb_profile_derives_early_window_preserves_head_and_tail(self):
+        self.expdb()
+        status, out = self.inspect()
+        self.assertEqual(status, 0)
+        self.assertEqual((out.target, out.boot_start, out.boot_blocks, out.scratch_start,
+                          out.scratch_blocks, out.guard_blocks), (1,2184,32768,2440,256,32256))
+
+    def test_expdb_cannot_reuse_boot_b_name_profile_or_extent(self):
+        for kind in ('name','target','extent','tail','window'):
+            self.expdb()
+            if kind=='name':
+                self.entry(0,2184,34951,'boot_b',self.boot_guid); self.rebuild()
+            if kind=='target': self.grant.target=0
+            if kind=='extent': self.grant.candidate_bytes=1
+            if kind=='tail': self.grant.guard_blocks=256
+            if kind=='window': self.grant.scratch_start=34952-512; self.grant.guard_blocks=256
+            self.assertNotEqual(self.inspect()[0],0,kind)
 
 
 if __name__ == '__main__':

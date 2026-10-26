@@ -56,7 +56,7 @@ STATIC BOOLEAN Nonzero (CONST UINT8 *Bytes, UINTN Length) {
 STATIC BOOLEAN ValidScratchGrant (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
   CONST UINT64 ScratchBytes = 1024ULL * 1024ULL;
   UINT64 BootEnd, BootBytes, WindowBlocks;
-  if (Grant == NULL || !Grant->Enabled || Grant->Lun >= 8 ||
+  if (Grant == NULL || !Grant->Enabled || Grant->Lun >= 8 || Grant->Target > MT6991_UFS_TARGET_EXPDB ||
       !Nonzero (Grant->DeviceBinding, sizeof Grant->DeviceBinding) ||
       !Nonzero (Grant->CandidateSha256, sizeof Grant->CandidateSha256) ||
       !Nonzero (Grant->SourceSha256, sizeof Grant->SourceSha256) ||
@@ -67,19 +67,28 @@ STATIC BOOLEAN ValidScratchGrant (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
   }
   if (Grant->Token[32] != 0 || Grant->BlockSize < 512 || Grant->BlockSize > 65536 ||
       (Grant->BlockSize & (Grant->BlockSize - 1)) || ScratchBytes % Grant->BlockSize ||
-      Grant->CapacityBlocks == 0 || Grant->BootBlocks == 0 || Grant->CandidateBytes == 0 ||
+      Grant->CapacityBlocks == 0 || Grant->BootBlocks == 0 ||
       Grant->BootBlocks > MAX_UINT64 / Grant->BlockSize) { return FALSE; }
   BootBytes = Grant->BootBlocks * Grant->BlockSize;
   if (Grant->CandidateBytes > BootBytes || Grant->BootStartLba >= Grant->CapacityBlocks ||
       Grant->BootBlocks > Grant->CapacityBlocks - Grant->BootStartLba) { return FALSE; }
   WindowBlocks = ScratchBytes / Grant->BlockSize;
-  if (Grant->ScratchBlocks != WindowBlocks || Grant->TailGuardBlocks != WindowBlocks) { return FALSE; }
+  if (Grant->ScratchBlocks != WindowBlocks) { return FALSE; }
   BootEnd = Grant->BootStartLba + Grant->BootBlocks;
   if (Grant->ScratchStartLba < Grant->BootStartLba || Grant->ScratchStartLba > BootEnd ||
       Grant->ScratchBlocks > BootEnd - Grant->ScratchStartLba ||
-      Grant->TailGuardBlocks != BootEnd - Grant->ScratchStartLba - Grant->ScratchBlocks ||
-      Grant->ScratchStartLba - Grant->BootStartLba > MAX_UINT64 / Grant->BlockSize ||
-      (Grant->ScratchStartLba - Grant->BootStartLba) * Grant->BlockSize < Grant->CandidateBytes) { return FALSE; }
+      Grant->TailGuardBlocks != BootEnd - Grant->ScratchStartLba - Grant->ScratchBlocks) { return FALSE; }
+  if (Grant->Target == MT6991_UFS_TARGET_BOOT_B) {
+    if (Grant->TailGuardBlocks != WindowBlocks || Grant->CandidateBytes == 0 ||
+        Grant->ScratchStartLba - Grant->BootStartLba > MAX_UINT64 / Grant->BlockSize ||
+        (Grant->ScratchStartLba - Grant->BootStartLba) * Grant->BlockSize < Grant->CandidateBytes) { return FALSE; }
+  } else {
+    // Temporary expdb test: preserve its first MiB and all bytes after the next
+    // MiB, including at least four MiB at the tail. This is not a free-space claim.
+    if (Grant->CandidateBytes != 0 || Grant->BootBlocks < 6 * WindowBlocks ||
+        Grant->ScratchStartLba != Grant->BootStartLba + WindowBlocks ||
+        Grant->TailGuardBlocks < 4 * WindowBlocks) { return FALSE; }
+  }
   return TRUE;
 }
 

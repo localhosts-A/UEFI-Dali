@@ -79,6 +79,13 @@ class UfsScratchTests(unittest.TestCase):
         self.assertEqual(r[28:30], [0x100000000+15872, 0x100000000+16127])
         self.assertEqual(r[32:35], [16, 16, 10])
 
+    def test_expdb_child_has_only_its_explicit_one_mib_window(self):
+        r=self.case(40)
+        self.assertEqual((r[0],r[2],r[20],r[23]),(0,1,3,4))
+        self.assertEqual(r[12:15],[4096,255,0])
+        self.assertEqual(r[28:30],[2440,2695])
+        self.assertEqual(r[6],2)  # first relative block beyond the scratch window
+
     def test_any_submitted_error_is_sticky_and_never_replayed(self):
         for mode, first in [(4, 18), (5, 7), (6, 7), (7, 7), (8, 13)]:
             with self.subTest(mode=mode):

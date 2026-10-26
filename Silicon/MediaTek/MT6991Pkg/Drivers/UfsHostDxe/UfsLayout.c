@@ -58,9 +58,12 @@ STATIC BOOLEAN Header (CONST UINT8 *P, CONST MT6991_UFS_GEOMETRY *G,
   // Both arrays must be outside the usable area and outside both headers.
   return Primary ? H->EntriesLba + Blocks <= H->First : H->EntriesLba > H->Last;
 }
-STATIC BOOLEAN BootName (CONST UINT8 *P) {
-  STATIC CONST UINT8 Name[14] = { 'b',0,'o',0,'o',0,'t',0,'_',0,'b',0,0,0 };
-  return CompareMem (P + 56, Name, sizeof Name) == 0;
+STATIC BOOLEAN TargetName (CONST UINT8 *P, UINT32 Target) {
+  STATIC CONST UINT8 BootB[14] = { 'b',0,'o',0,'o',0,'t',0,'_',0,'b',0,0,0 };
+  STATIC CONST UINT8 Expdb[12] = { 'e',0,'x',0,'p',0,'d',0,'b',0,0,0 };
+  UINTN Bytes = Target == MT6991_UFS_TARGET_EXPDB ? sizeof Expdb : sizeof BootB;
+  CONST UINT8 *Name = Target == MT6991_UFS_TARGET_EXPDB ? Expdb : BootB;
+  return CompareMem (P + 56, Name, Bytes) == 0;
 }
 STATIC VOID Guid (CONST UINT8 *Little, UINT8 *Canonical) {
   STATIC CONST UINT8 Order[16] = {3,2,1,0,5,4,7,6,8,9,10,11,12,13,14,15};
@@ -114,8 +117,9 @@ EFI_STATUS DaliUfsInspectScratchLayout (CONST MT6991_UFS_GEOMETRY *Geometry,
       if (Nonzero (Q, 16) && (CompareMem (P + 16, Q + 16, 16) == 0 ||
           (First <= Le64 (Q + 40) && Le64 (Q + 32) <= Last))) { return EFI_VOLUME_CORRUPTED; }
     }
-    if (BootName (P)) {
-      if (Boot != NULL || Nonzero (P + 70, 58)) { return EFI_VOLUME_CORRUPTED; }
+    if (TargetName (P, Expected->Target)) {
+      UINTN End = Expected->Target == MT6991_UFS_TARGET_EXPDB ? 68 : 70;
+      if (Boot != NULL || Nonzero (P + End, 128 - End)) { return EFI_VOLUME_CORRUPTED; }
       Boot = P;
     }
   }
@@ -124,11 +128,16 @@ EFI_STATUS DaliUfsInspectScratchLayout (CONST MT6991_UFS_GEOMETRY *Geometry,
   DALI_UFS_LAYOUT L;
   ZeroMem (&L, sizeof L);
   L.Lun = Expected->Lun; L.BlockSize = G.BlockSize; L.CapacityBlocks = G.Blocks;
+  L.Target = Expected->Target;
   L.BootStartLba = Le64 (Boot + 32); L.BootBlocks = Le64 (Boot + 40) - L.BootStartLba + 1;
   Guid (Boot + 16, L.PartitionGuid);
   L.ScratchBlocks = L.TailGuardBlocks = (1024U * 1024U) / G.BlockSize;
   if (L.BootBlocks < 2 * L.ScratchBlocks) { return EFI_ACCESS_DENIED; }
-  L.ScratchStartLba = L.BootStartLba + L.BootBlocks - 2 * L.ScratchBlocks;
+  if (L.Target == MT6991_UFS_TARGET_EXPDB) {
+    if (L.BootBlocks < 6 * L.ScratchBlocks) { return EFI_ACCESS_DENIED; }
+    L.ScratchStartLba = L.BootStartLba + L.ScratchBlocks;
+    L.TailGuardBlocks = L.BootBlocks - 2 * L.ScratchBlocks;
+  } else { L.ScratchStartLba = L.BootStartLba + L.BootBlocks - 2 * L.ScratchBlocks; }
   if (L.BootStartLba != Expected->BootStartLba || L.BootBlocks != Expected->BootBlocks ||
       CompareMem (L.PartitionGuid, Expected->PartitionGuid, sizeof L.PartitionGuid) ||
       L.ScratchStartLba != Expected->ScratchStartLba || L.ScratchBlocks != Expected->ScratchBlocks ||

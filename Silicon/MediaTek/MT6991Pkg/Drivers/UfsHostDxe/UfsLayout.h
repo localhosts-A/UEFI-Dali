@@ -15,6 +15,7 @@ typedef struct {
   UINT64 CapacityBlocks, BootStartLba, BootBlocks, ScratchStartLba, ScratchBlocks, TailGuardBlocks;
   // RFC 4122 byte order, as in the host/XNU grant, rather than GPT's mixed endian GUID.
   UINT8 PartitionGuid[16];
+  UINT32 Target;
 } DALI_UFS_LAYOUT;
 
 // Read exactly two headers and two bounded entry arrays; never retry a read.
