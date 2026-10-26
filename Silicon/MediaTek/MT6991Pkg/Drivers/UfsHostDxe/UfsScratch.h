@@ -2,6 +2,7 @@
 #pragma once
 #include <Library/Mt6991UfsPolicy.h>
 #include "UfsLayout.h"
+#include <Protocol/BlockIo.h>
 
 // Invoked after real GPT inspection and before child installation. Until then
 // Proposal is never the host's live write grant. Callback returns the verified
@@ -19,3 +20,9 @@ EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
 EFI_STATUS DaliUfsScratchCloseAdmission (VOID);
 // Call after closing host admission and before disconnecting the SCSI parent.
 EFI_STATUS DaliUfsScratchUnpublish (VOID);
+// Only the exact live, authorized grant may retrieve this driver's own child.
+// Returned interface still rechecks media, revocation and ownership on every IO.
+EFI_STATUS DaliUfsScratchOwnedIo (CONST MT6991_UFS_SCRATCH_GRANT *Live,
+  EFI_BLOCK_IO_PROTOCOL **Io);
+// Irreversible for this boot. Reads remain valid, all child writes refuse.
+EFI_STATUS DaliUfsScratchSealReadOnly (CONST MT6991_UFS_SCRATCH_GRANT *Live);

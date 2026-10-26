@@ -11,8 +11,10 @@
 #include <Library/UefiLib.h>
 #include <Library/Mt6991UfsController.h>
 #include <Library/Mt6991UfsPolicy.h>
+#include <Library/Mt6991PlatformLib.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/DaliUfsDiagnostic.h>
+#include <Protocol/DaliUfsLog.h>
 #include <Protocol/UfsHostControllerPlatform.h>
 #include <Protocol/UniXNUStorageQuiesce.h>
 #include "UfsHostInternal.h"
@@ -21,6 +23,7 @@
 #include "UfsIdentity.h"
 #include "UfsProvenance.h"
 #include "UfsGrant.h"
+#include "UfsLogConsole.h"
 
 #define HCI 0x16810000U
 #define WINDOW 0x2A00U
@@ -30,6 +33,8 @@ STATIC MT6991_UFS_DMA mDma;
 STATIC MT6991_UFS_GEOMETRY mGeometry[8];
 // Zero until independent provenance/identity/geometry/GPT checks all succeed.
 STATIC MT6991_UFS_SCRATCH_GRANT mScratchGrant;
+STATIC CONST MT6991_UFS_SCRATCH_GRANT mDeniedGrant;
+STATIC BOOLEAN mWritesInhibited;
 STATIC DALI_UFS_GRANT_STATE mGrantState;
 STATIC DALI_UFS_IDENTITY mIdentity;
 STATIC DALI_UFS_PROVENANCE mProvenance;
@@ -42,6 +47,8 @@ STATIC DALI_UFS_SHUTDOWN mShutdown;
 STATIC EFI_STATUS mQuiesceFailure;
 STATIC BOOLEAN mQuiesced, mQuiescing;
 STATIC UNIXNU_STORAGE_QUIESCE_PROTOCOL mStorage;
+STATIC DALI_UFS_LOG_PROTOCOL mLogProtocol;
+STATIC DALI_UFS_LOG_CONSOLE mLogConsole;
 
 STATIC UINT32 IoRead (UINTN Address, VOID *Context) { (VOID)Context; return MmioRead32 (Address); }
 STATIC BOOLEAN IoWrite (UINTN Address, UINT32 Value, VOID *Context) {
@@ -233,7 +240,7 @@ STATIC EFI_STATUS EFIAPI WriteLocked (EDKII_UFS_HOST_CONTROLLER_PROTOCOL *This,
   if (Offset == 0x58) {
     if (Value != 1 || !mTrl || mDma.Busy || MmioRead32 (HCI + 0x58) ||
         MmioRead32 (HCI + 0x78) || MmioRead32 (HCI + 0x60) != 1) { return EFI_ACCESS_DENIED; }
-    EFI_STATUS Status = Mt6991UfsValidateTransfer (&mDma, mTrl, mGeometry, &mScratchGrant,
+    EFI_STATUS Status = Mt6991UfsValidateTransfer (&mDma, mTrl, mGeometry, mWritesInhibited ? &mDeniedGrant : &mScratchGrant,
       !mInitUsed && !mInitFinished, &mPending);
     if (!EFI_ERROR (Status)) { Status = Mt6991UfsDmaSubmit (&mDma); }
     if (!EFI_ERROR (Status)) {
@@ -323,6 +330,7 @@ STATIC EFI_STATUS EFIAPI Callback (EFI_HANDLE Controller, EDKII_UFS_HC_PLATFORM_
       if (Policy->Event != NULL || P->Cdb == NULL || EFI_ERROR (Mt6991UfsBoundTimeout (&P->Timeout))) { return EFI_ACCESS_DENIED; }
       UINT8 Opcode = ((UINT8 *)P->Cdb)[0];
       if (Opcode == 0x2A || Opcode == 0x8A) {
+        if (mWritesInhibited) { return EFI_WRITE_PROTECTED; }
         if (P->InTransferLength || P->InDataBuffer != NULL ||
             P->DataDirection != EFI_EXT_SCSI_DATA_DIRECTION_WRITE ||
             P->OutTransferLength == 0 || P->OutDataBuffer == NULL) { return EFI_ACCESS_DENIED; }
@@ -382,6 +390,9 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   *Controller = NULL;
   if (mAttempted || mShutdown.Attempted) { return EFI_ALREADY_STARTED; }
   mAttempted = TRUE;
+  if (FixedPcdGetBool (PcdDaliUfsLogEnabled) && !FixedPcdGetBool (PcdDaliUfsScratchEnabled)) {
+    return EFI_SECURITY_VIOLATION;
+  }
   if (FixedPcdGetBool (PcdDaliUfsScratchEnabled) && !FixedPcdGetBool (PcdDaliUfsMeasurePayload)) {
     return EFI_SECURITY_VIOLATION;
   }
@@ -491,10 +502,48 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
 }
 STATIC DALI_UFS_DIAGNOSTIC_PROTOCOL mDiagnostic = { Initialize, Quiesce };
 STATIC UNIXNU_STORAGE_QUIESCE_PROTOCOL mStorage = { UNIXNU_STORAGE_QUIESCE_REVISION, StorageQuiesce };
+STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode) {
+  if (This != &mLogProtocol || !FixedPcdGetBool (PcdDaliUfsLogEnabled) ||
+      (Mode != DALI_UFS_LOG_WRITE && Mode != DALI_UFS_LOG_READBACK)) { return EFI_ACCESS_DENIED; }
+  if (mClosed || mQuiescing || mQuiesced || !mGrantState.Prepared || !mScratchGrant.Enabled ||
+      !mProvenance.Ready || !mIdentity.Ready) { return EFI_NOT_READY; }
+  if (EfiGetCurrentTpl () != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
+  if (mDma.Busy || mLogConsole.Attempted) { return EFI_ALREADY_STARTED; }
+  if (Mode == DALI_UFS_LOG_WRITE && mWritesInhibited) { return EFI_WRITE_PROTECTED; }
+  if (Mode == DALI_UFS_LOG_READBACK) {
+    // Inhibit both SCSI admission and the owned-descriptor doorbell before
+    // changing the child's media flag. No path reopens writes this boot.
+    EFI_TPL Old = gBS->RaiseTPL (TPL_NOTIFY);
+    mWritesInhibited = TRUE;
+    gBS->RestoreTPL (Old);
+    EFI_STATUS Sealed = DaliUfsScratchSealReadOnly (&mScratchGrant);
+    if (Sealed != EFI_SUCCESS) { return Sealed; }
+  }
+  CONST CHAR8 *Token = FixedPcdGetPtr (PcdDaliUfsStorageToken);
+  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u begin sequence=%Lu owner=1\n", Token, Mode, mGrantState.Sequence));
+  EFI_STATUS Status = DaliUfsLogConsoleRun (&mLogConsole, &mScratchGrant, mGrantState.Sequence,
+    Mode == DALI_UFS_LOG_READBACK, (CONST VOID *)(UINTN)DALI_CONSOLE_BASE, DALI_CONSOLE_SIZE - 12);
+  CHAR8 Digest[65]; STATIC CONST CHAR8 Hex[] = "0123456789abcdef";
+  for (UINTN I = 0; I < 32; ++I) {
+    Digest[2 * I] = Hex[mLogConsole.Record.BodySha256[I] >> 4];
+    Digest[2 * I + 1] = Hex[mLogConsole.Record.BodySha256[I] & 15];
+  }
+  Digest[64] = 0;
+  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u result=%r attempted=%u submitted=%u synced=%u verified=%u bytes=%u sequence=%Lu sha256=%a\n",
+    Token, Mode, Status, mLogConsole.Attempted, mLogConsole.Record.WriteSubmitted,
+    mLogConsole.Record.CommitSynced, mLogConsole.Record.Verified, mLogConsole.Record.BodyBytes,
+    mGrantState.Sequence, Digest));
+  return Status;
+}
+STATIC DALI_UFS_LOG_PROTOCOL mLogProtocol = { DALI_UFS_LOG_REVISION, RunConsoleLog };
 EFI_STATUS EFIAPI DaliUfsHostEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *SystemTable) {
   (VOID)SystemTable;
   if (!FixedPcdGetBool (PcdDaliUfsReadOnlyEnabled)) { return EFI_NOT_STARTED; }
   if (FixedPcdGetBool (PcdDaliUfsProbeEnabled)) { return EFI_ACCESS_DENIED; }
+  if (FixedPcdGetBool (PcdDaliUfsLogEnabled)) {
+    return gBS->InstallMultipleProtocolInterfaces (&Image, &gDaliUfsDiagnosticProtocolGuid, &mDiagnostic,
+      &gUniXNUStorageQuiesceProtocolGuid, &mStorage, &gDaliUfsLogProtocolGuid, &mLogProtocol, NULL);
+  }
   return gBS->InstallMultipleProtocolInterfaces (&Image,
     &gDaliUfsDiagnosticProtocolGuid, &mDiagnostic, &gUniXNUStorageQuiesceProtocolGuid, &mStorage, NULL);
 }

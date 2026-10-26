@@ -23,6 +23,7 @@
 #include <Library/PcdLib.h>
 #include <Configuration/BootDevices.h>
 #include "DaliBootPolicy.h"
+#include "DaliUfsLogMenu.h"
 
 STATIC volatile UINTN mTicks;
 STATIC EFI_HANDLE mBdsImage;
@@ -301,6 +302,10 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       if (!EFI_ERROR (UfsStatus)) { UfsStatus = gBS->LocateProtocol (&gDaliUfsDiagnosticProtocolGuid, NULL, (VOID **)&Ufs); }
       if (!EFI_ERROR (UfsStatus)) { UfsStatus = Ufs->Initialize ((VOID *)(UINTN)DALI_FDT_BASE, &Controller); }
       DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: diagnostic initialization=%r\n", UfsStatus));
+      if (UfsStatus == EFI_SUCCESS && FixedPcdGetBool (PcdDaliUfsLogEnabled)) {
+        EFI_STATUS LogStatus = DaliUfsLogMenu (In, Out);
+        DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a menu=%r\n", mRunToken, LogStatus));
+      }
       if (Out != NULL) {
         UnicodeSPrint (Text, sizeof Text, L"UFS: initialization returned %r; stopping host.\r\n", UfsStatus);
         Out->OutputString (Out, Text);

@@ -75,6 +75,7 @@ typedef struct {bool Touched;unsigned Io;} CONTROL;
 typedef struct {bool Attempted,Completed;unsigned SyncedLuns,Commands;EFI_STATUS Status;} SHUTDOWN;
 typedef struct {unsigned unused;} UNIXNU_STORAGE_QUIESCE_PROTOCOL;
 static DMA mDma;static CONTROL mControl;static SHUTDOWN mShutdown;static MT6991_UFS_SCRATCH_GRANT mScratchGrant;
+static const MT6991_UFS_SCRATCH_GRANT mDeniedGrant;static bool mWritesInhibited,denied_selected;
 static struct {unsigned Transaction;unsigned char *Request;} mPending;
 static unsigned mGeometry[8],mTrl,mTmrl;static volatile uint64_t mCompletedSync[8];
 static bool mClosed,mDisconnected,mQuiesced,mQuiescing,mInitUsed,mInitFinished;static EFI_STATUS mQuiesceFailure;
@@ -99,7 +100,7 @@ static unsigned Mt6991UfsStop(CONTROL *c){(void)c;if(tpl!=TPL_NOTIFY)abort();++s
 static EFI_STATUS Mt6991UfsDmaStopped(DMA *d,uint32_t enabled){add(3);if(enabled!=0)return EFI_NOT_READY;d->Stopped=true;return 0;}
 static EFI_STATUS Mt6991UfsDmaReleaseAll(DMA *d){if(tpl!=TPL_NOTIFY)abort();++release_calls;add(6);if(!d->Stopped||hce)return EFI_DEVICE_ERROR;return scenario==6&&release_calls==1?EFI_DEVICE_ERROR:0;}
 static EFI_STATUS Mt6991UfsDmaResolve(DMA *d,UINT64 a,UINTN n,bool common,void **p){(void)d;(void)a;(void)n;(void)common;(void)p;return 0;}
-static EFI_STATUS Mt6991UfsValidateTransfer(DMA *d,UINT64 a,void *g,void *grant,bool init,void *p){(void)d;(void)a;(void)g;(void)grant;(void)init;(void)p;++validate_calls;return 0;}
+static EFI_STATUS Mt6991UfsValidateTransfer(DMA *d,UINT64 a,void *g,const void *grant,bool init,void *p){(void)d;(void)a;(void)g;(void)init;(void)p;++validate_calls;denied_selected=grant==&mDeniedGrant;return denied_selected?E(8):0;}
 static EFI_STATUS Mt6991UfsDmaSubmit(DMA *d){if(tpl!=TPL_NOTIFY)abort();d->Busy=true;++submit_calls;return 0;}
 static EFI_STATUS Mt6991UfsDmaAllocate(DMA *d,UINTN n,void **h){(void)d;(void)n;(void)h;++alloc_calls;return 0;}
 static EFI_STATUS Mt6991UfsDmaMap(DMA *d,unsigned op,void *h,UINTN n,UINT64 *dev,UINT64 *id){(void)d;(void)op;(void)h;(void)n;(void)dev;(void)id;++map_calls;return 0;}
@@ -130,7 +131,8 @@ void run(unsigned s,uint64_t *out){
  mDma=(DMA){true,false,false,false};mClosed=mDisconnected=mQuiesced=mQuiescing=false;mQuiesceFailure=0;mController=(void*)1;
  hce=1;tpl=4;mmio_writes=submit_calls=validate_calls=0;raise_hook=false;reentrant_status=0;mTrl=0x10000000;
  mScratchGrant.unused=123;
- if(s==10){raise_hook=true;uint32_t doorbell=1;out[0]=Write(&mHost,EfiUfsHcWidthUint32,0x58,1,&doorbell);}
+ mWritesInhibited=s==16;denied_selected=false;
+ if(s==10||s==16){raise_hook=s==10;uint32_t doorbell=1;out[0]=Write(&mHost,EfiUfsHcWidthUint32,0x58,1,&doorbell);}
  else {if(s==12)tpl=16;if(s==13)tpl=31;out[0]=StorageQuiesce(&mStorage);}
  out[1]=mClosed;out[2]=mQuiesced;out[3]=mQuiesceFailure;
  out[4]=sync_commands;out[5]=stop_calls;out[6]=disconnect_calls;out[7]=probe_calls;out[8]=release_calls;
@@ -139,6 +141,7 @@ void run(unsigned s,uint64_t *out){
  out[84]=release_calls;out[85]=mQuiesced;out[86]=StorageQuiesce(NULL);
  out[87]=mmio_writes;out[88]=submit_calls;out[89]=validate_calls;out[90]=tpl;out[91]=reentrant_status;out[92]=mQuiescing;
  out[93]=mScratchGrant.unused;
+ out[94]=denied_selected;
 }
 '''
         (base/'envelope.c').write_text(prefix+'\n'.join(functions)+suffix)
@@ -166,6 +169,11 @@ void run(unsigned s,uint64_t *out){
     def test_live_write_grant_is_revoked_before_stop_or_deferred_inflight_shutdown(self):
         for scenario in (0,1,2,15):
             self.assertEqual(self.case(scenario)[93],0)
+
+    def test_readback_selects_zero_write_grant_before_actual_descriptor_doorbell(self):
+        out=self.case(16)
+        self.assertEqual(out[0],(1<<63)|8)
+        self.assertEqual(out[87:90],[0,0,1]);self.assertEqual(out[94],1)
 
     def test_drain_failure_still_stops_and_cleans_but_never_authorizes_handoff(self):
         out = self.case(1)

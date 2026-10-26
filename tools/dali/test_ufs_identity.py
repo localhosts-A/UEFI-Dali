@@ -38,6 +38,7 @@ class UfsIdentityTests(unittest.TestCase):
 static DALI_UFS_IDENTITY mIdentity;
 static MT6991_UFS_GEOMETRY mGeometry[8];
 static MT6991_UFS_SCRATCH_GRANT mScratchGrant;
+static BOOLEAN mWritesInhibited,DirectGate;static UINT32 WritePolicyCalls;
 static BOOLEAN mClosed,mInitUsed,mInitFinished;
 static EFI_HANDLE mController=(VOID*)1;
 EDKII_UFS_HC_PLATFORM_PROTOCOL *mUfsHcPlatform;
@@ -54,8 +55,8 @@ BOOLEAN EFIAPI Sha256HashAll(CONST VOID *Data,UINTN Bytes,UINT8 *Digest){
  ++Hashes;if(Fault==8){memset(Digest,0xAA,32);return FALSE;}
  return HashBackend!=NULL && HashBackend(Data,Bytes,Digest);
 }
-EFI_STATUS Mt6991UfsBoundTimeout(UINT64 *T){(VOID)T;return EFI_UNSUPPORTED;}
-EFI_STATUS Mt6991UfsScratchWriteCommand(CONST MT6991_UFS_GEOMETRY *G,CONST MT6991_UFS_SCRATCH_GRANT *S,UINT8 L,CONST UINT8 *C,UINTN N,UINT32 B){(VOID)G;(VOID)S;(VOID)L;(VOID)C;(VOID)N;(VOID)B;return EFI_UNSUPPORTED;}
+EFI_STATUS Mt6991UfsBoundTimeout(UINT64 *T){(VOID)T;return DirectGate?EFI_SUCCESS:EFI_UNSUPPORTED;}
+EFI_STATUS Mt6991UfsScratchWriteCommand(CONST MT6991_UFS_GEOMETRY *G,CONST MT6991_UFS_SCRATCH_GRANT *S,UINT8 L,CONST UINT8 *C,UINTN N,UINT32 B){(VOID)G;(VOID)S;(VOID)L;(VOID)C;(VOID)N;(VOID)B;++WritePolicyCalls;return DirectGate?EFI_SUCCESS:EFI_UNSUPPORTED;}
 EFI_STATUS Mt6991UfsReadOnlyCommand(CONST MT6991_UFS_GEOMETRY *G,UINT8 L,CONST UINT8 *C,UINTN N,UINT32 B){(VOID)G;(VOID)L;(VOID)C;(VOID)N;(VOID)B;return EFI_UNSUPPORTED;}
 EFI_STATUS Mt6991UfsReadOnlyQuery(UINT8 Op,UINT8 Id,UINT8 Ix,UINT8 Sel,UINT32 N,BOOLEAN Init){(VOID)Op;(VOID)Id;(VOID)Ix;(VOID)Sel;(VOID)N;(VOID)Init;return EFI_UNSUPPORTED;}
 EFI_STATUS UfsRwDeviceDesc(UFS_PASS_THRU_PRIVATE_DATA *P,BOOLEAN Read,UINT8 Id,UINT8 Ix,UINT8 Sel,VOID *D,UINT32 *N){
@@ -101,6 +102,15 @@ VOID identity_run(UINT32 Version,UINT32 Failure,UINT64 *Out,UINT8 *Digest){
 VOID identity_direct(CONST UINT8 *D,UINT32 DN,CONST UINT8 *S,UINT32 SN,UINT64 *Out,UINT8 *Digest){
  Fault=Hashes=0;DALI_UFS_IDENTITY I={0};Out[0]=DaliUfsIdentityCapture(&I,D,DN,S,SN);
  Out[1]=Hashes;Out[2]=I.Attempted;Out[3]=I.Ready;memcpy(Digest,I.Digest,32);
+}
+VOID write_gate(BOOLEAN readonly,UINT64 *out){
+ DirectGate=TRUE;WritePolicyCalls=0;mClosed=FALSE;mWritesInhibited=readonly;
+ UINT8 cdb[10]={0x2a},buffer[4096];
+ EFI_EXT_SCSI_PASS_THRU_SCSI_REQUEST_PACKET packet={0};packet.Cdb=cdb;packet.CdbLength=10;
+ packet.OutDataBuffer=buffer;packet.OutTransferLength=4096;packet.DataDirection=EFI_EXT_SCSI_DATA_DIRECTION_WRITE;packet.Timeout=1;
+ EDKII_UFS_HC_SCSI_POLICY policy={2,&packet,NULL};
+ out[0]=Callback(mController,EdkiiUfsHcValidateScsi,&policy);out[1]=WritePolicyCalls;
+ DirectGate=FALSE;mWritesInhibited=FALSE;
 }
 '''
         (base/'identity.c').write_text(prefix + '\n' + function(hci, 'UfsHasCommandPolicy') + '\n' +
@@ -204,6 +214,12 @@ VOID identity_direct(CONST UINT8 *D,UINT32 DN,CONST UINT8 *S,UINT32 SN,UINT64 *O
             self.assertNotEqual(out[0], 0)
             self.assertEqual(list(out)[1:], [0, 1, 0])
             self.assertEqual(bytes(digest), bytes(32))
+
+    def test_readback_inhibits_direct_passthru_before_write_policy_submission(self):
+        self.lib.write_gate.argtypes=[ctypes.c_ubyte,ctypes.c_void_p]
+        for readonly,expected in [(False,[0,1]),(True,[(1<<63)|8,0])]:
+            out=(ctypes.c_uint64*2)();self.lib.write_gate(readonly,out)
+            self.assertEqual(list(out),expected)
 
 
 if __name__ == '__main__':

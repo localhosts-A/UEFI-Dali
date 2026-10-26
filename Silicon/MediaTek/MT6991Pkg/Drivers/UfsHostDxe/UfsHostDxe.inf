@@ -17,12 +17,14 @@
   UfsRamMeasurement.c
   UfsGrant.c
   UfsLog.c
+  UfsLogConsole.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   ArmPkg/ArmPkg.dec
   CryptoPkg/CryptoPkg.dec
   MT6991Pkg/MT6991Pkg.dec
+  SiliciumPkg/SiliciumPkg.dec
   UniXNUPkg/UniXNUPkg.dec
 [LibraryClasses]
   UefiDriverEntryPoint
@@ -47,12 +49,14 @@
   gDaliTokenSpaceGuid.PcdDaliUfsSourceRecord
   gDaliTokenSpaceGuid.PcdDaliUfsScratchEnabled
   gDaliTokenSpaceGuid.PcdDaliUfsScratchWire
+  gDaliTokenSpaceGuid.PcdDaliUfsLogEnabled
 [Protocols]
   gEfiBlockIoProtocolGuid ## CONSUMES
   gEfiScsiIoProtocolGuid ## SOMETIMES_CONSUMES
   gEfiExtScsiPassThruProtocolGuid ## SOMETIMES_CONSUMES
   gEfiCpuArchProtocolGuid ## CONSUMES
   gDaliUfsDiagnosticProtocolGuid ## PRODUCES
+  gDaliUfsLogProtocolGuid ## SOMETIMES_PRODUCES
   gUniXNUStorageQuiesceProtocolGuid ## PRODUCES
   gEdkiiUfsHostControllerProtocolGuid ## PRODUCES
   gEdkiiUfsHcPlatformProtocolGuid ## PRODUCES

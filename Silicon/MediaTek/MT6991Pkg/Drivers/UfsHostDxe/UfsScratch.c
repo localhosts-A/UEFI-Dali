@@ -104,6 +104,7 @@ STATIC EFI_STATUS Transfer (EFI_BLOCK_IO_PROTOCOL *This, UINT32 MediaId,
   EFI_STATUS Status = Enter (This);
   if (Status != EFI_SUCCESS) { return Status; }
   if (MediaId != mScratch.Media.MediaId) { return Leave (EFI_MEDIA_CHANGED, FALSE); }
+  if (Write && mScratch.Media.ReadOnly) { return Leave (EFI_WRITE_PROTECTED, FALSE); }
   if (Bytes == 0) { return Leave (EFI_SUCCESS, FALSE); }
   if (Buffer == NULL || ((UINTN)Buffer & (mScratch.Media.IoAlign - 1)) != 0) {
     return Leave (EFI_INVALID_PARAMETER, FALSE);
@@ -264,6 +265,32 @@ EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
 EFI_STATUS DaliUfsScratchCloseAdmission (VOID) {
   mScratch.CloseRequested = TRUE; mScratch.Closed = TRUE; mScratch.Media.MediaPresent = FALSE;
   return mScratch.Busy ? EFI_NOT_READY : EFI_SUCCESS;
+}
+
+EFI_STATUS DaliUfsScratchOwnedIo (CONST MT6991_UFS_SCRATCH_GRANT *Live,
+  EFI_BLOCK_IO_PROTOCOL **Io) {
+  if (Io == NULL) { return EFI_INVALID_PARAMETER; }
+  *Io = NULL;
+  if (EfiGetCurrentTpl () != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
+  if (Live == NULL || Live != mScratch.LiveGrant || !Live->Enabled ||
+      Live->Target != MT6991_UFS_TARGET_EXPDB || mScratch.Handle == NULL ||
+      mScratch.Closed || mScratch.CloseRequested || mScratch.Busy || mScratch.Faulted ||
+      mScratch.HostClosed == NULL || *mScratch.HostClosed ||
+      CompareMem (Live, &mScratch.Grant, sizeof *Live)) { return EFI_ACCESS_DENIED; }
+  EFI_BLOCK_IO_PROTOCOL *Published = NULL;
+  if (gBS->HandleProtocol (mScratch.Handle, &gEfiBlockIoProtocolGuid, (VOID **)&Published) != EFI_SUCCESS ||
+      Published != &mScratch.Io || !SameMedia ()) { return EFI_MEDIA_CHANGED; }
+  *Io = &mScratch.Io; return EFI_SUCCESS;
+}
+
+EFI_STATUS DaliUfsScratchSealReadOnly (CONST MT6991_UFS_SCRATCH_GRANT *Live) {
+  EFI_BLOCK_IO_PROTOCOL *Io = NULL;
+  EFI_STATUS Status = DaliUfsScratchOwnedIo (Live, &Io);
+  if (Status != EFI_SUCCESS) { return Status; }
+  EFI_TPL Old = gBS->RaiseTPL (TPL_NOTIFY);
+  if (mScratch.Closed || mScratch.Busy || *mScratch.HostClosed || !SameMedia ()) { Status = EFI_MEDIA_CHANGED; }
+  else { mScratch.Media.ReadOnly = TRUE; }
+  gBS->RestoreTPL (Old); return Status;
 }
 
 EFI_STATUS DaliUfsScratchUnpublish (VOID) {

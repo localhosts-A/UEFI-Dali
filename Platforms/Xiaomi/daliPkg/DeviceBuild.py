@@ -185,6 +185,15 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         self.env.SetValue ("BLD_*_DALI_UFS_READ_ONLY", "TRUE" if ufs_read_only == "true" else "FALSE", "Opt-in physical UFS diagnostic")
         self.env.SetValue ("BLD_*_DALI_UFS_STORAGE_TOKEN", '"' + storage_token + '"', "Bound physical UFS diagnostic token")
 
+        log_tool = Path(CommonPlatform.WorkspaceRoot) / "tools/dali/ufs_log_settings.py"
+        log_spec = importlib.util.spec_from_file_location("dali_ufs_log_settings", log_tool)
+        log_module = importlib.util.module_from_spec(log_spec)
+        log_spec.loader.exec_module(log_module)
+        log_enabled, log_wire = log_module.log_settings(os.environ)
+        self.env.SetValue ("BLD_*_DALI_UFS_LOG_ENABLED", "TRUE" if log_enabled else "FALSE", "Explicit manual expdb log diagnostic")
+        self.env.SetValue ("BLD_*_DALI_UFS_SCRATCH_ENABLED", "TRUE" if log_enabled else "FALSE", "Measured expdb log proposal")
+        self.env.SetValue ("BLD_*_DALI_UFS_SCRATCH_WIRE", '"' + log_wire + '"', "Expdb v3 wire; runtime observations still required")
+
         source_tool = Path(CommonPlatform.WorkspaceRoot) / "tools/dali/ufs_source_record.py"
         spec = importlib.util.spec_from_file_location("dali_ufs_source_record", source_tool)
         module = importlib.util.module_from_spec(spec)

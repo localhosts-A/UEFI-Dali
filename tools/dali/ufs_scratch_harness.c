@@ -82,6 +82,7 @@ EFI_DEVICE_PATH_PROTOCOL *EFIAPI AppendDevicePathNode (CONST EFI_DEVICE_PATH_PRO
 }
 static EFI_STATUS EFIAPI handle (EFI_HANDLE h, EFI_GUID *g, VOID **out) {
   ++services;
+  if(h==(VOID*)123&&g==&gEfiBlockIoProtocolGuid){*out=&mScratch.Io;return mode==52?EFI_NOT_FOUND:EFI_SUCCESS;}
   if(h==(VOID*)99 && g==&gEfiDevicePathProtocolGuid){*out=parent_path;return EFI_SUCCESS;}
   if(h!=(VOID*)1 && h!=(VOID*)2)return EFI_NOT_FOUND;
   if(mode==28&&after_publish&&g!=&gEfiDevicePathProtocolGuid)return EFI_NOT_FOUND;
@@ -187,7 +188,24 @@ VOID run (unsigned which, UINT64 *out) {
   out[0]=code(DaliUfsScratchPublishChecked((VOID*)99,&grant,geometry,&closed,syncs,
                                         which==47?NULL:authorize,&live_grant));
   out[1]=services;out[2]=installs;
-  if(out[0]==0){
+  if(out[0]==0&&which==56){
+    after_publish=TRUE;UINT8 buffer[4096] __attribute__((aligned(4096)));
+    out[3]=code(DaliUfsScratchSealReadOnly(&live_grant));
+    out[4]=code(mScratch.Io.WriteBlocks(&mScratch.Io,123,0,4096,buffer));
+    out[5]=mScratch.Media.ReadOnly;
+    out[6]=code(mScratch.Io.ReadBlocks(&mScratch.Io,123,0,4096,buffer));
+  }else if(out[0]==0&&which>=48&&which<=55){
+    after_publish=TRUE;
+    EFI_BLOCK_IO_PROTOCOL *owned=(VOID*)1;
+    if(which==49)live_grant.Enabled=FALSE;
+    if(which==51)mScratch.Closed=TRUE;
+    if(which==53)++media.MediaId;
+    if(which==54)tpl=TPL_NOTIFY;
+    if(which==55)mScratch.Faulted=TRUE;
+    out[3]=code(DaliUfsScratchOwnedIo(which==50?&grant:&live_grant,&owned));
+    out[4]=owned==&mScratch.Io;out[5]=owned==NULL;
+    tpl=TPL_APPLICATION;
+  }else if(out[0]==0){
     after_publish=TRUE;
     VOID *buffer=NULL;if(posix_memalign(&buffer,4096,1024*1024))abort();
     if(which==10)grant.Token[0]='f';

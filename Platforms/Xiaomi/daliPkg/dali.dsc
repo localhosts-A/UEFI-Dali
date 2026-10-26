@@ -34,6 +34,9 @@
 !ifndef DALI_UFS_SCRATCH_WIRE
   DEFINE DALI_UFS_SCRATCH_WIRE = {0x00}
 !endif
+!ifndef DALI_UFS_LOG_ENABLED
+  DEFINE DALI_UFS_LOG_ENABLED = FALSE
+!endif
 
 !include MT6991Pkg/MT6991Pkg.dsc.inc
 
@@ -54,6 +57,7 @@
   gDaliTokenSpaceGuid.PcdDaliUfsSourceRecord|$(DALI_UFS_SOURCE_RECORD)
   gDaliTokenSpaceGuid.PcdDaliUfsScratchEnabled|$(DALI_UFS_SCRATCH_ENABLED)
   gDaliTokenSpaceGuid.PcdDaliUfsScratchWire|$(DALI_UFS_SCRATCH_WIRE)
+  gDaliTokenSpaceGuid.PcdDaliUfsLogEnabled|$(DALI_UFS_LOG_ENABLED)
   gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
   gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC5000000

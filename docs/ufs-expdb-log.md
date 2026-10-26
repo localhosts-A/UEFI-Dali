@@ -10,8 +10,11 @@ restoring original boot_b and starting Android.
 It does not issue a grant or select an arbitrary partition. It requires the
 explicit expdb target and exact one-MiB child geometry. The 1 MiB head and all
 bytes following the window remain outside the child and lower SCSI write gate.
-The core is compiled but has no production caller yet; no physical log write is
-enabled by adding this source. Ramoops is unchanged.
+The optional log protocol now calls the core through this driver's own published
+child and exact live grant. It freezes the raw console ring in a bounded copy,
+restores application TPL before allocations or I/O, and keeps body/readback in
+separate buffers. Ramoops is unchanged. This integration is default-off and has
+not yet been qualified on physical hardware.
 
 The window contains an attempt record at relative block 0, a header at block 1,
 body bytes starting at block 2, zero padding and a commit record in the final
@@ -55,7 +58,27 @@ corrupt payload/padding/commit, wrong binding and an already-used window. A
 fresh-instance readback and independent Python decoding without filtering or
 changing its bytes. Source/host results are separate from hardware qualification.
 
-Remaining integration: freeze the RAM log after UFS is ready and authorized,
-explicit write/readback entry points, XNU use of this record format, durable
-expdb restoration and Android collection/decoding. Trial restoration must not
-clear pending state until both boot_b and the expdb test window are verified.
+The same candidate offers an explicit UEFI log menu before host quiesce:
+Volume Up selects WRITE, Volume Down selects READBACK, Power confirms. The
+initial selection is READBACK; a 30-second timeout skips without submitting a
+log request. Display or protocol errors cannot submit an unseen choice. The
+optional protocol has a separate GUID/revision so the old diagnostic ABI is
+unchanged. Each boot permits only one log attempt.
+
+READBACK irreversibly inhibits writes at BlockIo, SCSI admission and the owned
+descriptor doorbell while retaining reads and shutdown sync. It cannot switch
+back to WRITE in the same boot. Any later grant revocation rejects subsequent
+I/O. No selected mode, storage failure or partial log automatically retries or
+initializes an existing window.
+
+Compile opt-in requires `DALI_UFS_LOG_ENABLED=true`, a regular exact236-byte
+`DALI_UFS_LOG_WIRE`, `DALI_UFS_PROFILE=expdb-log-diagnostic`, payload measurement,
+the matching token and manual recovery. The builder checks the explicit v3
+target/shape; runtime provenance, UFS identity, live geometry/WP and reciprocal
+GPT inspection still issue the actual write grant. Ordinary read-only packaging
+continues to reject scratch-enabled builds. The dedicated write-trial packager
+and runner are still required before a physical experiment.
+
+Remaining integration: XNU use of this record format, durable expdb restoration
+and Android collection/decoding. Trial restoration must not clear pending state
+until both boot_b and the expdb test window are verified.

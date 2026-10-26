@@ -106,6 +106,15 @@ class UfsScratchTests(unittest.TestCase):
                 self.assertEqual(r[3:6], [first, 7, 7])
                 self.assertEqual(r[20], 1)
 
+    def test_log_consumer_gets_only_the_live_owned_expdb_child(self):
+        r=self.case(48)
+        self.assertEqual(r[3:6],[0,1,0]);self.assertEqual(r[20],0)
+        for mode,status in [(49,15),(50,15),(51,15),(52,13),(53,13),(54,3),(55,15)]:
+            r=self.case(mode)
+            self.assertEqual(r[3:6],[status,0,1]);self.assertEqual(r[20],0)
+        r=self.case(56)
+        self.assertEqual(r[3:7],[0,8,1,0]);self.assertEqual(r[20],1)
+
     def test_success_without_actual_device_sync_completion_is_rejected(self):
         r = self.case(9)
         self.assertEqual(r[3:7], [0, 0, 7, 7])
