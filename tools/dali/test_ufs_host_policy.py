@@ -1,11 +1,14 @@
 """Run the production wire guard with real DMA ownership and hostile descriptors."""
 import ctypes
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import unittest
 
 import test_ufs_dma as dma_test
+from mu_patch_sources import patched_mu_source
+from test_ufs_passthru_policy import function
 
 
 class UfsHostPolicyTests(unittest.TestCase):
@@ -17,9 +20,33 @@ class UfsHostPolicyTests(unittest.TestCase):
             f.write('\ntypedef uint16_t UINT16; typedef char CHAR8;\n#define MAX_UINT16 UINT16_MAX\n#define MAX_UINT32 UINT32_MAX\n#define EFI_WRITE_PROTECTED 8\n')
         with (base / 'Library/BaseMemoryLib.h').open('a') as f:
             f.write('#define CompareMem memcmp\n')
+        root = Path(__file__).resolve().parents[2]
+        with patched_mu_source(root) as mu:
+            upiu = (mu/'MdePkg/Include/IndustryStandard/Ufs.h').read_text()
+            hci = (mu/'MdePkg/Include/IndustryStandard/UfsHci.h').read_text()
+            source = (mu/'MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThruHci.c').read_text()
+        command_type = re.search(r'typedef struct \{.*?\} UTP_COMMAND_UPIU;',upiu,re.S).group()
+        direction_type = re.search(r'typedef enum \{\s*UfsNoData.*?\} UFS_DATA_DIRECTION;',hci,re.S).group()
+        (base/'mu-upiu.h').write_text(r'''
+#include <assert.h>
+#include <Library/BaseMemoryLib.h>
+#define ASSERT assert
+#define IN
+#define OUT
+#define BIT0 1
+#define BIT5 32
+#define BIT6 64
+#pragma pack(push,1)
+'''+command_type+'\n#pragma pack(pop)\n'+direction_type+r'''
+_Static_assert(sizeof(UTP_COMMAND_UPIU)==32,"actual Mu command UPIU size");
+static void SwapLittleEndianToBigEndian(UINT8 *p,UINTN bytes){
+ for(UINTN i=0;i<bytes/2;i++){UINT8 t=p[i];p[i]=p[bytes-1-i];p[bytes-1-i]=t;}
+}
+'''+function(source,'UfsInitCommandUpiu'))
         (base / 'policy.c').write_text(r'''
 #include "harness.c"
 #include <Library/Mt6991UfsPolicy.h>
+#include "mu-upiu.h"
 static void le16(unsigned char *p,unsigned n){p[0]=n;p[1]=n>>8;}
 static void le32(unsigned char *p,unsigned n){le16(p,n);le16(p+2,n>>16);}
 static void be16(unsigned char *p,unsigned n){p[0]=n>>8;p[1]=n;}
@@ -164,7 +191,7 @@ void wire(unsigned which,uint64_t *out) {
  if(which>=28) {
   memset(q,0,4096);memset(r,0,32);le32(trd,0x13000000);le32(trd+8,15);le32(trd+16,cmd);
   le16(trd+24,14);le16(trd+26,8);le16(trd+28,1);le16(trd+30,22);
-  q[0]=1;q[1]=0x41;q[2]=2;q[3]=0x72;be32(q+12,4096);q[16]=0x2a;be32(q+18,434432);be16(q+23,1);
+  q[16]=0x2a;be32(q+18,434432);be16(q+23,1);
   g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true,true,false};memset(host,0x5a,sizeof host);
   if(which!=28)grant_init(&grant);
   if(which>=34){
@@ -177,7 +204,16 @@ void wire(unsigned which,uint64_t *out) {
   if(which==30)be32(q+18,434688);
   if(which==31)g[2].WriteProtectionKnown=false;
   if(which==32)q[17]=8;
-  Mt6991UfsDmaMap(&d,which==33?Mt6991DmaDeviceWrite:Mt6991DmaDeviceRead,host,sizeof host,&data,&id3);
+  bool read=which==43||which==44;
+  if(read){q[16]=0x28;le32(trd,0x15000000);}
+  if(which==45){memset(q+16,0,16);q[16]=0x8a;be64(q+18,2440);be32(q+26,1);}
+  unsigned char cdb[16];memcpy(cdb,q+16,16);memset(q,0,32);
+  UfsInitCommandUpiu((UTP_COMMAND_UPIU*)q,2,0x72,cdb,which==45?16:10,read?UfsDataIn:UfsDataOut,4096);
+  out[11]=q[1];
+  if(which==41)q[1]=0x41; /* read flag on a write command */
+  if(which==42)q[1]=0x61; /* simultaneous read and write flags */
+  if(which==44)q[1]=0x21; /* write flag on a read command */
+  Mt6991UfsDmaMap(&d,which==33||read?Mt6991DmaDeviceWrite:Mt6991DmaDeviceRead,host,sizeof host,&data,&id3);
   le32(q+88,data);le32(q+100,4095);r[0]=0x21;r[2]=2;r[3]=0x72;
  }
  out[0]=Mt6991UfsValidateTransfer(&d,trl,g,&grant,which!=24,&p);
@@ -232,6 +268,16 @@ void wire(unsigned which,uint64_t *out) {
             self.assertEqual(out[0:4],[0,0,0,1])
         for mode in (35,36,38,39,40):
             self.assertNotEqual(self.wire(mode)[0],0,mode)
+
+    def test_actual_mu_command_upiu_direction_matches_read_write10_and_write16(self):
+        for mode,flags in ((34,0x21),(43,0x41),(45,0x21)):
+            with self.subTest(mode=mode):
+                out=self.wire(mode)
+                self.assertEqual(out[11],flags)
+                self.assertEqual(out[:4],[0,0,0,1])
+        for mode in (41,42,44):
+            with self.subTest(mode=mode):
+                self.assertNotEqual(self.wire(mode)[0],0)
 
     def test_unowned_overlapping_and_hostile_descriptors_never_submit(self):
         for case in range(1, 11):

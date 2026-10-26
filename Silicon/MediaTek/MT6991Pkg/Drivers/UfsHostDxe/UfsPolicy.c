@@ -233,8 +233,10 @@ EFI_STATUS Mt6991UfsValidateTransfer (MT6991_UFS_DMA *D, UINT64 Trl,
                      Mt6991UfsReadOnlyCommand (G, Q[2], Q + 16, CdbBytes, P->Expected);
     if (EFI_ERROR (Status)) { return Status; }
     if (Write) { DataOperation = Mt6991DmaDeviceRead; }
+    // Mu's Ordered COMMAND UPIU uses BIT5 for data-out, BIT6 for data-in.
+    // Match the UPIU flags to the CDB and TRD direction at this final gate.
     if (RuBytes != 56 || Direction != (P->Expected ? (Write ? 1U : 2U) : 0U) ||
-        Q[1] != (P->Expected ? 0x41 : 1) || Q[4]) { return EFI_ACCESS_DENIED; }
+        Q[1] != (P->Expected ? (Write ? 0x21 : 0x41) : 1) || Q[4]) { return EFI_ACCESS_DENIED; }
   } else if (Q[0] == 0x16) {
     UINT8 Op = Q[12]; UINT32 Bytes = Be16 (Q + 18);
     Status = Mt6991UfsReadOnlyQuery (Op, Q[13], Q[14], Q[15], Bytes, InitAllowed);
