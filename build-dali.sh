@@ -16,16 +16,31 @@ PORT_XNU_ADT=
 PORT_PROBE_PACKAGE_ARGS=()
 PORT_XNU_UFS_READ_ONLY=${DALI_XNU_UFS_READ_ONLY:-false}
 PORT_XNU_UFS_FDT=
+PORT_UFS_LOG=${DALI_UFS_LOG_ENABLED:-false}
+if [[ "$PORT_UFS_LOG" == true ]]; then
+  [[ "$PORT_XNU_UFS_READ_ONLY" == true && "${DALI_UFS_PROFILE:-off}" == expdb-log-diagnostic &&
+     "${DALI_UFS_MEASURE_PAYLOAD:-false}" == true && -n "${DALI_UFS_LOG_WIRE:-}" &&
+     -f "$DALI_UFS_LOG_WIRE" ]] || {
+    echo "Expdb log needs measured source XNU, its explicit profile/wire and read-only XNU owner" >&2; exit 2;
+  }
+elif [[ "$PORT_UFS_LOG" != false || -n "${DALI_UFS_LOG_WIRE:-}" ]]; then
+  echo "Invalid expdb log opt-in" >&2; exit 2
+fi
 if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
   [[ $# == 5 && "${DALI_UFS_READ_ONLY:-false}" == true &&
-     "${DALI_UFS_PROFILE:-off}" == read-only-blockio && "${DALI_UFS_PROBE:-false}" == false &&
+     ( "${DALI_UFS_PROFILE:-off}" == read-only-blockio || "$PORT_UFS_LOG" == true ) && "${DALI_UFS_PROBE:-false}" == false &&
      "${DALI_AUTO_FASTBOOT:-true}" == false && -z "${DALI_RESET_METHOD:-}" &&
      "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ && -n "${DALI_XNU_UFS_LIVE_FDT:-}" &&
      -f "${DALI_XNU_UFS_LIVE_FDT}" ]] || {
     echo "Combined firmware/XNU UFS read-only needs five source-XNU inputs, a fresh token, live FDT, manual recovery and no reset" >&2; exit 2;
   }
   PORT_XNU_UFS_FDT=$(realpath "$DALI_XNU_UFS_LIVE_FDT")
-  PORT_PROBE_PACKAGE_ARGS+=(--ufs-xnu-read-only-token "$DALI_RUN_TOKEN" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
+  if [[ "$PORT_UFS_LOG" == true ]]; then
+    PORT_PROBE_PACKAGE_ARGS+=(--ufs-expdb-log-token "$DALI_RUN_TOKEN" --ufs-expdb-log-wire "$(realpath "$DALI_UFS_LOG_WIRE")" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
+    export DALI_UFS_SOURCE_DEVICE="$PORT_DEVICE"
+  else
+    PORT_PROBE_PACKAGE_ARGS+=(--ufs-xnu-read-only-token "$DALI_RUN_TOKEN" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
+  fi
 elif [[ "$PORT_XNU_UFS_READ_ONLY" != false ]]; then
   echo "DALI_XNU_UFS_READ_ONLY must be true or false" >&2; exit 2
 elif [[ "${DALI_UFS_READ_ONLY:-false}" == true ]]; then

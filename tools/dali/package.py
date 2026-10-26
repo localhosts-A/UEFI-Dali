@@ -14,6 +14,8 @@ import uuid
 from fdt import Fdt
 from firmware_volume import extract_bds, extract_module, BDS_GUID, UFS_HOST_GUID
 from loader_binding import loader_measurement_metadata
+from ufs_log_settings import log_settings
+from ufs_source_record import source_record
 
 PHYSICAL_UFS_MODULES = {
     'DaliDiagnosticBds': BDS_GUID, 'DaliUfsHostDxe': UFS_HOST_GUID,
@@ -80,6 +82,10 @@ def ufs_host_off_metadata(build, *, fd):
 
 
 def ufs_read_only_metadata(build, token, *, fd):
+    return _physical_ufs_metadata(build, token, fd=fd, log=False)
+
+
+def _physical_ufs_metadata(build, token, *, fd, log):
     """Explicit physical profile: both PCD consumers and every storage module."""
     if not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{32}', token):
         raise ValueError('invalid physical UFS token')
@@ -89,12 +95,13 @@ def ufs_read_only_metadata(build, token, *, fd):
         ('host', 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG', 'Storage', token.encode() + b'\0')):
         auto = build / directory
         header, source = (auto / 'AutoGen.h').read_text(), (auto / 'AutoGen.c').read_text()
-        # Runtime scratch inputs/export need a separate profile. This current
-        # packager requires one explicit zero; archived candidates keep their
-        # original packager and sealed evidence rather than requalification here.
+        # Read-only and log profiles have opposite explicit scratch states.
         if label == 'host' and re.findall(
-                r'^#define _PCD_VALUE_PcdDaliUfsScratchEnabled\s+(\S+)\s*$', header, re.M) != ['0U']:
+                r'^#define _PCD_VALUE_PcdDaliUfsScratchEnabled\s+(\S+)\s*$', header, re.M) != ['1U' if log else '0U']:
             raise ValueError('read-only profile refuses enabled or malformed scratch write state')
+        log_flags = re.findall(r'^#define _PCD_VALUE_PcdDaliUfsLogEnabled\s+(\S+)\s*$', header, re.M)
+        if (log and log_flags != ['1U']) or (not log and log_flags and log_flags != ['0U']):
+            raise ValueError('physical UFS log PCD differs from the explicit profile')
         for flag, number in (('ReadOnlyEnabled', 1), ('ProbeEnabled', 0)):
             if not re.search(r'^#define _PCD_VALUE_PcdDaliUfs' + flag + r'\s+' + str(number) + r'U\s*$', header, re.M):
                 raise ValueError('physical UFS ' + label + ' enable/probe PCD mismatch')
@@ -138,6 +145,72 @@ def ufs_read_only_metadata(build, token, *, fd):
     return probe, host
 
 
+def ufs_expdb_log_metadata(build, token, wire_path, *, fd, expected_source_record):
+    """Dedicated write-capable profile; ordinary read-only entry stays closed."""
+    _, literal = log_settings(dict(DALI_UFS_LOG_ENABLED='true',DALI_UFS_LOG_WIRE=str(wire_path),
+        DALI_UFS_PROFILE='expdb-log-diagnostic',DALI_UFS_READ_ONLY='true',DALI_UFS_MEASURE_PAYLOAD='true',
+        DALI_UFS_PROBE='false',DALI_AUTO_FASTBOOT='false',DALI_RUN_TOKEN=token))
+    wire = bytes(int(part,16) for part in literal[1:-1].split(','))
+    probe, host = _physical_ufs_metadata(build,token,fd=fd,log=True)
+    auto = build/'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG'
+    header, source = (auto/'AutoGen.h').read_text(), (auto/'AutoGen.c').read_text()
+    if re.findall(r'^#define _PCD_VALUE_PcdDaliUfsMeasurePayload\s+(\S+)\s*$',header,re.M) != ['1U']:
+        raise ValueError('expdb log requires actual payload measurement')
+    def array(name, expected):
+        values = re.findall(r'_gPcd_FixedAtBuild_PcdDaliUfs'+name+r'\[(\d+)\]\s*=\s*\{([^}]+)\}',source)
+        if len(values) != 1:
+            raise ValueError('missing/duplicate compiled expdb '+name)
+        length, text = values[0]
+        actual = bytes(int(part.strip(),0) for part in text.split(',') if part.strip())
+        if int(length) != len(expected) or actual != expected:
+            raise ValueError('compiled expdb '+name+' differs from candidate inputs')
+    if not isinstance(expected_source_record,bytes) or len(expected_source_record) != 180:
+        raise ValueError('expdb log requires the exact compiled four-source record')
+    array('ScratchWire',wire); array('SourceRecord',expected_source_record)
+    module = (build/'DaliUfsHostDxe.efi').read_bytes()
+    if module.count(wire) != 1 or module.count(expected_source_record) != 1:
+        raise ValueError('actual expdb host lacks the unique wire/source record')
+    protocol = uuid.UUID('6e54ce7f-374c-47ec-a028-62d95c858475').bytes_le
+    for name in ('DaliUfsHostDxe','DaliDiagnosticBds'):
+        if protocol not in (build/(name+'.efi')).read_bytes():
+            raise ValueError('actual log protocol missing from '+name)
+    host.update(mode='expdb-log-diagnostic',media_writes=True,runtime_authorization_required=True)
+    log = dict(enabled=True,run_token=token,profile='expdb-log-diagnostic',target_partition='expdb',
+               wire_sha256=hashlib.sha256(wire).hexdigest(),
+               source_record_sha256=hashlib.sha256(expected_source_record).hexdigest(),
+               candidate_kernel_sha256=wire[80:112].hex(),source_sha256=wire[112:144].hex(),
+               ramoops_retained=True,automatic_fastboot_enabled=False,
+               physical_write_qualified=False,persistence_qualified=False)
+    return probe,host,log
+
+
+def validate_expdb_log_kernel(kernel, wire, record):
+    """Bind actual whole-kernel bytes and its valid source record to the wire."""
+    if (len(wire) != 236 or len(record) != 180 or record[:16] != b'DALIUFSSRC1'+bytes(5) or
+            hashlib.sha256(kernel).digest() != wire[80:112]):
+        raise ValueError('expdb grant differs from actual kernel bytes')
+    fields = ('device_commit','unixnu_commit','uefi_commit','xnu_commit')
+    pins = {}
+    for i,name in enumerate(fields):
+        raw = record[16+41*i:57+41*i]
+        if not re.fullmatch(b'[0-9a-f]{40}\0',raw):
+            raise ValueError('invalid expdb compiled source record')
+        pins[name] = raw[:-1].decode('ascii')
+    magic = record[:16]; valid = []
+    at = kernel.find(magic)
+    while at >= 0:
+        candidate = kernel[at:at+180]
+        if len(candidate)==180 and all(re.fullmatch(b'[0-9a-f]{40}\0',candidate[16+41*i:57+41*i]) for i in range(4)):
+            valid.append(candidate)
+        at = kernel.find(magic,at+1)
+    if valid != [record]:
+        raise ValueError('actual kernel compiled source record is missing/ambiguous/stale')
+    pins['kernel_sha256'] = hashlib.sha256(kernel).hexdigest()
+    canonical = json.dumps(pins,sort_keys=True,separators=(',',':')).encode('ascii')
+    if hashlib.sha256(b'DALI-UFS-SOURCE-V1\0'+canonical).digest() != wire[112:144]:
+        raise ValueError('expdb source digest differs from actual kernel/source bytes')
+
+
 def validate_diagnostic_payload(payload):
     if (not isinstance(payload, dict) or not isinstance(payload.get('recovery'), dict) or
             payload.get('xnu_kernel_sha256') is not None or payload.get('xnu_ramdisk_sha256') is not None or
@@ -175,6 +248,8 @@ def main():
     profile.add_argument("--ufs-probe-token", help="bind opt-in read-only firmware register snapshot")
     profile.add_argument("--ufs-read-only-token", help="bind the explicit physical read-only BlockIo diagnostic")
     profile.add_argument("--ufs-xnu-read-only-token", help="bind the combined firmware/XNU read-only ownership trial")
+    profile.add_argument('--ufs-expdb-log-token', help='bind the explicit expdb log write/readback trial')
+    p.add_argument('--ufs-expdb-log-wire', type=Path, help='exact v3 expdb proposal, independently rechecked against compiled products')
     p.add_argument("--ufs-xnu-live-fdt", type=Path, help="live raw FDT used to validate the XNU UFS ADT node")
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
@@ -217,8 +292,19 @@ def main():
     if fd.stat().st_size != fd_size:
         raise SystemExit("Unexpected dali FD size")
     loader_measurement = None
+    log = {'enabled':False}
+    source_bytes = None
     try:
-        if args.ufs_xnu_read_only_token is not None:
+        if args.ufs_expdb_log_token is not None:
+            if args.ufs_expdb_log_wire is None:
+                raise ValueError('expdb log profile requires its exact wire file')
+            source_bytes = source_record(root,unixnu,device_repo)
+            probe, host, log = ufs_expdb_log_metadata(fd.parent.parent/'AARCH64',args.ufs_expdb_log_token,
+                args.ufs_expdb_log_wire,fd=fd.read_bytes(),expected_source_record=source_bytes)
+            loader_measurement = loader_measurement_metadata(fd.parent.parent/'AARCH64',unixnu,fd=fd.read_bytes())
+        elif args.ufs_expdb_log_wire is not None:
+            raise ValueError('expdb wire requires the explicit log profile')
+        elif args.ufs_xnu_read_only_token is not None:
             probe, host = ufs_read_only_metadata(fd.parent.parent / "AARCH64", args.ufs_xnu_read_only_token, fd=fd.read_bytes())
             loader_measurement = loader_measurement_metadata(fd.parent.parent / "AARCH64", unixnu, fd=fd.read_bytes())
         elif args.ufs_read_only_token is not None:
@@ -229,9 +315,10 @@ def main():
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise SystemExit("UFS probe build verification failed: " + str(error)) from None
     payload = json.loads((out / "payload.json").read_text())
-    if args.ufs_xnu_read_only_token is not None:
+    xnu_token = args.ufs_xnu_read_only_token or args.ufs_expdb_log_token
+    if xnu_token is not None:
         try:
-            validate_xnu_ufs_payload(payload, args.ufs_xnu_read_only_token)
+            validate_xnu_ufs_payload(payload, xnu_token)
             if args.ufs_xnu_live_fdt is None:
                 raise ValueError('XNU UFS package requires the candidate live FDT')
             live_fdt = args.ufs_xnu_live_fdt.read_bytes()
@@ -249,15 +336,20 @@ def main():
             kernel_bytes = subprocess.check_output(['mtype', '-i', str(out / 'payload.img'), '::/EFI/UniXNU/Payloads/kernel.macho'])
             sys.path.insert(0, str(root / 'tools'))
             from make_payload import validate_xnu_ufs_bundle
-            validate_xnu_ufs_bundle(payload, args.ufs_xnu_read_only_token, adt_bytes, live_fdt,
+            validate_xnu_ufs_bundle(payload, xnu_token, adt_bytes, live_fdt,
                                     config_bytes, recovery_bytes, kernel_bytes)
+            if args.ufs_expdb_log_token is not None:
+                wire = args.ufs_expdb_log_wire.read_bytes()
+                if hashlib.sha256(wire).hexdigest() != log['wire_sha256']:
+                    raise ValueError('expdb wire changed during packaging')
+                validate_expdb_log_kernel(kernel_bytes,wire,source_bytes)
         except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as error:
             raise SystemExit('XNU UFS payload verification failed: ' + str(error)) from None
     elif args.ufs_xnu_live_fdt is not None:
-        raise SystemExit('--ufs-xnu-live-fdt requires --ufs-xnu-read-only-token')
+        raise SystemExit('--ufs-xnu-live-fdt requires an explicit source-XNU storage profile')
     if probe['enabled'] or host['enabled']:
         try:
-            if args.ufs_xnu_read_only_token is None:
+            if xnu_token is None:
                 validate_diagnostic_payload(payload)
         except ValueError as error:
             raise SystemExit(str(error)) from None
@@ -298,12 +390,12 @@ def main():
               "device_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=device_repo, text=True).strip(),
               "uefi_commit": uefi_commit,
               "mu_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
-              "payload": payload, "ufs_probe": probe, "ufs_host": host,
+              "payload": payload, "ufs_probe": probe, "ufs_host": host, 'ufs_log':log,
               "loader_measurement": loader_measurement,
-              "ufs_xnu": ({"enabled": True, "run_token": args.ufs_xnu_read_only_token,
+              "ufs_xnu": ({"enabled": True, "run_token": xnu_token,
                            "live_fdt_sha256": payload['xnu_ufs_read_only']['live_fdt_sha256'],
                            "write_authorized": False, "physical_ufs_qualified": False}
-                          if args.ufs_xnu_read_only_token is not None else
+                          if xnu_token is not None else
                           {"enabled": False, "write_authorized": False, "physical_ufs_qualified": False})}
     (out / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))

@@ -76,8 +76,13 @@ Compile opt-in requires `DALI_UFS_LOG_ENABLED=true`, a regular exact236-byte
 the matching token and manual recovery. The builder checks the explicit v3
 target/shape; runtime provenance, UFS identity, live geometry/WP and reciprocal
 GPT inspection still issue the actual write grant. Ordinary read-only packaging
-continues to reject scratch-enabled builds. The dedicated write-trial packager
-and runner are still required before a physical experiment.
+continues to reject scratch-enabled builds. The dedicated build/packager now
+accepts this profile only with a measured kernel and read-only XNU payload.
+It compares the exact v3 wire and four-source record with generated constants
+and the actual final-FD host, requires the separate log protocol in both host
+and BDS, and checks the whole final-FD kernel/source digests against the wire.
+Automatic fastboot and reset remain disabled. A new pinned kernel, actual
+candidate, dedicated trial runner and dry-run are required before an experiment.
 
 Remaining integration: XNU use of this record format, durable expdb restoration
 and Android collection/decoding. Trial restoration must not clear pending state
