@@ -13,6 +13,7 @@ static UINT8 opcodes[8], lengths[8];
 static UINT64 lbas[8], syncs[8];
 static BOOLEAN closed;
 static MT6991_UFS_SCRATCH_GRANT grant;
+static MT6991_UFS_SCRATCH_GRANT live_grant;
 static MT6991_UFS_GEOMETRY geometry[8];
 static EFI_BLOCK_IO_PROTOCOL parent;
 static EFI_BLOCK_IO_MEDIA media;
@@ -43,6 +44,7 @@ static void layout_fixture(void){
  if(mode==33)gpt_backup[16]^=1;
 }
 static EFI_STATUS EFIAPI root_read(EFI_BLOCK_IO_PROTOCOL *self,UINT32 id,EFI_LBA lba,UINTN bytes,VOID *buffer){
+ if(mode>=41&&live_grant.Enabled)abort(); // Lower write admission must stay zero through every GPT read.
  ++layout_reads;unsigned block=grant.BlockSize,array_bytes=((512+block-1)/block)*block;
  if(self!=&parent||id!=media.MediaId||((UINTN)buffer&7))abort();
  if(mode==34&&layout_reads==3)return EFI_TIMEOUT;
@@ -112,7 +114,7 @@ static EFI_STATUS EFIAPI execute (EFI_SCSI_IO_PROTOCOL *self, EFI_SCSI_IO_SCSI_R
   if(c[0]==0x88||c[0]==0x8a)lbas[i]=be(c+2,8);
   if(event||p->Timeout!=30000000||((UINTN)p->SenseData&7)||p->SenseDataLength!=32)++policy_errors;
   EFI_STATUS s=(c[0]==0x2a||c[0]==0x8a)?
-    Mt6991UfsScratchWriteCommand(geometry,&grant,grant.Lun,c,p->CdbLength,p->OutTransferLength):
+    Mt6991UfsScratchWriteCommand(geometry,mode>=41?&live_grant:&grant,grant.Lun,c,p->CdbLength,p->OutTransferLength):
     Mt6991UfsReadOnlyCommand(geometry,grant.Lun,c,p->CdbLength,p->InTransferLength);
   if(s!=EFI_SUCCESS)++policy_errors;
   if(mode==21)reentrant=mScratch.Io.FlushBlocks(&mScratch.Io);
@@ -140,10 +142,23 @@ static EFI_BOOT_SERVICES bs={.RaiseTPL=raise_tpl,.RestoreTPL=restore_tpl,.Handle
   .LocateHandleBuffer=locate,.FreePool=pool,.InstallMultipleProtocolInterfaces=install,
   .UninstallMultipleProtocolInterfaces=uninstall};
 static UINT64 code (EFI_STATUS s) { return s & 0x7fffffffffffffffULL; }
+static EFI_STATUS authorize(VOID *context,CONST MT6991_UFS_SCRATCH_GRANT *proposal,
+ CONST DALI_UFS_LAYOUT *layout,CONST MT6991_UFS_SCRATCH_GRANT **live){
+ if(mode<41){*live=&grant;return EFI_SUCCESS;} // Fixture's prior-authenticated proposal; test publisher only.
+ if(context!=&live_grant||layout_reads!=4||installs||!layout->Verified||live_grant.Enabled)abort();
+ reentrant=layout_reads;
+ if(mode==42)return EFI_SECURITY_VIOLATION;
+ if(mode==43){*live=NULL;return EFI_SUCCESS;}
+ live_grant=*proposal;
+ if(mode==44)live_grant.Token[0]='f';
+ if(mode==45)DaliUfsScratchCloseAdmission();
+ *live=&live_grant;return EFI_SUCCESS;
+}
 
 VOID run (unsigned which, UINT64 *out) {
   mode=which; services=submits=installs=removes=allocated=freed=policy_errors=layout_reads=0;reentrant=0;after_publish=FALSE;
   memset(&mScratch,0,sizeof mScratch);memset(geometry,0,sizeof geometry);memset(&grant,0,sizeof grant);
+  memset(&live_grant,0,sizeof live_grant);
   memset(syncs,0,sizeof syncs);memset(opcodes,0,sizeof opcodes);memset(lbas,0,sizeof lbas);memset(lengths,0,sizeof lengths);
   tpl=TPL_APPLICATION;closed=FALSE;gBS=&bs;
   grant.Enabled=which!=0;grant.Lun=2;memcpy(grant.Token,"0123456789abcdef0123456789abcdef",33);
@@ -153,7 +168,7 @@ VOID run (unsigned which, UINT64 *out) {
   if(which==3){grant.CapacityBlocks=0x200000000ULL;grant.BootStartLba=0x100000000ULL;}
   grant.ScratchBlocks=grant.TailGuardBlocks=1024*1024/grant.BlockSize;
   grant.ScratchStartLba=grant.BootStartLba+grant.BootBlocks-2*grant.ScratchBlocks;
-  if(which==40){
+  if(which>=40){
    grant.Target=MT6991_UFS_TARGET_EXPDB;grant.BootStartLba=2184;grant.BootBlocks=32768;grant.CandidateBytes=0;
    grant.ScratchStartLba=2440;grant.TailGuardBlocks=32256;
   }
@@ -169,7 +184,8 @@ VOID run (unsigned which, UINT64 *out) {
   if(which==12)media.ReadOnly=FALSE;
   if(which==13)scsi.IoAlign=3;
   if(which==19)memset(grant.CandidateSha256,0,32);
-  out[0]=code(DaliUfsScratchPublish((VOID*)99,&grant,geometry,&closed,syncs));
+  out[0]=code(DaliUfsScratchPublishChecked((VOID*)99,&grant,geometry,&closed,syncs,
+                                        which==47?NULL:authorize,&live_grant));
   out[1]=services;out[2]=installs;
   if(out[0]==0){
     after_publish=TRUE;
@@ -180,6 +196,7 @@ VOID run (unsigned which, UINT64 *out) {
     if(which==23)tpl=TPL_NOTIFY;
     if(which==32)syncs[grant.Lun]=MAX_UINT64;
     if(which==28){mScratch.Parent=(VOID*)1;mScratch.Scsi=(VOID*)1;}
+    if(which==46)live_grant.Enabled=FALSE;
     out[3]=code(mScratch.Io.ReadBlocks(&mScratch.Io,123,0,grant.BlockSize,buffer));
     out[4]=code(mScratch.Io.WriteBlocks(&mScratch.Io,123,grant.ScratchBlocks-1,grant.BlockSize,buffer));
     out[5]=code(mScratch.Io.FlushBlocks(&mScratch.Io));

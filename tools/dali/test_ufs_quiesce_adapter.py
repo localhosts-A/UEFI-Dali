@@ -61,6 +61,7 @@ typedef unsigned EFI_TPL;typedef unsigned EDKII_UFS_HOST_CONTROLLER_PROTOCOL_WID
 #define TPL_APPLICATION 4
 #define EfiUfsHcWidthUint32 2
 #define CopyMem memcpy
+#define ZeroMem(p,n) memset((p),0,(n))
 #define MemoryFence() ((void)0)
 #define EfiBootServicesData 4
 #define EdkiiUfsHcOperationMaximum 3
@@ -128,6 +129,7 @@ void run(unsigned s,uint64_t *out){
  memset(trace,0,sizeof trace);memset(&mShutdown,0,sizeof mShutdown);memset(&mControl,0,sizeof mControl);
  mDma=(DMA){true,false,false,false};mClosed=mDisconnected=mQuiesced=mQuiescing=false;mQuiesceFailure=0;mController=(void*)1;
  hce=1;tpl=4;mmio_writes=submit_calls=validate_calls=0;raise_hook=false;reentrant_status=0;mTrl=0x10000000;
+ mScratchGrant.unused=123;
  if(s==10){raise_hook=true;uint32_t doorbell=1;out[0]=Write(&mHost,EfiUfsHcWidthUint32,0x58,1,&doorbell);}
  else {if(s==12)tpl=16;if(s==13)tpl=31;out[0]=StorageQuiesce(&mStorage);}
  out[1]=mClosed;out[2]=mQuiesced;out[3]=mQuiesceFailure;
@@ -136,6 +138,7 @@ void run(unsigned s,uint64_t *out){
  out[80]=StorageQuiesce(&mStorage);out[81]=sync_commands;out[82]=stop_calls;out[83]=disconnect_calls;
  out[84]=release_calls;out[85]=mQuiesced;out[86]=StorageQuiesce(NULL);
  out[87]=mmio_writes;out[88]=submit_calls;out[89]=validate_calls;out[90]=tpl;out[91]=reentrant_status;out[92]=mQuiescing;
+ out[93]=mScratchGrant.unused;
 }
 '''
         (base/'envelope.c').write_text(prefix+'\n'.join(functions)+suffix)
@@ -159,6 +162,10 @@ void run(unsigned s,uint64_t *out){
         self.assertEqual(out[12:19], [1, 2, 3, 7, 4, 5, 6])
         self.assertEqual(out[80:86], [0, 1, 1, 1, 1, 1])
         self.assertEqual(out[86], (1<<63)|2)
+
+    def test_live_write_grant_is_revoked_before_stop_or_deferred_inflight_shutdown(self):
+        for scenario in (0,1,2,15):
+            self.assertEqual(self.case(scenario)[93],0)
 
     def test_drain_failure_still_stops_and_cleans_but_never_authorizes_handoff(self):
         out = self.case(1)

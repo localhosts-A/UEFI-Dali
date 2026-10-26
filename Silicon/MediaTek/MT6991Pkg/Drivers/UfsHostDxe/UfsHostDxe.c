@@ -20,6 +20,7 @@
 #include "UfsScratch.h"
 #include "UfsIdentity.h"
 #include "UfsProvenance.h"
+#include "UfsGrant.h"
 
 #define HCI 0x16810000U
 #define WINDOW 0x2A00U
@@ -27,8 +28,9 @@
 STATIC MT6991_UFS_CONTROLLER mControl;
 STATIC MT6991_UFS_DMA mDma;
 STATIC MT6991_UFS_GEOMETRY mGeometry[8];
-// No runtime path populates a scratch grant yet; all write submissions remain denied.
+// Zero until independent provenance/identity/geometry/GPT checks all succeed.
 STATIC MT6991_UFS_SCRATCH_GRANT mScratchGrant;
+STATIC DALI_UFS_GRANT_STATE mGrantState;
 STATIC DALI_UFS_IDENTITY mIdentity;
 STATIC DALI_UFS_PROVENANCE mProvenance;
 STATIC MT6991_UFS_PENDING mPending;
@@ -64,6 +66,7 @@ STATIC UINT64 Sip (UINT32 Service, UINT32 Selector, UINT32 A, UINT32 B, VOID *Co
 STATIC EFI_STATUS StopController (VOID) {
   EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
   mClosed = TRUE;
+  ZeroMem (&mScratchGrant, sizeof mScratchGrant);
   Mt6991UfsDmaPoison (&mDma);
   EFI_STATUS Status = EFI_DEVICE_ERROR;
   if (Mt6991UfsStop (&mControl) == Mt6991UfsStopped) {
@@ -81,6 +84,9 @@ STATIC EFI_STATUS EFIAPI Quiesce (VOID) {
   }
   if (OldTpl != TPL_APPLICATION) { gBS->RestoreTPL (OldTpl); return EFI_UNSUPPORTED; }
   mQuiescing = TRUE;
+  // Revoke new writes even when an existing child request delays shutdown.
+  // Its completion validation uses the owned pending descriptor, not this grant.
+  ZeroMem (&mScratchGrant, sizeof mScratchGrant);
   EFI_STATUS Status = DaliUfsScratchCloseAdmission ();
   if (Status != EFI_SUCCESS) {
     // Do not close the lower completion path or disconnect a live ScsiIo call.
@@ -355,11 +361,30 @@ STATIC struct { VENDOR_DEVICE_PATH Vendor; EFI_DEVICE_PATH_PROTOCOL End; } mPath
     { 0x8de06254, 0xf7fd, 0x440a, { 0xbb, 0xda, 0x26, 0x99, 0x01, 0x00, 0x00, 0x01 } } },
   { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE, { sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
 };
+STATIC EFI_STATUS AuthorizeScratch (VOID *Context,
+  CONST MT6991_UFS_SCRATCH_GRANT *Proposal, CONST DALI_UFS_LAYOUT *Layout,
+  CONST MT6991_UFS_SCRATCH_GRANT **Live) {
+  if (Live == NULL) { return EFI_INVALID_PARAMETER; }
+  *Live = NULL;
+  if (Context != &mGrantState || Proposal == NULL ||
+      CompareMem (Proposal, &mGrantState.Proposal, sizeof *Proposal)) { return EFI_ACCESS_DENIED; }
+  EFI_TPL OldTpl = gBS->RaiseTPL (TPL_NOTIFY);
+  EFI_STATUS Status = DaliUfsGrantAuthorize (&mGrantState, &mIdentity, &mProvenance, mGeometry,
+    Layout, mClosed || mDma.Busy, &mScratchGrant);
+  if (Status == EFI_SUCCESS) { *Live = &mScratchGrant; }
+  gBS->RestoreTPL (OldTpl);
+  DEBUG ((DEBUG_WARN, "DALI-UFS-GRANT: run=%a authorize=%r enabled=%u target=%u\n",
+    (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Status, mScratchGrant.Enabled, mScratchGrant.Target));
+  return Status;
+}
 STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   if (Controller == NULL || !FixedPcdGetBool (PcdDaliUfsReadOnlyEnabled) || FixedPcdGetBool (PcdDaliUfsProbeEnabled)) { return EFI_ACCESS_DENIED; }
   *Controller = NULL;
   if (mAttempted || mShutdown.Attempted) { return EFI_ALREADY_STARTED; }
   mAttempted = TRUE;
+  if (FixedPcdGetBool (PcdDaliUfsScratchEnabled) && !FixedPcdGetBool (PcdDaliUfsMeasurePayload)) {
+    return EFI_SECURITY_VIOLATION;
+  }
   // A known-answer check precedes all controller writes. Build packaging also
   // rejects the null crypto library, whose DEBUG stub would assert here.
   STATIC CONST UINT8 Expected[SHA256_DIGEST_SIZE] = {
@@ -393,6 +418,12 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
     Candidate[64] = Source[64] = 0;
     DEBUG ((DEBUG_WARN, "DALI-UFS-PROVENANCE: run=%a candidate=%a source=%a\n",
       (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Candidate, Source));
+  }
+  if (FixedPcdGetBool (PcdDaliUfsScratchEnabled)) {
+    EFI_STATUS Prepared = DaliUfsGrantPrepare (&mGrantState,
+      FixedPcdGetPtr (PcdDaliUfsScratchWire), FixedPcdGetSize (PcdDaliUfsScratchWire),
+      FixedPcdGetPtr (PcdDaliUfsStorageToken), FixedPcdGetSize (PcdDaliUfsStorageToken), &mProvenance);
+    if (Prepared != EFI_SUCCESS) { return Prepared; }
   }
   Print (L"UFS: controller start run=%a\r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken));
   MT6991_UFS_IO Io = { IoRead, IoWrite, Fence, Stall, Sip, NULL };
@@ -447,7 +478,12 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
     Print (L"UFS: BlockIo result=%r\r\n", Status);
   }
   if (Status == EFI_SUCCESS) {
-    Status = DaliUfsScratchPublish (mController, &mScratchGrant, mGeometry, &mClosed, mCompletedSync);
+    if (FixedPcdGetBool (PcdDaliUfsScratchEnabled)) {
+      Status = DaliUfsScratchPublishChecked (mController, &mGrantState.Proposal, mGeometry,
+        &mClosed, mCompletedSync, AuthorizeScratch, &mGrantState);
+    } else {
+      Status = EFI_SUCCESS;
+    }
     if (Status == EFI_NOT_STARTED) { Status = EFI_SUCCESS; }
   }
   if (EFI_ERROR (Status)) { StopController (); }

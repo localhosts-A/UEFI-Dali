@@ -86,6 +86,19 @@ class UfsScratchTests(unittest.TestCase):
         self.assertEqual(r[28:30],[2440,2695])
         self.assertEqual(r[6],2)  # first relative block beyond the scratch window
 
+    def test_authorization_runs_only_after_all_gpt_reads_before_publication(self):
+        r=self.case(41)
+        self.assertEqual((r[0],r[2],r[20],r[22],r[23]),(0,1,3,4,4))
+        self.assertEqual(r[28:30],[2440,2695])
+        for mode in (42,43,44,45):
+            with self.subTest(mode=mode):
+                r=self.case(mode)
+                self.assertEqual((r[0],r[2],r[20],r[22],r[23]),(26,0,0,4,4))
+        r=self.case(46)
+        self.assertEqual((r[0],r[3],r[20]),(0,13,0))
+        r=self.case(47)
+        self.assertEqual((r[0],r[1],r[2],r[20],r[23]),(15,0,0,0,0))
+
     def test_any_submitted_error_is_sticky_and_never_replayed(self):
         for mode, first in [(4, 18), (5, 7), (6, 7), (7, 7), (8, 13)]:
             with self.subTest(mode=mode):

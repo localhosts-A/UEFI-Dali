@@ -164,11 +164,13 @@ STATIC EFI_STATUS ReadLayout (VOID *Context, UINT8 Lun, UINT64 Lba, UINTN Bytes,
   return !mScratch.CloseRequested && !*mScratch.HostClosed && SameMedia () ? EFI_SUCCESS : EFI_MEDIA_CHANGED;
 }
 
-EFI_STATUS DaliUfsScratchPublish (EFI_HANDLE Controller,
+EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
   CONST MT6991_UFS_SCRATCH_GRANT *Grant, CONST MT6991_UFS_GEOMETRY *Geometry,
-  CONST volatile BOOLEAN *Closed, CONST volatile UINT64 *CompletedSync) {
+  CONST volatile BOOLEAN *Closed, CONST volatile UINT64 *CompletedSync,
+  DALI_UFS_SCRATCH_AUTHORIZE Authorize, VOID *Context) {
   // Default-off return precedes all Boot Services use and all device access.
   if (Grant == NULL || !Grant->Enabled) { return EFI_NOT_STARTED; }
+  if (Authorize == NULL) { return EFI_ACCESS_DENIED; }
   if (EfiGetCurrentTpl () != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
   if (mScratch.Attempted) { return EFI_ALREADY_STARTED; }
   if (Controller == NULL || Closed == NULL || *Closed || CompletedSync == NULL) { return EFI_ACCESS_DENIED; }
@@ -223,6 +225,17 @@ EFI_STATUS DaliUfsScratchPublish (EFI_HANDLE Controller,
   FreeAlignedPages (Workspace, EFI_SIZE_TO_PAGES (DALI_UFS_LAYOUT_WORK_BYTES));
   if (Status != EFI_SUCCESS) { return Status; }
   if (!Layout.Verified || mScratch.CloseRequested || *mScratch.HostClosed || !SameMedia ()) { return EFI_MEDIA_CHANGED; }
+  if (Authorize != NULL) {
+    CONST MT6991_UFS_SCRATCH_GRANT *Live = NULL;
+    mScratch.Busy = TRUE;
+    Status = Authorize (Context, &mScratch.Grant, &Layout, &Live);
+    mScratch.Busy = FALSE;
+    if (Status != EFI_SUCCESS) { return EFI_ERROR (Status) ? Status : EFI_SECURITY_VIOLATION; }
+    if (Live == NULL || CompareMem (Live, &mScratch.Grant, sizeof *Live) ||
+        mScratch.CloseRequested || *mScratch.HostClosed) { return EFI_SECURITY_VIOLATION; }
+    mScratch.LiveGrant = Live;
+    if (!SameMedia ()) { return EFI_MEDIA_CHANGED; }
+  }
   VENDOR_DEVICE_PATH Node = { { HARDWARE_DEVICE_PATH, HW_VENDOR_DP, { sizeof Node, 0 } },
     { 0x3f625e8c, 0x56d1, 0x4134, { 0x88, 0x74, 0x72, 0x61, 0x6e, 0x67, 0x65, 0x01 } } };
   mScratch.Path = AppendDevicePathNode (RootPath, &Node.Header);

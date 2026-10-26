@@ -26,6 +26,8 @@ typedef struct {
   // boot-image extent field: CandidateBytes must be zero for that target.
   UINT32 Target;
 } MT6991_UFS_SCRATCH_GRANT;
+// Shape validation only; no identity/provenance or live authorization implied.
+BOOLEAN Mt6991UfsScratchGrantValid (CONST MT6991_UFS_SCRATCH_GRANT *Grant);
 typedef struct {
   UINT8 *Trd, *Request, *Response, *Data;
   UINT32 Expected;

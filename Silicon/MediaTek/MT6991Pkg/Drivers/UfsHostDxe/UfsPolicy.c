@@ -53,7 +53,7 @@ STATIC BOOLEAN Nonzero (CONST UINT8 *Bytes, UINTN Length) {
   return Value != 0;
 }
 
-STATIC BOOLEAN ValidScratchGrant (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
+BOOLEAN Mt6991UfsScratchGrantValid (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
   CONST UINT64 ScratchBytes = 1024ULL * 1024ULL;
   UINT64 BootEnd, BootBytes, WindowBlocks;
   if (Grant == NULL || !Grant->Enabled || Grant->Lun >= 8 || Grant->Target > MT6991_UFS_TARGET_EXPDB ||
@@ -97,7 +97,7 @@ EFI_STATUS Mt6991UfsScratchWriteCommand (CONST MT6991_UFS_GEOMETRY *G,
   UINTN Length;
   UINT64 Lba, Count;
   if (Lun >= 8 || Cdb == NULL || CdbBytes < 6 || WriteBytes == 0) { return EFI_INVALID_PARAMETER; }
-  if (!ValidScratchGrant (Grant) || G == NULL || !G[Lun].Valid ||
+  if (!Mt6991UfsScratchGrantValid (Grant) || G == NULL || !G[Lun].Valid ||
       !G[Lun].WriteProtectionKnown || G[Lun].WriteProtected || Lun != Grant->Lun ||
       G[Lun].BlockSize != Grant->BlockSize || G[Lun].Blocks != Grant->CapacityBlocks) { return EFI_WRITE_PROTECTED; }
   if (Cdb[0] == 0x2A) {
@@ -125,7 +125,7 @@ EFI_STATUS Mt6991UfsScratchMapRange (CONST MT6991_UFS_GEOMETRY *G,
   if (AbsoluteLba != NULL) { *AbsoluteLba = 0; }
   if (BlockCount != NULL) { *BlockCount = 0; }
   if (AbsoluteLba == NULL || BlockCount == NULL) { return EFI_INVALID_PARAMETER; }
-  if (BufferBytes == 0 || Lun >= 8 || !ValidScratchGrant (Grant) || G == NULL ||
+  if (BufferBytes == 0 || Lun >= 8 || !Mt6991UfsScratchGrantValid (Grant) || G == NULL ||
       !G[Lun].Valid || Lun != Grant->Lun || G[Lun].BlockSize != Grant->BlockSize ||
       G[Lun].Blocks != Grant->CapacityBlocks) { return EFI_WRITE_PROTECTED; }
   if (G[Lun].BlockSize == 0 || BufferBytes % G[Lun].BlockSize != 0) { return EFI_BAD_BUFFER_SIZE; }

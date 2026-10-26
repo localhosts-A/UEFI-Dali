@@ -30,8 +30,8 @@ the raw UFS UnitDescriptor.
 The hardware doorbell path independently validates owned TRD/UCD/response/PRDT
 spans, direction, UPIU, opcode, actual learned capacity/block size, and one
 contiguous device-write mapping. Only slot 0 can be rung. There is no task/UIC/
-MCQ submission path through the host protocol. No scratch write authorization
-exists in this implementation.
+MCQ submission path through the host protocol. Scratch authorization defaults
+off and is restricted to the explicitly selected window at both write gates.
 
 DMA pages use EFI_MEMORY_WC because this pinned AArch64 CpuDxe maps it to
 Normal Non-cacheable (`ArmPkg/Drivers/CpuDxe/AArch64/Mmu.c`). EFI_MEMORY_UC maps
@@ -146,12 +146,29 @@ uninstall. The firmware suite currently has 213 passing tests. The pinned Mu
 sync UFS implementation leaves zero-initialized HostAdapterStatus unchanged on
 success; TargetStatus and the lower command result must explicitly succeed.
 
-No runtime producer authenticates or fills `mScratchGrant` yet. The publisher
-returns NOT_STARTED before Boot Services/device access when that grant is off.
-There is no write profile, authorization token, or physical scratch qualification.
-Remaining work includes runtime identity/layout authorization, evidence export
-before original-boot_b restoration, full firmware/XNU ownership and repeated
-physical write/sync/reboot/readback qualification.
+The default-off runtime producer now parses only expdb v3 (236-byte) proposals.
+Before controller access, `UfsGrant` compares the compiled token and independent
+whole-RAM-kernel/source measurements. The proposal is separate from the live
+host grant, which remains zero throughout real GPT reads. After reciprocal GPT
+inspection, the checked publisher invokes the authorizer; it compares fresh
+device identity, unchanged provenance, geometry/WP and every observed layout
+field before populating `mScratchGrant`. A missing authorizer is refused; there
+is no legacy publication path that accepts an enabled grant without one.
+
+The publisher then follows the actual live grant pointer, so revocation is
+visible to every request. Both stop and quiesce clear that grant, including when
+an in-flight request delays shutdown. A duplicate prepare or authorization cannot
+rearm it. The actual lower SCSI and owned-doorbell checks still enforce ranges.
+
+`PcdDaliUfsScratchEnabled` remains FALSE and its wire defaults to one zero byte.
+There is no public write-build profile/runner or physical scratch qualification.
+The current RO packager requires exactly one explicit compiled zero for scratch
+enable; it refuses missing, duplicate, enabled or malformed definitions.
+Archived candidates retain their original packager and sealed evidence.
+Remaining work includes host build inputs, recovery-before-restore evidence
+export, new source-only kernel/candidate verification, and separate repeated
+UEFI/XNU physical write/sync/reboot/readback qualification. No export capability
+is implied by an internal PCD or a successful native authorization fixture.
 
 The isolated v5 path now captures the controller's identity during PassThru
 startup, before ExtSCSI/BlockIo publication. It validates the actually returned

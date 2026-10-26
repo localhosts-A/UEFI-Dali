@@ -15,6 +15,7 @@
   UfsLayout.c
   UfsProvenance.c
   UfsRamMeasurement.c
+  UfsGrant.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
@@ -43,6 +44,8 @@
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
   gDaliTokenSpaceGuid.PcdDaliUfsMeasurePayload
   gDaliTokenSpaceGuid.PcdDaliUfsSourceRecord
+  gDaliTokenSpaceGuid.PcdDaliUfsScratchEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsScratchWire
 [Protocols]
   gEfiBlockIoProtocolGuid ## CONSUMES
   gEfiScsiIoProtocolGuid ## SOMETIMES_CONSUMES

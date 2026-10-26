@@ -89,6 +89,12 @@ def ufs_read_only_metadata(build, token, *, fd):
         ('host', 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG', 'Storage', token.encode() + b'\0')):
         auto = build / directory
         header, source = (auto / 'AutoGen.h').read_text(), (auto / 'AutoGen.c').read_text()
+        # Runtime scratch inputs/export need a separate profile. This current
+        # packager requires one explicit zero; archived candidates keep their
+        # original packager and sealed evidence rather than requalification here.
+        if label == 'host' and re.findall(
+                r'^#define _PCD_VALUE_PcdDaliUfsScratchEnabled\s+(\S+)\s*$', header, re.M) != ['0U']:
+            raise ValueError('read-only profile refuses enabled or malformed scratch write state')
         for flag, number in (('ReadOnlyEnabled', 1), ('ProbeEnabled', 0)):
             if not re.search(r'^#define _PCD_VALUE_PcdDaliUfs' + flag + r'\s+' + str(number) + r'U\s*$', header, re.M):
                 raise ValueError('physical UFS ' + label + ' enable/probe PCD mismatch')

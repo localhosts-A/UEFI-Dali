@@ -162,7 +162,8 @@ class PhysicalPackagingTests(unittest.TestCase):
             auto = folder / directory
             auto.mkdir(parents=True, exist_ok=True)
             (auto / 'AutoGen.h').write_text('#define _PCD_VALUE_PcdDaliUfsProbeEnabled 0U\n'
-                                          '#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled 1U\n')
+                                          '#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled 1U\n' +
+                                          ('#define _PCD_VALUE_PcdDaliUfsScratchEnabled 0U\n' if pcd == 'Storage' else ''))
             (auto / 'AutoGen.c').write_text(f'const UINT8 _gPcd_FixedAtBuild_PcdDaliUfs{pcd}Token[{len(value)}] = {{' +
                                           ','.join(str(b) for b in value) + '};\n')
         output = folder / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/OUTPUT'
@@ -231,6 +232,17 @@ class PhysicalPackagingTests(unittest.TestCase):
             path.unlink()
             with self.assertRaises(FileNotFoundError):
                 ufs_read_only_metadata(folder, self.token, fd=fd)
+
+    def test_readonly_profile_refuses_compiled_scratch_enable_or_invalid_value(self):
+        for value in ('1U','garbage','0','missing','duplicate'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                folder=Path(tmp);fd=self.fixture(folder)
+                path=folder/'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG/AutoGen.h'
+                old='#define _PCD_VALUE_PcdDaliUfsScratchEnabled 0U\n'
+                replacement='' if value=='missing' else old*2 if value=='duplicate' else old.replace('0U',value)
+                path.write_text(path.read_text().replace(old,replacement))
+                with self.assertRaisesRegex(ValueError,'scratch write state'):
+                    ufs_read_only_metadata(folder,self.token,fd=fd)
 
     def test_any_missing_stale_wrong_arch_or_duplicate_final_module_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
