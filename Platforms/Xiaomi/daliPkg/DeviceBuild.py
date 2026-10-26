@@ -191,7 +191,9 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         spec.loader.exec_module(module)
         measure, record = module.measurement_settings(os.environ, CommonPlatform.WorkspaceRoot)
         self.env.SetValue ("BLD_*_DALI_UFS_MEASURE_PAYLOAD", "TRUE" if measure else "FALSE", "RAM kernel provenance observation")
-        self.env.SetValue ("BLD_*_DALI_UFS_SOURCE_RECORD", record, "Compiled source revisions from local build inputs")
+        # Stuart passes -D through a shell. Protect the byte-array braces from
+        # brace expansion into many positional build targets.
+        self.env.SetValue ("BLD_*_DALI_UFS_SOURCE_RECORD", '"' + record + '"', "Compiled source revisions from local build inputs")
 
         return 0
 
