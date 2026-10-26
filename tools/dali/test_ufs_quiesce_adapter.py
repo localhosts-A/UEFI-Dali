@@ -85,6 +85,8 @@ static unsigned hce,tpl,mmio_writes,submit_calls,validate_calls;
 static bool raise_hook;static EFI_STATUS reentrant_status;
 static EFI_TPL EfiGetCurrentTpl(void){return tpl;}
 static void add(unsigned n) {if(used<64)trace[used++]=n;}
+static EFI_STATUS DaliUfsScratchCloseAdmission(void){if(tpl!=TPL_NOTIFY)abort();return scenario==15?EFI_NOT_READY:EFI_SUCCESS;}
+static EFI_STATUS DaliUfsScratchUnpublish(void){if(tpl!=TPL_APPLICATION||!mClosed)abort();add(7);return scenario==14?EFI_ACCESS_DENIED:EFI_SUCCESS;}
 static bool ValidHost(EDKII_UFS_HOST_CONTROLLER_PROTOCOL *p){return p==&mHost;}
 static EFI_STATUS EFIAPI Quiesce(void);
 static EFI_TPL raise_tpl(EFI_TPL n){if(n<tpl)abort();if(raise_hook){raise_hook=false;if(Quiesce()!=0)abort();}unsigned old=tpl;tpl=n;return old;}
@@ -154,14 +156,14 @@ void run(unsigned s,uint64_t *out){
     def test_close_drain_sync_stop_disconnect_verify_then_release_and_idempotent_success(self):
         out = self.case()
         self.assertEqual(out[:11], [0, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0])
-        self.assertEqual(out[12:18], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(out[12:19], [1, 2, 3, 7, 4, 5, 6])
         self.assertEqual(out[80:86], [0, 1, 1, 1, 1, 1])
         self.assertEqual(out[86], (1<<63)|2)
 
     def test_drain_failure_still_stops_and_cleans_but_never_authorizes_handoff(self):
         out = self.case(1)
         self.assertEqual(out[0], (1<<63)|18)
-        self.assertEqual(out[12:18], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(out[12:19], [1, 2, 3, 7, 4, 5, 6])
         self.assertEqual((out[80],out[81],out[85]), ((1<<63)|18,1,0))
 
     def test_stop_failure_never_releases_and_later_cleanup_does_not_clear_first_failure(self):
@@ -199,3 +201,14 @@ void run(unsigned s,uint64_t *out){
         for scenario, tpl in ((12, 16), (13, 31)):
             out = self.case(scenario)
             self.assertEqual((out[0],out[1],out[4],out[5],out[8],out[90]), ((1<<63)|3,0,0,0,0,tpl))
+
+    def test_failed_scratch_unpublish_is_sticky_but_still_completes_safe_dma_cleanup(self):
+        out = self.case(14)
+        self.assertEqual((out[0],out[2],out[4],out[6],out[8]), ((1<<63)|15,0,1,1,1))
+        self.assertEqual((out[80],out[81],out[85]), ((1<<63)|15,1,0))
+        self.assertEqual(out[12:19], [1,2,3,7,4,5,6])
+
+    def test_busy_scratch_refuses_before_closing_host_or_stopping_its_completion_path(self):
+        out = self.case(15)
+        self.assertEqual((out[0],out[1],out[2],out[4],out[5],out[6],out[8]), ((1<<63)|6,0,0,0,0,0,0))
+        self.assertEqual((out[80],out[92]), ((1<<63)|6,0))

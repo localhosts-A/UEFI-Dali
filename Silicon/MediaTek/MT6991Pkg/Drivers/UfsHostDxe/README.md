@@ -128,7 +128,27 @@ a fresh Android read-only baseline, compares raw geometry/GPT, and checks the
 original partitions. It retains the shared device lease, fresh-token ledger and
 original-only recovery entry. Physical qualification still requires a real run.
 
-Remaining work includes final sealed-candidate/runner qualification and physical
-BlockIo publication/geometry/read/sync evidence, scratch child/policy, generic
-firmware/XNU handoff, physical XNU driver and repeated write/sync/reboot/readback
-qualification.
+The isolated scratch publisher now consumes an already authenticated internal
+grant and exposes a separate one-MiB BlockIo view with relative LBAs. It matches
+one exact root UFS path, keeps ordinary disks/partitions read-only and submits
+through that root's synchronous ScsiIo and the existing lower SCSI/doorbell
+guards. Flush sends real SYNC(10) and requires one validated completion. Failed
+submitted requests are sticky and never retried. It supports serialized BSP
+application calls only; it rechecks live parent protocols, grant and media before
+access, and rejects reset/rearm. Child admission closes before host shutdown; an
+in-flight call prevents closing its completion path or disconnecting its parent.
+Failed child uninstall retains its closed protocols and allocations.
+
+The complete production scratch/range code is tested with real Mu protocol
+headers, including 512-byte blocks, 64-bit LBAs, boundaries, write timeout/partial
+completion, missing/extra sync counts, stale parents, in-flight close and failed
+uninstall. The firmware suite currently has 213 passing tests. The pinned Mu
+sync UFS implementation leaves zero-initialized HostAdapterStatus unchanged on
+success; TargetStatus and the lower command result must explicitly succeed.
+
+No runtime producer authenticates or fills `mScratchGrant` yet. The publisher
+returns NOT_STARTED before Boot Services/device access when that grant is off.
+There is no write profile, authorization token, or physical scratch qualification.
+Remaining work includes runtime identity/layout authorization, evidence export
+before original-boot_b restoration, full firmware/XNU ownership and repeated
+physical write/sync/reboot/readback qualification.

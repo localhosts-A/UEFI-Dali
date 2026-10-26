@@ -17,6 +17,7 @@
 #include <Protocol/UniXNUStorageQuiesce.h>
 #include "UfsHostInternal.h"
 #include "UfsShutdown.h"
+#include "UfsScratch.h"
 
 #define HCI 0x16810000U
 #define WINDOW 0x2A00U
@@ -76,17 +77,27 @@ STATIC EFI_STATUS EFIAPI Quiesce (VOID) {
   }
   if (OldTpl != TPL_APPLICATION) { gBS->RestoreTPL (OldTpl); return EFI_UNSUPPORTED; }
   mQuiescing = TRUE;
+  EFI_STATUS Status = DaliUfsScratchCloseAdmission ();
+  if (Status != EFI_SUCCESS) {
+    // Do not close the lower completion path or disconnect a live ScsiIo call.
+    // The child stays closed; a later quiesce may clean up after it returns.
+    mQuiescing = FALSE; gBS->RestoreTPL (OldTpl); return Status;
+  }
   // Admission closes before any poll/allocation. Private shutdown commands use
   // the owned-DMA core directly, never reopen the public protocol callbacks.
   // Host submission/DMA callbacks use this same TPL on the firmware BSP. No MP caller
   // is supported. Keep it raised through drain/stop; disconnect needs the
   // caller's TPL and may legitimately invoke the serialized Free/Unmap callbacks.
   mClosed = TRUE;
-  EFI_STATUS Status = DaliUfsDrainAndSync (&mDma, &mPending, mGeometry, mCompletedSync, &mControl.Io, &mShutdown);
+  Status = DaliUfsDrainAndSync (&mDma, &mPending, mGeometry, mCompletedSync, &mControl.Io, &mShutdown);
   if (mQuiesceFailure == EFI_SUCCESS && Status != EFI_SUCCESS) { mQuiesceFailure = EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR; }
   // Even failed sync/drain must stop/quarantine and attempt safe cleanup.
   Status = StopController ();
   gBS->RestoreTPL (OldTpl);
+  EFI_STATUS ScratchStatus = DaliUfsScratchUnpublish ();
+  if (mQuiesceFailure == EFI_SUCCESS && ScratchStatus != EFI_SUCCESS) {
+    mQuiesceFailure = EFI_ERROR (ScratchStatus) ? ScratchStatus : EFI_DEVICE_ERROR;
+  }
   if (Status == EFI_SUCCESS && mController != NULL && !mDisconnected) {
     // Let PassThru retire its own descriptor pointers/cookies before releasing
     // any residual allocations. Never leave a live protocol holding freed TRLs.
@@ -386,6 +397,10 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
     Print (L"UFS: read-only BlockIo diagnostics\r\n");
     Status = DaliUfsReadOnlyDiagnostics (mController, FixedPcdGetPtr (PcdDaliUfsStorageToken), mCompletedSync);
     Print (L"UFS: BlockIo result=%r\r\n", Status);
+  }
+  if (Status == EFI_SUCCESS) {
+    Status = DaliUfsScratchPublish (mController, &mScratchGrant, mGeometry, &mClosed, mCompletedSync);
+    if (Status == EFI_NOT_STARTED) { Status = EFI_SUCCESS; }
   }
   if (EFI_ERROR (Status)) { StopController (); }
   return Status;

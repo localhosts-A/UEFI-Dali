@@ -10,6 +10,7 @@
   UfsPolicy.c
   UfsDiagnostics.c
   UfsShutdown.c
+  UfsScratch.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
@@ -38,6 +39,7 @@
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
 [Protocols]
   gEfiBlockIoProtocolGuid ## CONSUMES
+  gEfiScsiIoProtocolGuid ## SOMETIMES_CONSUMES
   gEfiExtScsiPassThruProtocolGuid ## SOMETIMES_CONSUMES
   gEfiCpuArchProtocolGuid ## CONSUMES
   gDaliUfsDiagnosticProtocolGuid ## PRODUCES
