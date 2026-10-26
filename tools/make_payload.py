@@ -92,13 +92,14 @@ def validate_xnu_ufs_readonly(config, adt, live_fdt, token, auto_fastboot, reset
         raise ValueError("XNU UFS read-only requires one source kernel without an initrd")
     words = entries[0].get("args", "").split()
     required = {"dali-earlyboot": "dali-earlyboot=1", "dali-auto-fastboot": "dali-auto-fastboot=0",
+                "dali-ufs-stop-after-diagnostics": "dali-ufs-stop-after-diagnostics=1",
                 "dali-ufs-readonly": "dali-ufs-readonly=1", "dali-run": "dali-run=" + token}
     actual = {key: [word for word in words if word.split("=", 1)[0] == key] for key in required}
     if any(actual[key] != [value] for key, value in required.items()):
         raise ValueError("source XNU boot arguments do not bind read-only UFS/manual recovery to this token")
-    forbidden = ("dali-pid1", "dali-reset-method", "dali-reset-delay")
+    forbidden = ("dali-pid1", "dali-reset-method", "dali-reset-delay", "dali-ufs-scratch-write")
     if any(word.split("=", 1)[0] in forbidden for word in words):
-        raise ValueError("XNU UFS read-only cannot enable PID1 or reset qualification")
+        raise ValueError("XNU UFS read-only cannot enable PID1, reset or scratch writes")
     return xnu_ufs_resources(adt, live_fdt)
 
 
@@ -299,6 +300,7 @@ def main():
             config_text = config_with_xnu_argument(config_text, "dali-auto-fastboot", "1" if args.auto_fastboot else "0")
             if args.xnu_ufs_readonly:
                 config_text = config_with_xnu_argument(config_text, "dali-ufs-readonly", "1")
+                config_text = config_with_xnu_argument(config_text, "dali-ufs-stop-after-diagnostics", "1")
             if args.reset_method is not None:
                 config_text = qualification_config(config_text, args.reset_method, args.run_token,
                                                    args.auto_fastboot, args.xnu_ramdisk is not None)

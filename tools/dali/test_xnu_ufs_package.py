@@ -34,7 +34,7 @@ def valid_adt():
 
 def valid_config(token=TOKEN):
     return {"entry": [{"id": "xnu", "type": "xnu", "path": "Payloads/kernel.macho",
-                       "args": f"-v dali-earlyboot=1 dali-auto-fastboot=0 dali-ufs-readonly=1 dali-run={token} kt_fixed_zones=120"}]}
+                       "args": f"-v dali-earlyboot=1 dali-auto-fastboot=0 dali-ufs-readonly=1 dali-ufs-stop-after-diagnostics=1 dali-run={token} kt_fixed_zones=120"}]}
 
 
 def single_raw_fv(guid, payload, file_type=0x02, large=False):
@@ -86,14 +86,19 @@ class XnuUfsPackageTests(unittest.TestCase):
             with self.subTest(config=config, token=token, auto=auto, reset=reset, ramdisk=ramdisk):
                 with self.assertRaises(ValueError):
                     make_payload.validate_xnu_ufs_readonly(config, adt, LIVE_FDT, token, auto, reset, ramdisk)
-        for word in ("dali-earlyboot=0", "dali-ufs-readonly=2", "dali-pid1=1", "dali-reset-method=off"):
+        for word in ("dali-earlyboot=0", "dali-ufs-readonly=2", "dali-pid1=1", "dali-reset-method=off",
+                     "dali-ufs-scratch-write=1",
+                     "dali-ufs-stop-after-diagnostics=0", "dali-ufs-stop-after-diagnostics=1"):
             cfg = valid_config(); cfg["entry"][0]["args"] += " " + word
             with self.subTest(word=word), self.assertRaises(ValueError):
                 make_payload.validate_xnu_ufs_readonly(cfg, adt, LIVE_FDT, TOKEN, False, None, False)
+        cfg=valid_config();cfg['entry'][0]['args']=cfg['entry'][0]['args'].replace('dali-ufs-stop-after-diagnostics=1','')
+        with self.assertRaises(ValueError):
+            make_payload.validate_xnu_ufs_readonly(cfg, adt, LIVE_FDT, TOKEN, False, None, False)
 
     def valid_bundle(self, *, recovery_config=None, resource_hash=None):
         config = ('[[entry]]\nid = "xnu"\ntype = "xnu"\npath = "Payloads/kernel.macho"\n'
-                  f'args = "-v dali-earlyboot=1 dali-auto-fastboot=0 dali-ufs-readonly=1 dali-run={TOKEN}"\n').encode()
+                  f'args = "-v dali-earlyboot=1 dali-auto-fastboot=0 dali-ufs-readonly=1 dali-ufs-stop-after-diagnostics=1 dali-run={TOKEN}"\n').encode()
         recovery_config = recovery_config or (f'version = 1\nauto_fastboot = false\nwatchdog_timeout_seconds = 31\nrun_token = {TOKEN}\n').encode()
         adt, kernel = valid_adt(), b'compiled source kernel'
         resources = make_payload.validate_xnu_ufs_readonly(valid_config(), adt, LIVE_FDT, TOKEN, False, None, False)
