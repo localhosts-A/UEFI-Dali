@@ -16,6 +16,7 @@ typedef struct {
   UINT8 Lun;
   CHAR8 Token[33];
   UINT8 DeviceBinding[32], CandidateSha256[32], SourceSha256[32], PartitionGuid[16];
+  // PartitionGuid uses RFC 4122 byte order, matching host/XNU wire grants.
   UINT32 BlockSize;
   UINT64 CapacityBlocks, BootStartLba, BootBlocks, CandidateBytes;
   UINT64 ScratchStartLba, ScratchBlocks, TailGuardBlocks;

@@ -8,7 +8,7 @@
 EFI_BOOT_SERVICES *gBS;
 EFI_GUID gEfiBlockIoProtocolGuid = {1}, gEfiScsiIoProtocolGuid = {2}, gEfiDevicePathProtocolGuid = {3};
 static EFI_TPL tpl;
-static unsigned mode, services, submits, installs, removes, allocated, freed, policy_errors;
+static unsigned mode, services, submits, installs, removes, allocated, freed, policy_errors, layout_reads;
 static UINT8 opcodes[8], lengths[8];
 static UINT64 lbas[8], syncs[8];
 static BOOLEAN closed;
@@ -19,6 +19,41 @@ static EFI_BLOCK_IO_MEDIA media;
 static EFI_SCSI_IO_PROTOCOL scsi;
 static UINT8 parent_path[24], root_path[30], duplicate_path[30];
 static EFI_STATUS reentrant;
+static BOOLEAN after_publish;
+static UINT8 gpt_primary[4096],gpt_backup[4096],gpt_entries[4096];
+
+static void put32(UINT8 *p,UINT32 v){for(unsigned i=0;i<4;i++)p[i]=v>>(i*8);}
+static void put64(UINT8 *p,UINT64 v){for(unsigned i=0;i<8;i++)p[i]=v>>(i*8);}
+static UINT32 crc(CONST UINT8 *p,unsigned n){
+ UINT32 c=MAX_UINT32;for(unsigned i=0;i<n;i++){c^=p[i];for(unsigned j=0;j<8;j++)c=(c>>1)^((c&1)?0xedb88320U:0);}return ~c;
+}
+static void layout_fixture(void){
+ memset(gpt_entries,0,sizeof gpt_entries);memset(gpt_entries,1,16);memset(gpt_entries+16,4,16);
+ put64(gpt_entries+32,grant.BootStartLba);put64(gpt_entries+40,grant.BootStartLba+grant.BootBlocks-1);
+ const char *name="boot_b";for(unsigned i=0;i<6;i++)gpt_entries[56+2*i]=name[i];
+ unsigned block=grant.BlockSize,array_blocks=(512+block-1)/block;
+ for(unsigned i=0;i<2;i++){
+  UINT8 *h=i?gpt_backup:gpt_primary;memset(h,0,4096);memcpy(h,"EFI PART",8);
+  put32(h+8,0x10000);put32(h+12,92);put64(h+24,i?grant.CapacityBlocks-1:1);
+  put64(h+32,i?1:grant.CapacityBlocks-1);put64(h+40,2+array_blocks);
+  put64(h+48,grant.CapacityBlocks-2-array_blocks);put64(h+72,i?grant.CapacityBlocks-1-array_blocks:2);
+  put32(h+80,4);put32(h+84,128);put32(h+88,crc(gpt_entries,512));put32(h+16,crc(h,92));
+ }
+ if(mode==33)gpt_backup[16]^=1;
+}
+static EFI_STATUS EFIAPI root_read(EFI_BLOCK_IO_PROTOCOL *self,UINT32 id,EFI_LBA lba,UINTN bytes,VOID *buffer){
+ ++layout_reads;unsigned block=grant.BlockSize,array_bytes=((512+block-1)/block)*block;
+ if(self!=&parent||id!=media.MediaId||((UINTN)buffer&7))abort();
+ if(mode==34&&layout_reads==3)return EFI_TIMEOUT;
+ if(mode==35&&layout_reads==2)++media.MediaId;
+ if(mode==36&&layout_reads==3)reentrant=DaliUfsScratchUnpublish();
+ if(mode==38&&layout_reads==3)grant.Token[0]='f';
+ if(lba==1&&bytes==block)memcpy(buffer,gpt_primary,bytes);
+ else if(lba==grant.CapacityBlocks-1&&bytes==block)memcpy(buffer,gpt_backup,bytes);
+ else if((lba==2||lba==grant.CapacityBlocks-1-array_bytes/block)&&bytes==array_bytes)memcpy(buffer,gpt_entries,bytes);
+ else abort();
+ return EFI_SUCCESS;
+}
 
 VOID *EFIAPI CopyMem (VOID *a, CONST VOID *b, UINTN n) { return memcpy(a,b,n); }
 VOID *EFIAPI ZeroMem (VOID *a, UINTN n) { return memset(a,0,n); }
@@ -46,7 +81,7 @@ static EFI_STATUS EFIAPI handle (EFI_HANDLE h, EFI_GUID *g, VOID **out) {
   ++services;
   if(h==(VOID*)99 && g==&gEfiDevicePathProtocolGuid){*out=parent_path;return EFI_SUCCESS;}
   if(h!=(VOID*)1 && h!=(VOID*)2)return EFI_NOT_FOUND;
-  if(mode==28&&mScratch.Handle!=NULL&&g!=&gEfiDevicePathProtocolGuid)return EFI_NOT_FOUND;
+  if(mode==28&&after_publish&&g!=&gEfiDevicePathProtocolGuid)return EFI_NOT_FOUND;
   if(g==&gEfiDevicePathProtocolGuid){*out=h==(VOID*)1?root_path:duplicate_path;return EFI_SUCCESS;}
   if(g==&gEfiBlockIoProtocolGuid){*out=&parent;return EFI_SUCCESS;}
   if(g==&gEfiScsiIoProtocolGuid){*out=&scsi;return mode==15?EFI_UNSUPPORTED:EFI_SUCCESS;}
@@ -59,7 +94,8 @@ static EFI_STATUS EFIAPI locate (EFI_LOCATE_SEARCH_TYPE type, EFI_GUID *g, VOID 
 }
 static EFI_STATUS EFIAPI pool (VOID *p) { FreePool(p); return EFI_SUCCESS; }
 static EFI_STATUS EFIAPI install (EFI_HANDLE *h, ...) {
-  ++installs;if(mode==17)return EFI_OUT_OF_RESOURCES;*h=(VOID*)123;return EFI_SUCCESS;
+  ++installs;if(mode==17)return EFI_OUT_OF_RESOURCES;*h=(VOID*)123;
+  if(mode==37)reentrant=DaliUfsScratchUnpublish();return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI uninstall (EFI_HANDLE h, ...) {
   (VOID)h;++removes;return mode==18?EFI_ACCESS_DENIED:EFI_SUCCESS;
@@ -105,7 +141,7 @@ static EFI_BOOT_SERVICES bs={.RaiseTPL=raise_tpl,.RestoreTPL=restore_tpl,.Handle
 static UINT64 code (EFI_STATUS s) { return s & 0x7fffffffffffffffULL; }
 
 VOID run (unsigned which, UINT64 *out) {
-  mode=which; services=submits=installs=removes=allocated=freed=policy_errors=0;reentrant=0;
+  mode=which; services=submits=installs=removes=allocated=freed=policy_errors=layout_reads=0;reentrant=0;after_publish=FALSE;
   memset(&mScratch,0,sizeof mScratch);memset(geometry,0,sizeof geometry);memset(&grant,0,sizeof grant);
   memset(syncs,0,sizeof syncs);memset(opcodes,0,sizeof opcodes);memset(lbas,0,sizeof lbas);memset(lengths,0,sizeof lengths);
   tpl=TPL_APPLICATION;closed=FALSE;gBS=&bs;
@@ -118,7 +154,8 @@ VOID run (unsigned which, UINT64 *out) {
   grant.ScratchStartLba=grant.BootStartLba+grant.BootBlocks-2*grant.ScratchBlocks;
   geometry[2]=(MT6991_UFS_GEOMETRY){grant.CapacityBlocks,grant.BlockSize,TRUE,TRUE,FALSE};
   media=(EFI_BLOCK_IO_MEDIA){.MediaId=123,.MediaPresent=TRUE,.ReadOnly=TRUE,.BlockSize=grant.BlockSize,.IoAlign=8,.LastBlock=grant.CapacityBlocks-1};
-  parent=(EFI_BLOCK_IO_PROTOCOL){.Media=&media};scsi=(EFI_SCSI_IO_PROTOCOL){.IoAlign=8,.ExecuteScsiCommand=execute};
+  parent=(EFI_BLOCK_IO_PROTOCOL){.Media=&media,.ReadBlocks=root_read};scsi=(EFI_SCSI_IO_PROTOCOL){.IoAlign=8,.ExecuteScsiCommand=execute};
+  layout_fixture();
   memset(parent_path,0,sizeof parent_path);parent_path[0]=1;parent_path[1]=4;parent_path[2]=20;parent_path[4]=0xa5;
   parent_path[20]=0x7f;parent_path[21]=0xff;parent_path[22]=4;
   memcpy(root_path,parent_path,20);root_path[20]=3;root_path[21]=MSG_UFS_DP;root_path[22]=6;root_path[23]=0;root_path[24]=0;root_path[25]=2;
@@ -130,6 +167,7 @@ VOID run (unsigned which, UINT64 *out) {
   out[0]=code(DaliUfsScratchPublish((VOID*)99,&grant,geometry,&closed,syncs));
   out[1]=services;out[2]=installs;
   if(out[0]==0){
+    after_publish=TRUE;
     VOID *buffer=NULL;if(posix_memalign(&buffer,4096,1024*1024))abort();
     if(which==10)grant.Token[0]='f';
     if(which==20)geometry[2].WriteProtected=TRUE;
@@ -154,7 +192,7 @@ VOID run (unsigned which, UINT64 *out) {
     out[18]=code(mScratch.Io.ReadBlocks(&mScratch.Io,123,0,grant.BlockSize,buffer));
     free(buffer);
   }
-  out[20]=submits;out[21]=policy_errors;out[22]=code(reentrant);
+  out[20]=submits;out[21]=policy_errors;out[22]=code(reentrant);out[23]=layout_reads;
   for(unsigned i=0;i<4;i++){out[24+i]=opcodes[i];out[28+i]=lbas[i];out[32+i]=lengths[i];}
   mode=0;out[36]=code(DaliUfsScratchUnpublish());out[37]=code(DaliUfsScratchUnpublish());
   out[38]=allocated;out[39]=freed;

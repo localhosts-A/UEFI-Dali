@@ -23,6 +23,7 @@ class UfsScratchTests(unittest.TestCase):
                         '-I', str(pkg/'Drivers/UfsHostDxe'),
                         str(root/'tools/dali/ufs_scratch_harness.c'),
                         str(pkg/'Drivers/UfsHostDxe/UfsPolicy.c'),
+                        str(pkg/'Drivers/UfsHostDxe/UfsLayout.c'),
                         '-o', str(Path(cls.temp.name)/'test.so')], check=True)
         cls.lib = ctypes.CDLL(str(Path(cls.temp.name)/'test.so'))
         cls.lib.run.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint64)]
@@ -40,7 +41,9 @@ class UfsScratchTests(unittest.TestCase):
         return result
 
     def test_disabled_grant_has_no_boot_services_or_device_contact(self):
-        self.assertEqual(self.case(0)[:3], [19, 0, 0])
+        r = self.case(0)
+        self.assertEqual(r[:3], [19, 0, 0])
+        self.assertEqual(r[23], 0)
 
     def test_real_relative_io_and_sync_use_only_three_exact_commands(self):
         r = self.case()
@@ -51,6 +54,21 @@ class UfsScratchTests(unittest.TestCase):
         self.assertEqual(r[24:27], [0x28, 0x2a, 0x35])
         self.assertEqual(r[28:30], [434432, 434687])
         self.assertEqual(r[32:35], [10, 10, 10])
+        self.assertEqual(r[23], 4, 'real reciprocal GPT must be read before publication')
+
+    def test_gpt_failure_media_or_grant_change_prevents_publication_and_writes(self):
+        for mode, status, reads in [(33, 10, 2), (34, 18, 3), (35, 13, 2), (38, 13, 3)]:
+            r = self.case(mode)
+            self.assertEqual(r[0], status)
+            self.assertEqual(r[2], 0)
+            self.assertEqual(r[20], 0)
+            self.assertEqual(r[23], reads)
+
+    def test_inflight_layout_read_cannot_be_stopped_or_reopened(self):
+        r = self.case(36)
+        self.assertEqual((r[0], r[2], r[20], r[22], r[23]), (13, 0, 0, 6, 3))
+        r = self.case(37)
+        self.assertEqual((r[0], r[20], r[22]), (13, 0, 0))
 
     def test_geometry_is_not_a_fixed_four_kib_or_32_bit_lba_assumption(self):
         r = self.case(2)

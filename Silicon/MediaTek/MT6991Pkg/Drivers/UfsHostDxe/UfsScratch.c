@@ -8,6 +8,7 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/ScsiIo.h>
 #include "UfsScratch.h"
+#include "UfsLayout.h"
 
 typedef struct {
   EFI_BLOCK_IO_PROTOCOL Io;
@@ -24,7 +25,7 @@ typedef struct {
   CONST volatile UINT64 *CompletedSync;
   VOID *Sense;
   UINT32 ParentAlign, ScsiAlign;
-  BOOLEAN Attempted, Closed, Busy, Faulted;
+  BOOLEAN Attempted, Closed, Busy, Faulted, CloseRequested;
 } DALI_UFS_SCRATCH;
 STATIC DALI_UFS_SCRATCH mScratch;
 
@@ -153,6 +154,16 @@ STATIC BOOLEAN RootLun (CONST EFI_DEVICE_PATH_PROTOCOL *Parent, CONST EFI_DEVICE
     Ufs->Pun == 0 && Ufs->Lun == Lun && IsDevicePathEnd (End) && DevicePathNodeLength (End) == sizeof *End;
 }
 
+STATIC EFI_STATUS ReadLayout (VOID *Context, UINT8 Lun, UINT64 Lba, UINTN Bytes, VOID *Buffer) {
+  (VOID)Context;
+  if (Lun != mScratch.Grant.Lun || mScratch.CloseRequested || *mScratch.HostClosed || !SameMedia ()) {
+    return EFI_MEDIA_CHANGED;
+  }
+  EFI_STATUS Status = mScratch.Parent->ReadBlocks (mScratch.Parent, mScratch.Media.MediaId, Lba, Bytes, Buffer);
+  if (Status != EFI_SUCCESS) { return EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR; }
+  return !mScratch.CloseRequested && !*mScratch.HostClosed && SameMedia () ? EFI_SUCCESS : EFI_MEDIA_CHANGED;
+}
+
 EFI_STATUS DaliUfsScratchPublish (EFI_HANDLE Controller,
   CONST MT6991_UFS_SCRATCH_GRANT *Grant, CONST MT6991_UFS_GEOMETRY *Geometry,
   CONST volatile BOOLEAN *Closed, CONST volatile UINT64 *CompletedSync) {
@@ -190,7 +201,8 @@ EFI_STATUS DaliUfsScratchPublish (EFI_HANDLE Controller,
   if (Status != EFI_SUCCESS) { return Status; }
   if (Matches != 1 || mScratch.Parent == NULL || mScratch.Parent->Media == NULL || mScratch.Scsi == NULL) { return EFI_NOT_FOUND; }
   mScratch.ParentAlign = mScratch.Parent->Media->IoAlign; mScratch.ScsiAlign = mScratch.Scsi->IoAlign;
-  if (!Aligned (mScratch.ParentAlign) || !Aligned (mScratch.ScsiAlign) || mScratch.Scsi->ExecuteScsiCommand == NULL) { return EFI_UNSUPPORTED; }
+  if (!Aligned (mScratch.ParentAlign) || !Aligned (mScratch.ScsiAlign) ||
+      mScratch.Scsi->ExecuteScsiCommand == NULL || mScratch.Parent->ReadBlocks == NULL) { return EFI_UNSUPPORTED; }
   ZeroMem (&mScratch.Media, sizeof mScratch.Media);
   mScratch.Media.MediaId = mScratch.Parent->Media->MediaId;
   mScratch.Media.MediaPresent = TRUE; mScratch.Media.LogicalPartition = TRUE;
@@ -199,11 +211,24 @@ EFI_STATUS DaliUfsScratchPublish (EFI_HANDLE Controller,
   mScratch.Media.IoAlign = mScratch.ParentAlign > mScratch.ScsiAlign ? mScratch.ParentAlign : mScratch.ScsiAlign;
   if (mScratch.Media.IoAlign == 0) { mScratch.Media.IoAlign = 1; }
   if (!SameMedia ()) { return EFI_MEDIA_CHANGED; }
+  // Never publish an expected grant solely on its shape. Read the real disk's
+  // reciprocal GPT and compare the observed boot_b identity and scratch layout.
+  VOID *Workspace = AllocateAlignedPages (EFI_SIZE_TO_PAGES (DALI_UFS_LAYOUT_WORK_BYTES), EFI_PAGE_SIZE);
+  if (Workspace == NULL) { return EFI_OUT_OF_RESOURCES; }
+  mScratch.Busy = TRUE;
+  DALI_UFS_LAYOUT Layout;
+  Status = DaliUfsInspectScratchLayout (Geometry, &mScratch.Grant, ReadLayout, NULL,
+    Workspace, DALI_UFS_LAYOUT_WORK_BYTES, &Layout);
+  mScratch.Busy = FALSE;
+  FreeAlignedPages (Workspace, EFI_SIZE_TO_PAGES (DALI_UFS_LAYOUT_WORK_BYTES));
+  if (Status != EFI_SUCCESS) { return Status; }
+  if (!Layout.Verified || mScratch.CloseRequested || *mScratch.HostClosed || !SameMedia ()) { return EFI_MEDIA_CHANGED; }
   VENDOR_DEVICE_PATH Node = { { HARDWARE_DEVICE_PATH, HW_VENDOR_DP, { sizeof Node, 0 } },
     { 0x3f625e8c, 0x56d1, 0x4134, { 0x88, 0x74, 0x72, 0x61, 0x6e, 0x67, 0x65, 0x01 } } };
   mScratch.Path = AppendDevicePathNode (RootPath, &Node.Header);
   mScratch.Sense = AllocateAlignedPages (1, EFI_PAGE_SIZE);
   if (mScratch.Path == NULL || mScratch.Sense == NULL) { Status = EFI_OUT_OF_RESOURCES; }
+  else if (mScratch.CloseRequested || *mScratch.HostClosed || !SameMedia ()) { Status = EFI_MEDIA_CHANGED; }
   else {
     mScratch.Io = (EFI_BLOCK_IO_PROTOCOL){ EFI_BLOCK_IO_PROTOCOL_REVISION, &mScratch.Media, Reset, ReadBlocks, WriteBlocks, FlushBlocks };
     Status = gBS->InstallMultipleProtocolInterfaces (&mScratch.Handle,
@@ -214,22 +239,27 @@ EFI_STATUS DaliUfsScratchPublish (EFI_HANDLE Controller,
     if (mScratch.Sense != NULL) { FreeAlignedPages (mScratch.Sense, 1); mScratch.Sense = NULL; }
     return Status;
   }
+  // Installation may dispatch an application callback which requests shutdown.
+  // Keep the child closed and remove it (or retain it closed on failure).
+  if (mScratch.CloseRequested || *mScratch.HostClosed || !SameMedia ()) {
+    DaliUfsScratchUnpublish (); return EFI_MEDIA_CHANGED;
+  }
   mScratch.Closed = FALSE;
   return EFI_SUCCESS;
 }
 
 EFI_STATUS DaliUfsScratchCloseAdmission (VOID) {
-  mScratch.Closed = TRUE; mScratch.Media.MediaPresent = FALSE;
+  mScratch.CloseRequested = TRUE; mScratch.Closed = TRUE; mScratch.Media.MediaPresent = FALSE;
   return mScratch.Busy ? EFI_NOT_READY : EFI_SUCCESS;
 }
 
 EFI_STATUS DaliUfsScratchUnpublish (VOID) {
   if (EfiGetCurrentTpl () != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
-  if (mScratch.Handle == NULL) { return EFI_SUCCESS; }
   EFI_TPL Tpl = gBS->RaiseTPL (TPL_NOTIFY);
   EFI_STATUS Status = DaliUfsScratchCloseAdmission ();
   gBS->RestoreTPL (Tpl);
   if (Status != EFI_SUCCESS) { return Status; }
+  if (mScratch.Handle == NULL) { return EFI_SUCCESS; }
   Status = gBS->UninstallMultipleProtocolInterfaces (mScratch.Handle,
     &gEfiDevicePathProtocolGuid, mScratch.Path, &gEfiBlockIoProtocolGuid, &mScratch.Io, NULL);
   // Retain all published storage if another consumer prevents uninstallation.

@@ -12,6 +12,7 @@
   UfsShutdown.c
   UfsScratch.c
   UfsIdentity.c
+  UfsLayout.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
