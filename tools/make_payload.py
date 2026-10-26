@@ -18,9 +18,93 @@ RESET_METHODS = ("off", "psci-cold", "psci-warm", "aee")
 XNU_UFS_RESOURCE_WORDS = (0x31534655494c4144, 1, 0x16810000, 0x2A00, 0x168A0000, 0x1000,
                           0x16800000, 0x10000, 0x10000000, 0x800, 0, 0x1000000000,
                           1, 7, 14, 7)
+USERDATA_LOG_WIRE_BYTES = 240
+USERDATA_LOG_SLOT_BYTES = 4 * 1024 * 1024
 
 
-def xnu_ufs_resources(adt, live_fdt):
+def validate_userdata_log_wire(wire, token):
+    if not isinstance(wire, bytes) or len(wire) != USERDATA_LOG_WIRE_BYTES:
+        raise ValueError("userdata log grant must be the exact 240-byte v4 wire")
+    if (wire[:8] != b"DALIUFSW" or struct.unpack_from("<II", wire, 8) != (4, 4) or
+            wire[16:48] != token.encode("ascii") or struct.unpack_from("<I", wire, 232)[0] != 2 or
+            struct.unpack_from("<I", wire, 236)[0] != USERDATA_LOG_SLOT_BYTES or
+            wire[144:160] != bytes.fromhex("cde9ab3218d847778ced691e7cd5c636")):
+        raise ValueError("userdata log grant has the wrong token, target, slot size or partition GUID")
+    lun, block = struct.unpack_from("<II", wire, 160)
+    capacity, start, blocks, payload, scratch, slot_blocks, guard, sequence = struct.unpack_from("<8Q", wire, 168)
+    expected_blocks = USERDATA_LOG_SLOT_BYTES // 4096
+    if (lun != 2 or block != 4096 or capacity != 64577536 or start != 64565240 or blocks != 8192 or
+            payload != 0 or slot_blocks != expected_blocks or not 1 <= sequence <= 4 or
+            scratch != start + (sequence - 1) * 2 * expected_blocks or
+            guard != blocks - (sequence - 1) * 2 * expected_blocks - expected_blocks):
+        raise ValueError("userdata log grant does not select the sequence-bound UEFI slot")
+    return sequence
+
+
+def append_apple_dt_property(adt, target_path, key, value):
+    """Append one bounded property to a node in the serialized Apple DT tree."""
+    if not isinstance(adt, bytes) or len(adt) > 4 * 1024 * 1024 or not key.isascii() or len(key.encode()) >= 32:
+        raise ValueError("invalid Apple DT property input")
+    cursor = 0
+    found = 0
+
+    def visit(parent, depth):
+        nonlocal cursor, found
+        if depth > 32 or cursor + 8 > len(adt):
+            raise ValueError("Apple DT tree exceeds its bound")
+        property_count, child_count = struct.unpack_from("<II", adt, cursor)
+        cursor += 8
+        if property_count > 256 or child_count > 256:
+            raise ValueError("Apple DT node exceeds its bound")
+        properties = []
+        values = {}
+        for _ in range(property_count):
+            if cursor + 36 > len(adt):
+                raise ValueError("truncated Apple DT property")
+            raw_key, length = struct.unpack_from("<32sI", adt, cursor)
+            cursor += 36
+            key_bytes = raw_key.split(b"\0", 1)[0]
+            if not key_bytes or length > len(adt) - cursor:
+                raise ValueError("invalid Apple DT property bounds")
+            name = key_bytes.decode("ascii")
+            if name in values:
+                raise ValueError("duplicate Apple DT property")
+            data = adt[cursor:cursor + length]
+            properties.append((name, data));values[name] = data
+            padded = (length + 3) & ~3
+            if padded > len(adt) - cursor:
+                raise ValueError("truncated Apple DT property padding")
+            cursor += padded
+        name_data = values.get("name", b"")
+        if not name_data.endswith(b"\0") or name_data.count(b"\0") != 1:
+            raise ValueError("invalid Apple DT node name")
+        name = name_data[:-1].decode("ascii")
+        if not name or "/" in name or name in (".", ".."):
+            raise ValueError("invalid Apple DT node path")
+        path = (parent.rstrip("/") + "/" + name) if parent else "/" + name
+        child_blobs = [visit(path, depth + 1) for _ in range(child_count)]
+        if path == target_path:
+            found += 1
+            if key in values:
+                if values[key] != value:
+                    raise ValueError("Apple DT already carries a different userdata log grant")
+            else:
+                properties.append((key, value))
+        encoded = bytearray(struct.pack("<II", len(properties), child_count))
+        for prop, data in properties:
+            encoded.extend(struct.pack("<32sI", prop.encode("ascii"), len(data)))
+            encoded.extend(data);encoded.extend(bytes(-len(data) % 4))
+        for child in child_blobs:
+            encoded.extend(child)
+        return bytes(encoded)
+
+    result = visit("", 0)
+    if cursor != len(adt) or found != 1 or len(result) > 4 * 1024 * 1024:
+        raise ValueError("Apple DT target node is absent, duplicated or exceeds its bound")
+    return result
+
+
+def xnu_ufs_resources(adt, live_fdt, userdata_log_wire=None):
     """Return the ADT resources-v1 bytes after binding them to the saved live FDT."""
     if not isinstance(adt, bytes) or not 0 < len(adt) <= 4 * 1024 * 1024:
         raise ValueError("Apple DT must be nonempty and bounded")
@@ -74,6 +158,11 @@ def xnu_ufs_resources(adt, live_fdt):
     props = nodes.get(path)
     if props is None or props.get("compatible") != b"localhosts,dali-ufs\0":
         raise ValueError("Apple DT lacks the explicit Dali UFS provider node")
+    if userdata_log_wire is None:
+        if "userdata-logs-grant-v4" in props:
+            raise ValueError("userdata log grant is present without the explicit write profile")
+    elif props.get("userdata-logs-grant-v4") != userdata_log_wire:
+        raise ValueError("Apple DT userdata log grant differs from the authorized wire")
     record = props.get("resources-v1", b"")
     expected = struct.pack("<16Q", *XNU_UFS_RESOURCE_WORDS)
     if (len(record) != len(expected) + 32 or record[:len(expected)] != expected or
@@ -82,7 +171,8 @@ def xnu_ufs_resources(adt, live_fdt):
     return record
 
 
-def validate_xnu_ufs_readonly(config, adt, live_fdt, token, auto_fastboot, reset_method, has_ram_root):
+def validate_xnu_ufs_readonly(config, adt, live_fdt, token, auto_fastboot, reset_method, has_ram_root,
+                              userdata_log_wire=None):
     if (not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token) or auto_fastboot or
             reset_method is not None or has_ram_root):
         raise ValueError("XNU UFS read-only needs a fresh token, manual recovery, no reset method and no RAM root")
@@ -94,16 +184,22 @@ def validate_xnu_ufs_readonly(config, adt, live_fdt, token, auto_fastboot, reset
     required = {"dali-earlyboot": "dali-earlyboot=1", "dali-auto-fastboot": "dali-auto-fastboot=0",
                 "dali-ufs-stop-after-diagnostics": "dali-ufs-stop-after-diagnostics=1",
                 "dali-ufs-readonly": "dali-ufs-readonly=1", "dali-run": "dali-run=" + token}
+    if userdata_log_wire is not None:
+        validate_userdata_log_wire(userdata_log_wire, token)
+        required["dali-ufs-log-write"] = "dali-ufs-log-write=1"
     actual = {key: [word for word in words if word.split("=", 1)[0] == key] for key in required}
     if any(actual[key] != [value] for key, value in required.items()):
         raise ValueError("source XNU boot arguments do not bind read-only UFS/manual recovery to this token")
     forbidden = ("dali-pid1", "dali-reset-method", "dali-reset-delay", "dali-ufs-scratch-write")
     if any(word.split("=", 1)[0] in forbidden for word in words):
         raise ValueError("XNU UFS read-only cannot enable PID1, reset or scratch writes")
-    return xnu_ufs_resources(adt, live_fdt)
+    if userdata_log_wire is None and any(word.split("=",1)[0]=="dali-ufs-log-write" for word in words):
+        raise ValueError("XNU userdata logs require an independently authorized v4 grant")
+    return xnu_ufs_resources(adt, live_fdt, userdata_log_wire)
 
 
-def validate_xnu_ufs_bundle(payload, token, adt, live_fdt, config_bytes, recovery_bytes, kernel_bytes):
+def validate_xnu_ufs_bundle(payload, token, adt, live_fdt, config_bytes, recovery_bytes, kernel_bytes,
+                            userdata_log_wire=None):
     """Validate the actual FAT members against the combined read-only profile."""
     if not isinstance(payload, dict) or not isinstance(payload.get("files"), dict):
         raise ValueError("XNU UFS payload manifest has no staged-file inventory")
@@ -130,7 +226,8 @@ def validate_xnu_ufs_bundle(payload, token, adt, live_fdt, config_bytes, recover
         config = tomllib.loads(config_bytes.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError("actual XNU UFS boot arguments are invalid: " + str(error)) from None
-    resources = validate_xnu_ufs_readonly(config, adt, live_fdt, token, False, None, False)
+    resources = validate_xnu_ufs_readonly(config, adt, live_fdt, token, False, None, False,
+                                          userdata_log_wire)
     profile = payload.get("xnu_ufs_read_only")
     fdt_sha256 = hashlib.sha256(live_fdt).hexdigest()
     if (not isinstance(profile, dict) or profile.get("enabled") is not True or
@@ -140,6 +237,15 @@ def validate_xnu_ufs_bundle(payload, token, adt, live_fdt, config_bytes, recover
             profile.get("resources_fdt_sha256") != fdt_sha256 or
             profile.get("live_fdt_sha256") != fdt_sha256):
         raise ValueError("XNU UFS resource record does not bind the actual ADT and live FDT")
+    log_profile=payload.get("xnu_ufs_log")
+    if userdata_log_wire is None:
+        if isinstance(log_profile,dict) and log_profile.get("enabled") is True:
+            raise ValueError("XNU payload advertises an enabled log grant without the wire")
+    elif (not isinstance(log_profile,dict) or log_profile.get("enabled") is not True or
+          log_profile.get("run_token")!=token or log_profile.get("target_partition")!="unixnu_logs" or
+          log_profile.get("write_authorized") is not True or log_profile.get("physical_ufs_qualified") is not False or
+          log_profile.get("grant_sha256")!=hashlib.sha256(userdata_log_wire).hexdigest()):
+        raise ValueError("XNU userdata log profile differs from its exact grant")
     recovery = payload.get("recovery")
     if (not isinstance(recovery, dict) or set(recovery) !=
             {"auto_fastboot", "watchdog_timeout_seconds", "run_token"} or
@@ -263,6 +369,8 @@ def main():
                         help="bind source XNU physical UFS read-only to the live FDT and fresh run token")
     parser.add_argument("--xnu-ufs-live-fdt", type=Path,
                         help="verified raw runtime FDT used to generate the UFS ADT resource node")
+    parser.add_argument("--xnu-ufs-userdata-log-wire", type=Path,
+                        help="exact v4 grant for the bounded userdata unixnu_logs slots")
     parser.add_argument("--size-mib", type=int)
     parser.add_argument("--auto-fastboot", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--reset-method", choices=RESET_METHODS,
@@ -287,6 +395,9 @@ def main():
         parser.error("XNU UFS read-only requires source XNU/ADT, matching live FDT, fresh token, manual recovery, no reset or RAM root")
     if args.xnu_ufs_live_fdt and not args.xnu_ufs_readonly:
         parser.error("--xnu-ufs-live-fdt is only valid for the explicit XNU UFS read-only profile")
+    if args.xnu_ufs_userdata_log_wire and (not args.xnu_ufs_readonly or not args.run_token or
+            args.auto_fastboot or args.reset_method is not None or args.xnu_ramdisk):
+        parser.error("userdata logs require source XNU read-only, a fresh token, manual recovery, no reset and no RAM root")
     if not 2 <= args.watchdog_timeout_seconds <= 31:
         parser.error("the MT6991 RGU supports a verified single-shot timeout of 2..31 seconds")
     config = tomllib.loads(args.config.read_text())
@@ -301,6 +412,8 @@ def main():
             if args.xnu_ufs_readonly:
                 config_text = config_with_xnu_argument(config_text, "dali-ufs-readonly", "1")
                 config_text = config_with_xnu_argument(config_text, "dali-ufs-stop-after-diagnostics", "1")
+            if args.xnu_ufs_userdata_log_wire:
+                config_text = config_with_xnu_argument(config_text, "dali-ufs-log-write", "1")
             if args.reset_method is not None:
                 config_text = qualification_config(config_text, args.reset_method, args.run_token,
                                                    args.auto_fastboot, args.xnu_ramdisk is not None)
@@ -319,6 +432,7 @@ def main():
     adt_bytes = None
     live_fdt_bytes = None
     xnu_ufs_record = None
+    userdata_log_wire = None
     ramdisk_bytes = None
     trust_bytes = None
     if args.xnu_kernel:
@@ -341,12 +455,20 @@ def main():
         adt_bytes = args.xnu_adt.read_bytes()
         if not adt_bytes:
             parser.error("Apple device tree is empty")
+        if args.xnu_ufs_userdata_log_wire:
+            try:
+                userdata_log_wire=args.xnu_ufs_userdata_log_wire.read_bytes()
+                validate_userdata_log_wire(userdata_log_wire,args.run_token)
+                adt_bytes=append_apple_dt_property(adt_bytes,"/device-tree/arm-io/dali-ufs",
+                                                  "userdata-logs-grant-v4",userdata_log_wire)
+            except (OSError,ValueError,UnicodeError,struct.error) as error:
+                parser.error("invalid userdata log grant/Apple DT: "+str(error))
         if args.xnu_ufs_readonly:
             live_fdt_bytes = args.xnu_ufs_live_fdt.read_bytes()
             try:
                 xnu_ufs_record = validate_xnu_ufs_readonly(
                     tomllib.loads(config_text), adt_bytes, live_fdt_bytes, args.run_token,
-                    args.auto_fastboot, args.reset_method, args.xnu_ramdisk is not None)
+                    args.auto_fastboot, args.reset_method, args.xnu_ramdisk is not None,userdata_log_wire)
             except (ValueError, UnicodeError, struct.error) as error:
                 parser.error(str(error))
     if args.xnu_ramdisk:
@@ -419,6 +541,12 @@ def main():
     else:
         record["xnu_ufs_read_only"] = {"enabled": False, "write_authorized": False,
                                       "physical_ufs_qualified": False}
+    if userdata_log_wire is not None:
+        record["xnu_ufs_log"]={"enabled":True,"run_token":args.run_token,
+            "target_partition":"unixnu_logs","write_authorized":True,"physical_ufs_qualified":False,
+            "grant_sha256":hashlib.sha256(userdata_log_wire).hexdigest()}
+    else:
+        record["xnu_ufs_log"]={"enabled":False,"write_authorized":False,"physical_ufs_qualified":False}
     if args.reset_method is not None:
         record["recovery"].update(reset_method=args.reset_method, reset_delay_seconds=5,
                                   watchdog_enabled=False, firmware_reset_deadline_enabled=False)

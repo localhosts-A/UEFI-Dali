@@ -10,6 +10,9 @@ typedef struct {
 #define MT6991_UFS_COMMAND_TIMEOUT_100NS 30000000ULL
 #define MT6991_UFS_TARGET_BOOT_B 0U
 #define MT6991_UFS_TARGET_EXPDB 1U
+#define MT6991_UFS_TARGET_USERDATA_LOGS 2U
+#define MT6991_UFS_DATA_LOG_PARTITION_BYTES (32ULL * 1024ULL * 1024ULL)
+#define MT6991_UFS_DATA_LOG_SLOT_BYTES (4ULL * 1024ULL * 1024ULL)
 EFI_STATUS Mt6991UfsBoundTimeout (UINT64 *Timeout);
 typedef struct {
   // Populated only by a future verified layout/identity path. This layer checks
@@ -21,9 +24,9 @@ typedef struct {
   // PartitionGuid uses RFC 4122 byte order, matching host/XNU wire grants.
   UINT32 BlockSize;
   UINT64 CapacityBlocks, BootStartLba, BootBlocks, CandidateBytes;
-  UINT64 ScratchStartLba, ScratchBlocks, TailGuardBlocks;
-  // Explicit partition policy; legacy zero is boot_b. Expdb never uses the
-  // boot-image extent field: CandidateBytes must be zero for that target.
+  UINT64 ScratchStartLba, ScratchBlocks, TailGuardBlocks, Sequence;
+  // Explicit partition policy; legacy zero is boot_b. Expdb and userdata_logs
+  // never use the boot-image extent field: CandidateBytes must be zero there.
   UINT32 Target;
 } MT6991_UFS_SCRATCH_GRANT;
 // Shape validation only; no identity/provenance or live authorization implied.

@@ -18,10 +18,11 @@ PORT_XNU_UFS_READ_ONLY=${DALI_XNU_UFS_READ_ONLY:-false}
 PORT_XNU_UFS_FDT=
 PORT_UFS_LOG=${DALI_UFS_LOG_ENABLED:-false}
 if [[ "$PORT_UFS_LOG" == true ]]; then
-  [[ "$PORT_XNU_UFS_READ_ONLY" == true && "${DALI_UFS_PROFILE:-off}" == expdb-log-diagnostic &&
+  [[ "$PORT_XNU_UFS_READ_ONLY" == true &&
+     ( "${DALI_UFS_PROFILE:-off}" == expdb-log-diagnostic || "${DALI_UFS_PROFILE:-off}" == userdata-logs-diagnostic ) &&
      "${DALI_UFS_MEASURE_PAYLOAD:-false}" == true && -n "${DALI_UFS_LOG_WIRE:-}" &&
      -f "$DALI_UFS_LOG_WIRE" ]] || {
-    echo "Expdb log needs measured source XNU, its explicit profile/wire and read-only XNU owner" >&2; exit 2;
+    echo "UFS log needs measured source XNU, an explicit target profile/wire and read-only XNU owner" >&2; exit 2;
   }
 elif [[ "$PORT_UFS_LOG" != false || -n "${DALI_UFS_LOG_WIRE:-}" ]]; then
   echo "Invalid expdb log opt-in" >&2; exit 2
@@ -36,7 +37,11 @@ if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
   }
   PORT_XNU_UFS_FDT=$(realpath "$DALI_XNU_UFS_LIVE_FDT")
   if [[ "$PORT_UFS_LOG" == true ]]; then
-    PORT_PROBE_PACKAGE_ARGS+=(--ufs-expdb-log-token "$DALI_RUN_TOKEN" --ufs-expdb-log-wire "$(realpath "$DALI_UFS_LOG_WIRE")" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
+    if [[ "${DALI_UFS_PROFILE:-off}" == userdata-logs-diagnostic ]]; then
+      PORT_PROBE_PACKAGE_ARGS+=(--ufs-userdata-log-token "$DALI_RUN_TOKEN" --ufs-userdata-log-wire "$(realpath "$DALI_UFS_LOG_WIRE")" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
+    else
+      PORT_PROBE_PACKAGE_ARGS+=(--ufs-expdb-log-token "$DALI_RUN_TOKEN" --ufs-expdb-log-wire "$(realpath "$DALI_UFS_LOG_WIRE")" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
+    fi
     export DALI_UFS_SOURCE_DEVICE="$PORT_DEVICE"
   else
     PORT_PROBE_PACKAGE_ARGS+=(--ufs-xnu-read-only-token "$DALI_RUN_TOKEN" --ufs-xnu-live-fdt "$PORT_XNU_UFS_FDT")
@@ -135,6 +140,9 @@ if [[ -n "$PORT_XNU_KERNEL" ]]; then
   fi
   if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
     PAYLOAD_ARGS+=(--xnu-ufs-readonly --xnu-ufs-live-fdt "$PORT_XNU_UFS_FDT")
+  fi
+  if [[ "$PORT_UFS_LOG" == true && "${DALI_UFS_PROFILE:-off}" == userdata-logs-diagnostic ]]; then
+    PAYLOAD_ARGS+=(--xnu-ufs-userdata-log-wire "$(realpath "$DALI_UFS_LOG_WIRE")")
   fi
   if [[ $# == 7 ]]; then
     [[ "${DALI_AUTO_FASTBOOT:-true}" == false ]] || {

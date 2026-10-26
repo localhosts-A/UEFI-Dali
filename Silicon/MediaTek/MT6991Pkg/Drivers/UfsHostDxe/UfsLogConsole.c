@@ -42,10 +42,13 @@ EFI_STATUS DaliUfsLogConsoleRun (DALI_UFS_LOG_CONSOLE *State,
   // Boot-service allocation may dispatch shutdown. Freeze identity now; each
   // lower IO still checks its real live grant and rejects a later revocation.
   MT6991_UFS_SCRATCH_GRANT Grant = *Live;
-  if (!Mt6991UfsScratchGrantValid (&Grant) || Grant.Target != MT6991_UFS_TARGET_EXPDB) {
+  if (!Mt6991UfsScratchGrantValid (&Grant) ||
+      (Grant.Target != MT6991_UFS_TARGET_EXPDB && Grant.Target != MT6991_UFS_TARGET_USERDATA_LOGS)) {
     State->Status = EFI_SECURITY_VIOLATION; return State->Status;
   }
-  UINTN Maximum = DALI_UFS_LOG_WINDOW_BYTES - 3 * Grant.BlockSize;
+  UINTN Window = Grant.Target == MT6991_UFS_TARGET_USERDATA_LOGS ?
+    DALI_UFS_LOG_USERDATA_SLOT_BYTES : DALI_UFS_LOG_WINDOW_BYTES;
+  UINTN Maximum = Window - 3 * Grant.BlockSize;
   VOID *Work = AllocateAlignedPages (EFI_SIZE_TO_PAGES (DALI_UFS_LOG_WORK_BYTES), EFI_PAGE_SIZE);
   UINT8 *Body = ReadbackOnly ? NULL : AllocatePool (Maximum);
   if (Work == NULL || (!ReadbackOnly && Body == NULL)) { State->Status = EFI_OUT_OF_RESOURCES; }

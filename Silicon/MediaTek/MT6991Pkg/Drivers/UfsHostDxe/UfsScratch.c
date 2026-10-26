@@ -113,14 +113,31 @@ STATIC EFI_STATUS Transfer (EFI_BLOCK_IO_PROTOCOL *This, UINT32 MediaId,
   Status = Mt6991UfsScratchMapRange (mScratch.Geometry, &mScratch.Grant,
     mScratch.Grant.Lun, Lba, Bytes, Write, &Absolute, &Count);
   if (Status != EFI_SUCCESS) { return Leave (Status, FALSE); }
-  // The grant window and transport maximum are both one MiB. Do not split a
-  // caller's write into hidden multiple commands or truncate UINTN to UINT32.
-  if (Bytes > MT6991_UFS_DMA_MAX_TRANSFER || Bytes > MAX_UINT32) { return Leave (EFI_BAD_BUFFER_SIZE, FALSE); }
-  UINT8 Cdb[16]; UINTN CdbBytes;
-  Status = Mt6991UfsBuildReadWriteCdb (Write, Absolute, Count, Cdb, &CdbBytes);
-  if (Status != EFI_SUCCESS) { return Leave (Status, FALSE); }
-  Status = Execute (Cdb, CdbBytes, Buffer, (UINT32)Bytes, Write);
-  return Leave (Status, TRUE);
+  // The child may expose a larger bounded log slot than the DMA engine accepts
+  // in one command. Split it into aligned, individually policy-checked SCSI
+  // transfers; stop at the first error and never replay a submitted chunk.
+  if (MT6991_UFS_DMA_MAX_TRANSFER < mScratch.Grant.BlockSize) {
+    return Leave (EFI_BAD_BUFFER_SIZE, FALSE);
+  }
+  UINTN MaximumChunk = MT6991_UFS_DMA_MAX_TRANSFER -
+    (MT6991_UFS_DMA_MAX_TRANSFER % mScratch.Grant.BlockSize);
+  if (MaximumChunk == 0) { return Leave (EFI_BAD_BUFFER_SIZE, FALSE); }
+  UINTN Offset = 0;
+  BOOLEAN Submitted = FALSE;
+  while (Offset < Bytes) {
+    UINTN ChunkBytes = Bytes - Offset;
+    if (ChunkBytes > MaximumChunk) { ChunkBytes = MaximumChunk; }
+    UINT64 ChunkLba = Absolute + Offset / mScratch.Grant.BlockSize;
+    UINT64 ChunkBlocks = ChunkBytes / mScratch.Grant.BlockSize;
+    UINT8 Cdb[16]; UINTN CdbBytes;
+    Status = Mt6991UfsBuildReadWriteCdb (Write, ChunkLba, ChunkBlocks, Cdb, &CdbBytes);
+    if (Status != EFI_SUCCESS) { return Leave (Status, Submitted); }
+    Submitted = TRUE;
+    Status = Execute (Cdb, CdbBytes, (UINT8 *)Buffer + Offset, (UINT32)ChunkBytes, Write);
+    if (Status != EFI_SUCCESS) { return Leave (Status, Submitted); }
+    Offset += ChunkBytes;
+  }
+  return Leave (EFI_SUCCESS, Submitted);
 }
 
 STATIC EFI_STATUS EFIAPI ReadBlocks (EFI_BLOCK_IO_PROTOCOL *This, UINT32 MediaId,
@@ -215,7 +232,7 @@ EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
   if (mScratch.Media.IoAlign == 0) { mScratch.Media.IoAlign = 1; }
   if (!SameMedia ()) { return EFI_MEDIA_CHANGED; }
   // Never publish an expected grant solely on its shape. Read the real disk's
-  // reciprocal GPT and compare the observed boot_b identity and scratch layout.
+  // reciprocal GPT and compare the observed target partition and bounded slot.
   VOID *Workspace = AllocateAlignedPages (EFI_SIZE_TO_PAGES (DALI_UFS_LAYOUT_WORK_BYTES), EFI_PAGE_SIZE);
   if (Workspace == NULL) { return EFI_OUT_OF_RESOURCES; }
   mScratch.Busy = TRUE;
@@ -273,7 +290,7 @@ EFI_STATUS DaliUfsScratchOwnedIo (CONST MT6991_UFS_SCRATCH_GRANT *Live,
   *Io = NULL;
   if (EfiGetCurrentTpl () != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
   if (Live == NULL || Live != mScratch.LiveGrant || !Live->Enabled ||
-      Live->Target != MT6991_UFS_TARGET_EXPDB || mScratch.Handle == NULL ||
+      (Live->Target != MT6991_UFS_TARGET_EXPDB && Live->Target != MT6991_UFS_TARGET_USERDATA_LOGS) || mScratch.Handle == NULL ||
       mScratch.Closed || mScratch.CloseRequested || mScratch.Busy || mScratch.Faulted ||
       mScratch.HostClosed == NULL || *mScratch.HostClosed ||
       CompareMem (Live, &mScratch.Grant, sizeof *Live)) { return EFI_ACCESS_DENIED; }

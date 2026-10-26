@@ -520,7 +520,8 @@ STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode
     if (Sealed != EFI_SUCCESS) { return Sealed; }
   }
   CONST CHAR8 *Token = FixedPcdGetPtr (PcdDaliUfsStorageToken);
-  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u begin sequence=%Lu owner=1\n", Token, Mode, mGrantState.Sequence));
+  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u target=%u begin sequence=%Lu owner=1\n",
+    Token, Mode, mScratchGrant.Target, mGrantState.Sequence));
   EFI_STATUS Status = DaliUfsLogConsoleRun (&mLogConsole, &mScratchGrant, mGrantState.Sequence,
     Mode == DALI_UFS_LOG_READBACK, (CONST VOID *)(UINTN)DALI_CONSOLE_BASE, DALI_CONSOLE_SIZE - 12);
   CHAR8 Digest[65]; STATIC CONST CHAR8 Hex[] = "0123456789abcdef";

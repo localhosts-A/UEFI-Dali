@@ -37,6 +37,15 @@ def valid_config(token=TOKEN):
                        "args": f"-v dali-earlyboot=1 dali-auto-fastboot=0 dali-ufs-readonly=1 dali-ufs-stop-after-diagnostics=1 dali-run={token} kt_fixed_zones=120"}]}
 
 
+def userdata_log_wire(token=TOKEN,sequence=1):
+    slot_blocks=1024;start=64565240+(sequence-1)*2*slot_blocks
+    guard=8192-(sequence-1)*2*slot_blocks-slot_blocks
+    return struct.pack('<8sII32s32s32s32s16sIIQQQQQQQQII',b'DALIUFSW',4,4,
+        token.encode(),b'\x11'*32,b'\x22'*32,b'\x33'*32,
+        uuid.UUID('cde9ab32-18d8-4777-8ced-691e7cd5c636').bytes,
+        2,4096,64577536,64565240,8192,0,start,slot_blocks,guard,sequence,2,4*1024*1024)
+
+
 def single_raw_fv(guid, payload, file_type=0x02, large=False):
     section = (len(payload) + 4).to_bytes(3, "little") + b"\x19" + payload
     header_size = 32 if large else 24
@@ -95,6 +104,39 @@ class XnuUfsPackageTests(unittest.TestCase):
         cfg=valid_config();cfg['entry'][0]['args']=cfg['entry'][0]['args'].replace('dali-ufs-stop-after-diagnostics=1','')
         with self.assertRaises(ValueError):
             make_payload.validate_xnu_ufs_readonly(cfg, adt, LIVE_FDT, TOKEN, False, None, False)
+
+    def test_userdata_log_wire_is_injected_once_and_bound_to_manual_xnu_arguments(self):
+        wire=userdata_log_wire()
+        adt=make_payload.append_apple_dt_property(valid_adt(),"/device-tree/arm-io/dali-ufs",
+                                                  "userdata-logs-grant-v4",wire)
+        cfg=valid_config();cfg['entry'][0]['args']+=" dali-ufs-log-write=1"
+        self.assertEqual(make_payload.validate_userdata_log_wire(wire,TOKEN),1)
+        resources=make_payload.validate_xnu_ufs_readonly(cfg,adt,LIVE_FDT,TOKEN,False,None,False,wire)
+        self.assertEqual(resources[-32:],hashlib.sha256(LIVE_FDT).digest())
+        with self.assertRaises(ValueError):
+            make_payload.validate_xnu_ufs_readonly(cfg,adt,LIVE_FDT,TOKEN,False,None,False,None)
+        with self.assertRaises(ValueError):
+            make_payload.validate_xnu_ufs_readonly(valid_config(),adt,LIVE_FDT,TOKEN,False,None,False,wire)
+        with self.assertRaises(ValueError):
+            make_payload.append_apple_dt_property(adt,"/device-tree/arm-io/dali-ufs",
+                                                  "userdata-logs-grant-v4",b"different")
+
+    def test_log_bundle_requires_wire_manifest_and_exact_userdata_bootarg(self):
+        payload,_,kernel,_,recovery=self.valid_bundle()
+        wire=userdata_log_wire()
+        adt=make_payload.append_apple_dt_property(valid_adt(),"/device-tree/arm-io/dali-ufs",
+                                                  "userdata-logs-grant-v4",wire)
+        config=(f'[[entry]]\nid = "xnu"\ntype = "xnu"\npath = "Payloads/kernel.macho"\n'
+                f'args = "-v dali-earlyboot=1 dali-auto-fastboot=0 dali-ufs-readonly=1 '
+                f'dali-ufs-stop-after-diagnostics=1 dali-ufs-log-write=1 dali-run={TOKEN}"\n').encode()
+        payload['files']['EFI/UniXNU/unixnu.toml']={'bytes':len(config),'sha256':hashlib.sha256(config).hexdigest()}
+        payload['files']['EFI/UniXNU/Payloads/kernel.macho.adt']={'bytes':len(adt),'sha256':hashlib.sha256(adt).hexdigest()}
+        payload['xnu_adt_sha256']=hashlib.sha256(adt).hexdigest()
+        payload['xnu_ufs_log']={'enabled':True,'run_token':TOKEN,'target_partition':'unixnu_logs',
+            'write_authorized':True,'physical_ufs_qualified':False,'grant_sha256':hashlib.sha256(wire).hexdigest()}
+        self.assertTrue(make_payload.validate_xnu_ufs_bundle(payload,TOKEN,adt,LIVE_FDT,config,recovery,kernel,wire))
+        with self.assertRaises(ValueError):
+            make_payload.validate_xnu_ufs_bundle(payload,TOKEN,adt,LIVE_FDT,config,recovery,kernel,wire[:-1])
 
     def valid_bundle(self, *, recovery_config=None, resource_hash=None):
         config = ('[[entry]]\nid = "xnu"\ntype = "xnu"\npath = "Payloads/kernel.macho"\n'

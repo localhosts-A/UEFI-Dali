@@ -86,6 +86,31 @@ class UfsScratchTests(unittest.TestCase):
         self.assertEqual(r[28:30],[2440,2695])
         self.assertEqual(r[6],2)  # first relative block beyond the scratch window
 
+    def test_userdata_logs_publisher_exposes_only_sequence_uefi_slot(self):
+        r=self.case(60)
+        self.assertEqual((r[0],r[2],r[20],r[23]),(0,1,3,4))
+        self.assertEqual(r[12:15],[4096,1023,0])
+        self.assertEqual(r[28:30],[64565240,64566263])
+        self.assertEqual(r[6],2)
+
+    def test_userdata_four_mib_read_is_split_at_real_one_mib_dma_limit(self):
+        r=self.case(61)
+        self.assertEqual((r[0],r[2],r[3],r[4],r[5]),(0,1,0,4,0))
+        self.assertEqual(r[6:10],[64565240,64565496,64565752,64566008])
+        self.assertEqual(r[10:14],[1024*1024]*4)
+
+    def test_userdata_four_mib_write_uses_bounded_nonreplayed_chunks(self):
+        r=self.case(62)
+        self.assertEqual((r[0],r[2],r[3],r[4],r[5]),(0,1,0,4,0))
+        self.assertEqual(r[6:10],[64565240,64565496,64565752,64566008])
+        self.assertEqual(r[10:14],[1024*1024]*4)
+
+    def test_failed_userdata_chunk_stops_without_submitting_later_blocks(self):
+        r=self.case(63)
+        self.assertEqual((r[0],r[2],r[3],r[4],r[5]),(0,1,18,2,0))
+        self.assertEqual(r[6:8],[64565240,64565496])
+        self.assertEqual(r[10:12],[1024*1024]*2)
+
     def test_authorization_runs_only_after_all_gpt_reads_before_publication(self):
         r=self.case(41)
         self.assertEqual((r[0],r[2],r[20],r[22],r[23]),(0,1,3,4,4))

@@ -5,6 +5,7 @@
 #include "UfsLayout.h"
 
 #define DALI_UFS_EXPDB_WIRE_BYTES 236U
+#define DALI_UFS_USERDATA_LOG_WIRE_BYTES 240U
 typedef struct {
   BOOLEAN Attempted, Prepared, AuthorizationAttempted;
   UINT64 Sequence;
@@ -12,8 +13,8 @@ typedef struct {
   DALI_UFS_PROVENANCE Provenance;
 } DALI_UFS_GRANT_STATE;
 
-// Called before physical controller access. Parse only the explicit expdb v3
-// wire and compare independently measured RAM kernel/source and compiled token.
+// Called before physical controller access. Parse only explicit target schemas
+// and compare independently measured RAM kernel/source and compiled token.
 // Proposal.Enabled is a shape marker, never installed as the host live grant.
 EFI_STATUS DaliUfsGrantPrepare (DALI_UFS_GRANT_STATE *State,
   CONST VOID *Wire, UINTN Bytes, CONST CHAR8 *Token, UINTN TokenBytes,

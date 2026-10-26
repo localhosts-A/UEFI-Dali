@@ -33,10 +33,11 @@ class UfsLogTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):cls.temp.cleanup()
 
-    def run_log(self,disk=None,fault=0,block=4096,readback=False,owner=1,sequence=1,body=b'DALI: journal\r\n'+bytes(range(256))*5):
-        if disk is None:disk=bytearray(1048576)
+    def run_log(self,disk=None,fault=0,block=4096,readback=False,owner=1,sequence=1,userdata=False,body=b'DALI: journal\r\n'+bytes(range(256))*5):
+        window=4*1024*1024 if userdata else 1024*1024
+        if disk is None:disk=bytearray(window)
         array=(c.c_ubyte*len(disk)).from_buffer(disk);out=(c.c_uint64*13)();digest=(c.c_ubyte*32)()
-        self.lib.run_log(fault,block,readback,owner,sequence,array,None if readback else body,
+        self.lib.run_log(fault,block,readback,owner+10 if userdata else owner,sequence,array,None if readback else body,
                          0 if readback else len(body),out,digest)
         values=list(out)
         if values[4]:self.assertEqual(values[9],20,'single-use attempt never retries')
@@ -85,6 +86,23 @@ class UfsLogTests(unittest.TestCase):
         for kwargs in (dict(fault=10),dict(fault=11),dict(fault=12),dict(owner=0),dict(sequence=0),
                        dict(body=b''),dict(body=bytes(1048576))):
             out,_,_=self.run_log(**kwargs);self.assertNotEqual(out[0],0);self.assertEqual(out[1:4],[0,0,0])
+
+    def test_userdata_log_sequence_maps_to_four_mib_uefi_slot_with_same_candidate_readback(self):
+        for sequence in range(1,5):
+            body=b'UEFI userdata snapshot '+bytes([sequence])*7000
+            out,digest,disk=self.run_log(userdata=True,sequence=sequence,body=body)
+            self.assertEqual(out[:9],[0,2,3,3,1,1,1,1,len(body)])
+            self.assertEqual(digest,hashlib.sha256(body).digest())
+            block=4096;window=4*1024*1024
+            for offset,kind in ((0,1),(block,2),(window-block,3)):
+                record=bytearray(disk[offset:offset+block])
+                self.assertEqual(struct.unpack_from('<II',record,16),(kind,1))
+                self.assertEqual(struct.unpack_from('<IQIIQ',record,56),(1,sequence,len(body),block,window//block))
+            second,again,_=self.run_log(disk,userdata=True,readback=True,sequence=sequence,body=body)
+            self.assertEqual(second[:9],[0,1,0,0,1,0,0,1,len(body)])
+            self.assertEqual(again,digest)
+        out,_,_=self.run_log(userdata=True,owner=2)
+        self.assertNotEqual(out[0],0);self.assertEqual(out[2:4],[0,0])
 
 
 if __name__=='__main__':unittest.main()

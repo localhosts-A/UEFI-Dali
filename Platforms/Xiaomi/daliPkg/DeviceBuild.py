@@ -190,9 +190,9 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         log_module = importlib.util.module_from_spec(log_spec)
         log_spec.loader.exec_module(log_module)
         log_enabled, log_wire = log_module.log_settings(os.environ)
-        self.env.SetValue ("BLD_*_DALI_UFS_LOG_ENABLED", "TRUE" if log_enabled else "FALSE", "Explicit manual expdb log diagnostic")
-        self.env.SetValue ("BLD_*_DALI_UFS_SCRATCH_ENABLED", "TRUE" if log_enabled else "FALSE", "Measured expdb log proposal")
-        self.env.SetValue ("BLD_*_DALI_UFS_SCRATCH_WIRE", '"' + log_wire + '"', "Expdb v3 wire; runtime observations still required")
+        self.env.SetValue ("BLD_*_DALI_UFS_LOG_ENABLED", "TRUE" if log_enabled else "FALSE", "Explicit manual userdata log diagnostic")
+        self.env.SetValue ("BLD_*_DALI_UFS_SCRATCH_ENABLED", "TRUE" if log_enabled else "FALSE", "Measured userdata log proposal")
+        self.env.SetValue ("BLD_*_DALI_UFS_SCRATCH_WIRE", '"' + log_wire + '"', "Target-bound log wire; runtime observations still required")
 
         source_tool = Path(CommonPlatform.WorkspaceRoot) / "tools/dali/ufs_source_record.py"
         spec = importlib.util.spec_from_file_location("dali_ufs_source_record", source_tool)

@@ -21,7 +21,8 @@ class Grant(c.Structure):
                 ('source', c.c_ubyte * 32), ('guid', c.c_ubyte * 16), ('block', c.c_uint32),
                 ('capacity', c.c_uint64), ('boot_start', c.c_uint64), ('boot_blocks', c.c_uint64),
                 ('candidate_bytes', c.c_uint64), ('scratch_start', c.c_uint64),
-                ('scratch_blocks', c.c_uint64), ('guard_blocks', c.c_uint64), ('target', c.c_uint32)]
+                ('scratch_blocks', c.c_uint64), ('guard_blocks', c.c_uint64), ('sequence', c.c_uint64),
+                ('target', c.c_uint32)]
 
 
 class Layout(c.Structure):
@@ -293,6 +294,39 @@ UINTN layout_size(VOID){return sizeof(DALI_UFS_LAYOUT);}
             if kind=='tail': self.grant.guard_blocks=256
             if kind=='window': self.grant.scratch_start=34952-512; self.grant.guard_blocks=256
             self.assertNotEqual(self.inspect()[0],0,kind)
+
+    def userdata_logs(self,sequence=1):
+        self.media(4096,capacity=64577536,boot_start=64565240)
+        self.boot_guid=uuid.UUID('cde9ab32-18d8-4777-8ced-691e7cd5c636')
+        self.boot_blocks=8192
+        self.entry(0,64565240,64573431,'unixnu_logs',self.boot_guid)
+        self.entry(1,64573432,64577527,'flashinfo',uuid.UUID(int=2))
+        self.geometry[2]=Geometry(64577536,4096,1,1,0)
+        self.grant.lun=2
+        self.grant.target=2;self.grant.boot_start=64565240;self.grant.boot_blocks=8192
+        self.grant.candidate_bytes=0;self.grant.scratch_blocks=1024;self.grant.sequence=sequence
+        self.grant.scratch_start=64565240+(sequence-1)*2048
+        self.grant.guard_blocks=8192-(sequence-1)*2048-1024
+        self.grant.guid[:]=self.boot_guid.bytes
+        self.rebuild()
+
+    def test_userdata_logs_derives_only_the_sequence_bound_uefi_slot(self):
+        for sequence in range(1,5):
+            self.userdata_logs(sequence)
+            status,out=self.inspect()
+            self.assertEqual(status,0)
+            self.assertEqual((out.target,out.boot_start,out.boot_blocks,out.scratch_start,
+                              out.scratch_blocks,out.guard_blocks),
+                             (2,64565240,8192,64565240+(sequence-1)*2048,1024,8192-(sequence-1)*2048-1024))
+        for change in ('sequence','guid','start','blocks','target','name'):
+            self.userdata_logs()
+            if change=='sequence':self.grant.sequence=5
+            if change=='guid':self.grant.guid[0]^=1
+            if change=='start':self.grant.scratch_start+=1
+            if change=='blocks':self.grant.scratch_blocks-=1
+            if change=='target':self.grant.target=1
+            if change=='name':self.entry(0,64565240,64573431,'userdata',self.boot_guid);self.rebuild()
+            self.assertNotEqual(self.inspect()[0],0,change)
 
 
 if __name__ == '__main__':

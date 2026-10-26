@@ -71,6 +71,18 @@ uint64_t scratch(unsigned mode) {
  grant.BlockSize=4096;grant.CapacityBlocks=64577536;grant.BootStartLba=418560;grant.BootBlocks=16384;
  grant.CandidateBytes=5062656;grant.ScratchStartLba=434432;grant.ScratchBlocks=256;grant.TailGuardBlocks=256;
  unsigned lun=2,cdbBytes=10,bytes=4096;uint64_t lba=434432,count=1;cdb[0]=0x2a;
+ if(mode>=30){
+  grant.Target=MT6991_UFS_TARGET_USERDATA_LOGS;grant.BootStartLba=64565240;grant.BootBlocks=8192;
+  grant.CandidateBytes=0;grant.Sequence=1;grant.ScratchStartLba=64565240;
+  grant.ScratchBlocks=1024;grant.TailGuardBlocks=7168;lba=64565240;
+  const UINT8 logsGuid[16]={0xcd,0xe9,0xab,0x32,0x18,0xd8,0x47,0x77,0x8c,0xed,0x69,0x1e,0x7c,0xd5,0xc6,0x36};
+  memcpy(grant.PartitionGuid,logsGuid,16);
+  if(mode==31)lba=64565240+1023;if(mode==32)lba=64565240+1024;
+  if(mode==33){lba=64565240+1023;count=2;bytes=8192;}
+  if(mode==34)grant.Sequence=2;
+  if(mode==35)grant.ScratchStartLba++;
+  if(mode==36)grant.TailGuardBlocks--;
+ }
  switch(mode){
  case 1:cdb[0]=0x8a;cdbBytes=16;lba=434687;break;
  case 2:lba=434687;count=2;bytes=8192;break;
@@ -194,7 +206,16 @@ void wire(unsigned which,uint64_t *out) {
   q[16]=0x2a;be32(q+18,434432);be16(q+23,1);
   g[2]=(MT6991_UFS_GEOMETRY){64577536,4096,true,true,false};memset(host,0x5a,sizeof host);
   if(which!=28)grant_init(&grant);
-  if(which>=34){
+  if(which>=60){
+   grant.Target=MT6991_UFS_TARGET_USERDATA_LOGS;grant.BootStartLba=64565240;grant.BootBlocks=8192;
+   grant.CandidateBytes=0;grant.Sequence=1;grant.ScratchStartLba=64565240;
+   grant.ScratchBlocks=1024;grant.TailGuardBlocks=7168;
+   const UINT8 logsGuid[16]={0xcd,0xe9,0xab,0x32,0x18,0xd8,0x47,0x77,0x8c,0xed,0x69,0x1e,0x7c,0xd5,0xc6,0x36};
+   memcpy(grant.PartitionGuid,logsGuid,16);
+  if(which==64)grant.Sequence=2;
+   be32(q+18,which==61?64565240+1023:which==62?64565240+1024:which==63?64565240+1023:64565240);
+   if(which==63)be16(q+23,2);
+  }else if(which>=34){
    grant.Target=MT6991_UFS_TARGET_EXPDB;grant.BootStartLba=2184;grant.BootBlocks=32768;grant.CandidateBytes=0;
    grant.ScratchStartLba=2440;grant.ScratchBlocks=256;grant.TailGuardBlocks=32256;
    be32(q+18,which==35?2439:which==36?2696:which==37?2695:which==40?34951:2440);
@@ -269,6 +290,12 @@ void wire(unsigned which,uint64_t *out) {
         for mode in (35,36,38,39,40):
             self.assertNotEqual(self.wire(mode)[0],0,mode)
 
+    def test_userdata_logs_owned_descriptor_cannot_cross_into_xnu_slot_or_use_wrong_sequence(self):
+        for mode in (60,61):
+            out=self.wire(mode);self.assertEqual(out[0:4],[0,0,0,1],mode)
+        for mode in (62,63,64):
+            self.assertNotEqual(self.wire(mode)[0],0,mode)
+
     def test_actual_mu_command_upiu_direction_matches_read_write10_and_write16(self):
         for mode,flags in ((34,0x21),(43,0x41),(45,0x21)):
             with self.subTest(mode=mode):
@@ -334,6 +361,12 @@ void wire(unsigned which,uint64_t *out) {
             with self.subTest(mode=mode): self.assertEqual(self.lib.scratch(mode), 8)
         for mode in (5, 20, 21, 22, 23, 24, 25, 26):
             with self.subTest(mode=mode): self.assertEqual(self.lib.scratch(mode), 2)
+
+    def test_userdata_logs_scratch_write_is_limited_to_its_uefi_four_mib_slot(self):
+        self.assertEqual(self.lib.scratch(30),0)
+        self.assertEqual(self.lib.scratch(31),0)
+        for mode in (32,33,34,35,36):
+            with self.subTest(mode=mode):self.assertEqual(self.lib.scratch(mode),8)
 
     def test_scratch_blockio_translation_is_bounded_and_requires_known_wp_for_writes(self):
         absolute = ctypes.c_uint64(); count = ctypes.c_uint64()

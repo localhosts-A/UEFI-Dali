@@ -39,6 +39,13 @@ VOID run(CONST UINT8*wire,UINTN bytes,UINT32 mode,UINT64*out){
  layout.BlockSize=4096;layout.CapacityBlocks=64577536;layout.BootStartLba=2184;layout.BootBlocks=32768;
  layout.ScratchStartLba=2440;layout.ScratchBlocks=256;layout.TailGuardBlocks=32256;
  const UINT8 guid[16]={0,0,0,3,0x39,0xc2,0x44,0x88,0x9b,0xb0,0,0xcb,0x43,0xc9,0xcc,0xd4};memcpy(layout.PartitionGuid,guid,16);
+ if(mode==30){
+  geometry[2]=(MT6991_UFS_GEOMETRY){64577536,4096,TRUE,TRUE,FALSE};
+  layout.Target=MT6991_UFS_TARGET_USERDATA_LOGS;layout.BootStartLba=64565240;layout.BootBlocks=8192;
+  layout.ScratchStartLba=64565240;layout.ScratchBlocks=1024;layout.TailGuardBlocks=7168;
+  const UINT8 logsGuid[16]={0xcd,0xe9,0xab,0x32,0x18,0xd8,0x47,0x77,0x8c,0xed,0x69,0x1e,0x7c,0xd5,0xc6,0x36};
+  memcpy(layout.PartitionGuid,logsGuid,16);Mt6991UfsBuildReadWriteCdb(TRUE,64565240,1,cdb,&cdbBytes);
+ }
  switch(mode){case 1:identity.Ready=FALSE;break;case 2:identity.Digest[0]^=1;break;
  case 3:provenance.Ready=FALSE;break;case 4:provenance.SourceSha256[0]^=1;break;
  case 5:layout.Verified=FALSE;break;case 6:layout.Target=0;break;case 7:layout.PartitionGuid[0]^=1;break;
@@ -67,6 +74,12 @@ VOID run(CONST UINT8*wire,UINTN bytes,UINT32 mode,UINT64*out){
             b'0123456789abcdef0123456789abcdef',b'\x11'*32,b'\x22'*32,b'\x33'*32,
             uuid.UUID('00000003-39c2-4488-9bb0-00cb43c9ccd4').bytes,2,4096,64577536,
             2184,32768,0,2440,256,32256,1,1)
+
+    def userdata_logs_wire(self):
+        return struct.pack('<8sII32s32s32s32s16sIIQQQQQQQQII',b'DALIUFSW',4,4,
+            b'0123456789abcdef0123456789abcdef',b'\x11'*32,b'\x22'*32,b'\x33'*32,
+            uuid.UUID('cde9ab32-18d8-4777-8ced-691e7cd5c636').bytes,2,4096,64577536,
+            64565240,8192,0,64565240,1024,7168,1,2,4*1024*1024)
 
     def run_case(self,mode=0,wire=None):
         data=self.wire() if wire is None else bytes(wire);out=(c.c_uint64*10)()
@@ -101,3 +114,13 @@ VOID run(CONST UINT8*wire,UINTN bytes,UINT32 mode,UINT64*out){
                 self.assertEqual((r[4],r[5]),(0,8))
         for data in (b'',self.wire()[:-4],self.wire()+b'\0'):
             self.assertNotEqual(self.run_case(wire=data)[0],0)
+
+    def test_userdata_logs_v4_wire_is_sequence_bound_to_the_exact_uefi_slot(self):
+        wire=self.userdata_logs_wire()
+        self.assertEqual(self.run_case(30,wire),[0,1,8,0,1,0,15,0,8,1])
+        for offset,fmt,value in ((8,'I',3),(12,'I',2),(224,'Q',2),(232,'I',1),
+                                 (232,'I',3),(236,'I',1),(200,'Q',64565241),
+                                 (208,'Q',1023),(216,'Q',7167),(176,'Q',64565241)):
+            bad=bytearray(wire);struct.pack_into('<'+fmt,bad,offset,value)
+            with self.subTest(offset=offset,value=value):self.assertNotEqual(self.run_case(30,bad)[0],0)
+        self.assertNotEqual(self.run_case(30,wire[:-4])[0],0)

@@ -61,8 +61,13 @@ STATIC BOOLEAN Header (CONST UINT8 *P, CONST MT6991_UFS_GEOMETRY *G,
 STATIC BOOLEAN TargetName (CONST UINT8 *P, UINT32 Target) {
   STATIC CONST UINT8 BootB[14] = { 'b',0,'o',0,'o',0,'t',0,'_',0,'b',0,0,0 };
   STATIC CONST UINT8 Expdb[12] = { 'e',0,'x',0,'p',0,'d',0,'b',0,0,0 };
-  UINTN Bytes = Target == MT6991_UFS_TARGET_EXPDB ? sizeof Expdb : sizeof BootB;
-  CONST UINT8 *Name = Target == MT6991_UFS_TARGET_EXPDB ? Expdb : BootB;
+  STATIC CONST UINT8 UserdataLogs[24] = {
+    'u',0,'n',0,'i',0,'x',0,'n',0,'u',0,'_',0,'l',0,'o',0,'g',0,'s',0,0,0
+  };
+  UINTN Bytes = Target == MT6991_UFS_TARGET_EXPDB ? sizeof Expdb :
+                Target == MT6991_UFS_TARGET_USERDATA_LOGS ? sizeof UserdataLogs : sizeof BootB;
+  CONST UINT8 *Name = Target == MT6991_UFS_TARGET_EXPDB ? Expdb :
+                      Target == MT6991_UFS_TARGET_USERDATA_LOGS ? UserdataLogs : BootB;
   return CompareMem (P + 56, Name, Bytes) == 0;
 }
 STATIC VOID Guid (CONST UINT8 *Little, UINT8 *Canonical) {
@@ -118,7 +123,8 @@ EFI_STATUS DaliUfsInspectScratchLayout (CONST MT6991_UFS_GEOMETRY *Geometry,
           (First <= Le64 (Q + 40) && Le64 (Q + 32) <= Last))) { return EFI_VOLUME_CORRUPTED; }
     }
     if (TargetName (P, Expected->Target)) {
-      UINTN End = Expected->Target == MT6991_UFS_TARGET_EXPDB ? 68 : 70;
+      UINTN End = Expected->Target == MT6991_UFS_TARGET_EXPDB ? 68 :
+                  Expected->Target == MT6991_UFS_TARGET_USERDATA_LOGS ? 80 : 70;
       if (Boot != NULL || Nonzero (P + End, 128 - End)) { return EFI_VOLUME_CORRUPTED; }
       Boot = P;
     }
@@ -131,12 +137,21 @@ EFI_STATUS DaliUfsInspectScratchLayout (CONST MT6991_UFS_GEOMETRY *Geometry,
   L.Target = Expected->Target;
   L.BootStartLba = Le64 (Boot + 32); L.BootBlocks = Le64 (Boot + 40) - L.BootStartLba + 1;
   Guid (Boot + 16, L.PartitionGuid);
-  L.ScratchBlocks = L.TailGuardBlocks = (1024U * 1024U) / G.BlockSize;
+  L.ScratchBlocks = L.TailGuardBlocks = (UINT64)(Expected->Target == MT6991_UFS_TARGET_USERDATA_LOGS ?
+    MT6991_UFS_DATA_LOG_SLOT_BYTES : 1024U * 1024U) / G.BlockSize;
   if (L.BootBlocks < 2 * L.ScratchBlocks) { return EFI_ACCESS_DENIED; }
   if (L.Target == MT6991_UFS_TARGET_EXPDB) {
     if (L.BootBlocks < 6 * L.ScratchBlocks) { return EFI_ACCESS_DENIED; }
     L.ScratchStartLba = L.BootStartLba + L.ScratchBlocks;
     L.TailGuardBlocks = L.BootBlocks - 2 * L.ScratchBlocks;
+  } else if (L.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
+    if (L.BootBlocks != 8192ULL || Expected->Sequence == 0 || Expected->Sequence > 4 ||
+        L.BlockSize != 4096 || L.ScratchBlocks != MT6991_UFS_DATA_LOG_SLOT_BYTES / L.BlockSize) {
+      return EFI_ACCESS_DENIED;
+    }
+    UINT64 SlotOffset = (Expected->Sequence - 1) * 2 * L.ScratchBlocks;
+    L.ScratchStartLba = L.BootStartLba + SlotOffset;
+    L.TailGuardBlocks = L.BootBlocks - SlotOffset - L.ScratchBlocks;
   } else { L.ScratchStartLba = L.BootStartLba + L.BootBlocks - 2 * L.ScratchBlocks; }
   if (L.BootStartLba != Expected->BootStartLba || L.BootBlocks != Expected->BootBlocks ||
       CompareMem (L.PartitionGuid, Expected->PartitionGuid, sizeof L.PartitionGuid) ||

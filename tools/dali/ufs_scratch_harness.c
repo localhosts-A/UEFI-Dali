@@ -11,6 +11,7 @@ static EFI_TPL tpl;
 static unsigned mode, services, submits, installs, removes, allocated, freed, policy_errors, layout_reads;
 static UINT8 opcodes[8], lengths[8];
 static UINT64 lbas[8], syncs[8];
+static UINT32 transfer_bytes[8];
 static BOOLEAN closed;
 static MT6991_UFS_SCRATCH_GRANT grant;
 static MT6991_UFS_SCRATCH_GRANT live_grant;
@@ -29,9 +30,12 @@ static UINT32 crc(CONST UINT8 *p,unsigned n){
  UINT32 c=MAX_UINT32;for(unsigned i=0;i<n;i++){c^=p[i];for(unsigned j=0;j<8;j++)c=(c>>1)^((c&1)?0xedb88320U:0);}return ~c;
 }
 static void layout_fixture(void){
- memset(gpt_entries,0,sizeof gpt_entries);memset(gpt_entries,1,16);memset(gpt_entries+16,4,16);
+	 static const UINT8 guid_order[16]={3,2,1,0,5,4,7,6,8,9,10,11,12,13,14,15};
+	 memset(gpt_entries,0,sizeof gpt_entries);memset(gpt_entries,1,16);
+	 for(unsigned i=0;i<16;i++)gpt_entries[16+i]=grant.PartitionGuid[guid_order[i]];
  put64(gpt_entries+32,grant.BootStartLba);put64(gpt_entries+40,grant.BootStartLba+grant.BootBlocks-1);
- const char *name=grant.Target==MT6991_UFS_TARGET_EXPDB?"expdb":"boot_b";
+ const char *name=grant.Target==MT6991_UFS_TARGET_EXPDB?"expdb":
+  grant.Target==MT6991_UFS_TARGET_USERDATA_LOGS?"unixnu_logs":"boot_b";
  for(unsigned i=0;i<strlen(name);i++)gpt_entries[56+2*i]=name[i];
  unsigned block=grant.BlockSize,array_blocks=(512+block-1)/block;
  for(unsigned i=0;i<2;i++){
@@ -111,6 +115,7 @@ static UINT64 be (CONST UINT8 *b, unsigned n) { UINT64 v=0;for(unsigned i=0;i<n;
 static EFI_STATUS EFIAPI execute (EFI_SCSI_IO_PROTOCOL *self, EFI_SCSI_IO_SCSI_REQUEST_PACKET *p, EFI_EVENT event) {
   (VOID)self; UINT8 *c=p->Cdb; unsigned i=submits++;
   if(i>=8)abort();opcodes[i]=c[0];lengths[i]=p->CdbLength;
+  transfer_bytes[i]=p->InTransferLength?p->InTransferLength:p->OutTransferLength;
   if(c[0]==0x28||c[0]==0x2a)lbas[i]=be(c+2,4);
   if(c[0]==0x88||c[0]==0x8a)lbas[i]=be(c+2,8);
   if(event||p->Timeout!=30000000||((UINTN)p->SenseData&7)||p->SenseDataLength!=32)++policy_errors;
@@ -125,6 +130,7 @@ static EFI_STATUS EFIAPI execute (EFI_SCSI_IO_PROTOCOL *self, EFI_SCSI_IO_SCSI_R
   if(mode==30){EFI_TPL old=tpl;tpl=TPL_APPLICATION;reentrant=DaliUfsScratchUnpublish();tpl=old;}
   if(mode==4)return EFI_TIMEOUT;
   if(mode==24&&p->OutTransferLength)return EFI_TIMEOUT;
+  if(mode==63&&i==1&&p->OutTransferLength)return EFI_TIMEOUT;
   if(mode==25&&p->OutTransferLength)--p->OutTransferLength;
   if(mode==26&&c[0]==0x35)return EFI_TIMEOUT;
   if(mode==27&&p->OutTransferLength)return 1; // warning is not successful completion
@@ -161,6 +167,7 @@ VOID run (unsigned which, UINT64 *out) {
   memset(&mScratch,0,sizeof mScratch);memset(geometry,0,sizeof geometry);memset(&grant,0,sizeof grant);
   memset(&live_grant,0,sizeof live_grant);
   memset(syncs,0,sizeof syncs);memset(opcodes,0,sizeof opcodes);memset(lbas,0,sizeof lbas);memset(lengths,0,sizeof lengths);
+  memset(transfer_bytes,0,sizeof transfer_bytes);
   tpl=TPL_APPLICATION;closed=FALSE;gBS=&bs;
   grant.Enabled=which!=0;grant.Lun=2;memcpy(grant.Token,"0123456789abcdef0123456789abcdef",33);
   memset(grant.DeviceBinding,1,32);memset(grant.CandidateSha256,2,32);memset(grant.SourceSha256,3,32);memset(grant.PartitionGuid,4,16);
@@ -172,6 +179,13 @@ VOID run (unsigned which, UINT64 *out) {
   if(which>=40){
    grant.Target=MT6991_UFS_TARGET_EXPDB;grant.BootStartLba=2184;grant.BootBlocks=32768;grant.CandidateBytes=0;
    grant.ScratchStartLba=2440;grant.TailGuardBlocks=32256;
+  }
+  if(which>=60){
+   grant.Target=MT6991_UFS_TARGET_USERDATA_LOGS;grant.BootStartLba=64565240;grant.BootBlocks=8192;
+   grant.CandidateBytes=0;grant.Sequence=1;grant.ScratchStartLba=64565240;
+   grant.ScratchBlocks=1024;grant.TailGuardBlocks=7168;
+   const UINT8 logsGuid[16]={0xcd,0xe9,0xab,0x32,0x18,0xd8,0x47,0x77,0x8c,0xed,0x69,0x1e,0x7c,0xd5,0xc6,0x36};
+   memcpy(grant.PartitionGuid,logsGuid,16);
   }
   geometry[2]=(MT6991_UFS_GEOMETRY){grant.CapacityBlocks,grant.BlockSize,TRUE,TRUE,FALSE};
   media=(EFI_BLOCK_IO_MEDIA){.MediaId=123,.MediaPresent=TRUE,.ReadOnly=TRUE,.BlockSize=grant.BlockSize,.IoAlign=8,.LastBlock=grant.CapacityBlocks-1};
@@ -188,7 +202,15 @@ VOID run (unsigned which, UINT64 *out) {
   out[0]=code(DaliUfsScratchPublishChecked((VOID*)99,&grant,geometry,&closed,syncs,
                                         which==47?NULL:authorize,&live_grant));
   out[1]=services;out[2]=installs;
-  if(out[0]==0&&which==56){
+  if(out[0]==0&&(which==61||which==62||which==63)){
+    after_publish=TRUE;VOID *buffer=NULL;
+    if(posix_memalign(&buffer,4096,4*1024*1024))abort();
+    out[3]=code(which==61?mScratch.Io.ReadBlocks(&mScratch.Io,123,0,4*1024*1024,buffer):
+                         mScratch.Io.WriteBlocks(&mScratch.Io,123,0,4*1024*1024,buffer));
+    out[4]=submits;out[5]=policy_errors;
+    for(unsigned i=0;i<4;i++){out[6+i]=lbas[i];out[10+i]=transfer_bytes[i];}
+    free(buffer);
+  }else if(out[0]==0&&which==56){
     after_publish=TRUE;UINT8 buffer[4096] __attribute__((aligned(4096)));
     out[3]=code(DaliUfsScratchSealReadOnly(&live_grant));
     out[4]=code(mScratch.Io.WriteBlocks(&mScratch.Io,123,0,4096,buffer));

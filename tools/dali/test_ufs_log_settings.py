@@ -6,12 +6,16 @@ from ufs_log_settings import log_settings
 
 
 class LogSettingsTests(unittest.TestCase):
-    def fixture(self,folder):
-        wire=bytearray(236);wire[:8]=b'DALIUFSW';struct.pack_into('<II',wire,8,3,2)
+    def fixture(self,folder,userdata=False):
+        wire=bytearray(240 if userdata else 236);wire[:8]=b'DALIUFSW';struct.pack_into('<II',wire,8,4 if userdata else 3,4 if userdata else 2)
         wire[16:48]=b'a'*32;wire[48:160]=bytes([1])*112
-        struct.pack_into('<II8QI',wire,160,2,4096,64577536,2184,32768,0,2440,256,32256,1,1)
+        if userdata:
+            wire[144:160]=bytes.fromhex('cde9ab3218d847778ced691e7cd5c636')
+            struct.pack_into('<II8QII',wire,160,2,4096,64577536,64565240,8192,0,64565240,1024,7168,1,2,4194304)
+        else:
+            struct.pack_into('<II8QI',wire,160,2,4096,64577536,2184,32768,0,2440,256,32256,1,1)
         path=Path(folder)/'wire.bin';path.write_bytes(wire)
-        env=dict(DALI_UFS_LOG_ENABLED='true',DALI_UFS_LOG_WIRE=str(path),DALI_UFS_PROFILE='expdb-log-diagnostic',
+        env=dict(DALI_UFS_LOG_ENABLED='true',DALI_UFS_LOG_WIRE=str(path),DALI_UFS_PROFILE='userdata-logs-diagnostic' if userdata else 'expdb-log-diagnostic',
                  DALI_UFS_READ_ONLY='true',DALI_UFS_MEASURE_PAYLOAD='true',DALI_UFS_PROBE='false',
                  DALI_AUTO_FASTBOOT='false',DALI_RUN_TOKEN='a'*32)
         return wire,path,env
@@ -20,6 +24,8 @@ class LogSettingsTests(unittest.TestCase):
         self.assertEqual(log_settings({}),(False,'{0x00}'))
         with tempfile.TemporaryDirectory() as tmp:
             wire,path,env=self.fixture(tmp);enabled,encoded=log_settings(env)
+            self.assertTrue(enabled);self.assertEqual(bytes(int(n,16) for n in encoded[1:-1].split(',')),wire)
+            wire,path,env=self.fixture(tmp,True);enabled,encoded=log_settings(env)
             self.assertTrue(enabled);self.assertEqual(bytes(int(n,16) for n in encoded[1:-1].split(',')),wire)
 
     def test_explicit_profile_and_all_reset_or_measurement_controls_are_required(self):

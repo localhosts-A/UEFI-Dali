@@ -54,13 +54,19 @@ STATIC BOOLEAN Nonzero (CONST UINT8 *Bytes, UINTN Length) {
 }
 
 BOOLEAN Mt6991UfsScratchGrantValid (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
-  CONST UINT64 ScratchBytes = 1024ULL * 1024ULL;
+  UINT64 ScratchBytes;
+  STATIC CONST UINT8 UserdataLogsGuid[16] = {
+    0xcd, 0xe9, 0xab, 0x32, 0x18, 0xd8, 0x47, 0x77,
+    0x8c, 0xed, 0x69, 0x1e, 0x7c, 0xd5, 0xc6, 0x36
+  };
   UINT64 BootEnd, BootBytes, WindowBlocks;
-  if (Grant == NULL || !Grant->Enabled || Grant->Lun >= 8 || Grant->Target > MT6991_UFS_TARGET_EXPDB ||
+  if (Grant == NULL || !Grant->Enabled || Grant->Lun >= 8 || Grant->Target > MT6991_UFS_TARGET_USERDATA_LOGS ||
       !Nonzero (Grant->DeviceBinding, sizeof Grant->DeviceBinding) ||
       !Nonzero (Grant->CandidateSha256, sizeof Grant->CandidateSha256) ||
       !Nonzero (Grant->SourceSha256, sizeof Grant->SourceSha256) ||
       !Nonzero (Grant->PartitionGuid, sizeof Grant->PartitionGuid)) { return FALSE; }
+  ScratchBytes = Grant->Target == MT6991_UFS_TARGET_USERDATA_LOGS ?
+    MT6991_UFS_DATA_LOG_SLOT_BYTES : 1024ULL * 1024ULL;
   for (UINTN Index = 0; Index < 32; Index++) {
     if (!((Grant->Token[Index] >= '0' && Grant->Token[Index] <= '9') ||
           (Grant->Token[Index] >= 'a' && Grant->Token[Index] <= 'f'))) { return FALSE; }
@@ -82,12 +88,26 @@ BOOLEAN Mt6991UfsScratchGrantValid (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
     if (Grant->TailGuardBlocks != WindowBlocks || Grant->CandidateBytes == 0 ||
         Grant->ScratchStartLba - Grant->BootStartLba > MAX_UINT64 / Grant->BlockSize ||
         (Grant->ScratchStartLba - Grant->BootStartLba) * Grant->BlockSize < Grant->CandidateBytes) { return FALSE; }
-  } else {
+  } else if (Grant->Target == MT6991_UFS_TARGET_EXPDB) {
     // Temporary expdb test: preserve its first MiB and all bytes after the next
     // MiB, including at least four MiB at the tail. This is not a free-space claim.
     if (Grant->CandidateBytes != 0 || Grant->BootBlocks < 6 * WindowBlocks ||
         Grant->ScratchStartLba != Grant->BootStartLba + WindowBlocks ||
         Grant->TailGuardBlocks < 4 * WindowBlocks) { return FALSE; }
+  } else {
+    CONST UINT64 SlotBlocks = MT6991_UFS_DATA_LOG_SLOT_BYTES / 4096ULL;
+    UINT64 SlotOffset;
+    // This target is the dedicated raw GPT partition created for Dali logs.
+    // Each round reserves adjacent 4 MiB UEFI and XNU slots; this grant exposes
+    // only the UEFI slot. The XNU writer separately checks its sibling slot.
+    if (Grant->Lun != 2 || Grant->BlockSize != 4096 || Grant->CapacityBlocks != 64577536ULL ||
+        Grant->BootStartLba != 64565240ULL || Grant->BootBlocks != 8192ULL ||
+        Grant->CandidateBytes != 0 || Grant->ScratchBlocks != SlotBlocks ||
+        Grant->Sequence == 0 || Grant->Sequence > 4 ||
+        CompareMem (Grant->PartitionGuid, UserdataLogsGuid, sizeof UserdataLogsGuid)) { return FALSE; }
+    SlotOffset = (Grant->Sequence - 1) * 2 * SlotBlocks;
+    if (Grant->ScratchStartLba != Grant->BootStartLba + SlotOffset ||
+        Grant->TailGuardBlocks != Grant->BootBlocks - SlotOffset - SlotBlocks) { return FALSE; }
   }
   return TRUE;
 }
