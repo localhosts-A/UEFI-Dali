@@ -22,6 +22,12 @@
 !ifndef DALI_UFS_STORAGE_TOKEN
   DEFINE DALI_UFS_STORAGE_TOKEN = "none"
 !endif
+!ifndef DALI_UFS_MEASURE_PAYLOAD
+  DEFINE DALI_UFS_MEASURE_PAYLOAD = FALSE
+!endif
+!ifndef DALI_UFS_SOURCE_RECORD
+  DEFINE DALI_UFS_SOURCE_RECORD = {0x00}
+!endif
 
 !include MT6991Pkg/MT6991Pkg.dsc.inc
 
@@ -38,6 +44,8 @@
   gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|$(DALI_UFS_PROBE_TOKEN)
   gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled|$(DALI_UFS_READ_ONLY)
   gDaliTokenSpaceGuid.PcdDaliUfsStorageToken|$(DALI_UFS_STORAGE_TOKEN)
+  gDaliTokenSpaceGuid.PcdDaliUfsMeasurePayload|$(DALI_UFS_MEASURE_PAYLOAD)
+  gDaliTokenSpaceGuid.PcdDaliUfsSourceRecord|$(DALI_UFS_SOURCE_RECORD)
   gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
   gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC5000000

@@ -13,6 +13,8 @@
   UfsScratch.c
   UfsIdentity.c
   UfsLayout.c
+  UfsProvenance.c
+  UfsRamMeasurement.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
@@ -39,6 +41,8 @@
   gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled
   gDaliTokenSpaceGuid.PcdDaliUfsStorageToken
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsMeasurePayload
+  gDaliTokenSpaceGuid.PcdDaliUfsSourceRecord
 [Protocols]
   gEfiBlockIoProtocolGuid ## CONSUMES
   gEfiScsiIoProtocolGuid ## SOMETIMES_CONSUMES
@@ -49,5 +53,8 @@
   gEdkiiUfsHostControllerProtocolGuid ## PRODUCES
   gEdkiiUfsHcPlatformProtocolGuid ## PRODUCES
   gEfiDevicePathProtocolGuid ## PRODUCES
+  gEfiSimpleFileSystemProtocolGuid ## SOMETIMES_CONSUMES
+[Guids]
+  gEfiFileInfoGuid
 [Depex]
   gEfiCpuArchProtocolGuid

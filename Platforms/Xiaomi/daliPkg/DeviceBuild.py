@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import uuid
+import importlib.util
 
 from io import StringIO
 from pathlib import Path
@@ -183,6 +184,14 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
             raise ValueError("UFS host diagnostic requires its own token and no competing probe/reset mode")
         self.env.SetValue ("BLD_*_DALI_UFS_READ_ONLY", "TRUE" if ufs_read_only == "true" else "FALSE", "Opt-in physical UFS diagnostic")
         self.env.SetValue ("BLD_*_DALI_UFS_STORAGE_TOKEN", '"' + storage_token + '"', "Bound physical UFS diagnostic token")
+
+        source_tool = Path(CommonPlatform.WorkspaceRoot) / "tools/dali/ufs_source_record.py"
+        spec = importlib.util.spec_from_file_location("dali_ufs_source_record", source_tool)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        measure, record = module.measurement_settings(os.environ, CommonPlatform.WorkspaceRoot)
+        self.env.SetValue ("BLD_*_DALI_UFS_MEASURE_PAYLOAD", "TRUE" if measure else "FALSE", "RAM kernel provenance observation")
+        self.env.SetValue ("BLD_*_DALI_UFS_SOURCE_RECORD", record, "Compiled source revisions from local build inputs")
 
         return 0
 

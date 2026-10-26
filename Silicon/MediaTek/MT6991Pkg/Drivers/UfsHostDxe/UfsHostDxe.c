@@ -19,6 +19,7 @@
 #include "UfsShutdown.h"
 #include "UfsScratch.h"
 #include "UfsIdentity.h"
+#include "UfsProvenance.h"
 
 #define HCI 0x16810000U
 #define WINDOW 0x2A00U
@@ -29,6 +30,7 @@ STATIC MT6991_UFS_GEOMETRY mGeometry[8];
 // No runtime path populates a scratch grant yet; all write submissions remain denied.
 STATIC MT6991_UFS_SCRATCH_GRANT mScratchGrant;
 STATIC DALI_UFS_IDENTITY mIdentity;
+STATIC DALI_UFS_PROVENANCE mProvenance;
 STATIC MT6991_UFS_PENDING mPending;
 STATIC volatile UINT64 mCompletedSync[8];
 STATIC EFI_HANDLE mController;
@@ -371,6 +373,27 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
     return EFI_DEVICE_ERROR;
   }
   Print (L"UFS: SHA-256 self-test=Success\r\n");
+  if (FixedPcdGetBool (PcdDaliUfsMeasurePayload)) {
+    EFI_STATUS Measured = DaliUfsMeasureRamPayload (FixedPcdGetPtr (PcdDaliUfsSourceRecord),
+      FixedPcdGetSize (PcdDaliUfsSourceRecord), &mProvenance);
+    DEBUG ((DEBUG_WARN, "DALI-UFS-PROVENANCE: run=%a status=%r ready=%u\n",
+      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Measured, mProvenance.Ready));
+    if (Measured != EFI_SUCCESS || !mProvenance.Ready) {
+      Print (L"UFS: RAM kernel/source measurement failed; controller untouched.\r\n");
+      return Measured != EFI_SUCCESS ? Measured : EFI_SECURITY_VIOLATION;
+    }
+    STATIC CONST CHAR8 HexDigits[] = "0123456789abcdef";
+    CHAR8 Candidate[65], Source[65];
+    for (UINTN I = 0; I < 32; ++I) {
+      Candidate[I * 2] = HexDigits[mProvenance.CandidateSha256[I] >> 4];
+      Candidate[I * 2 + 1] = HexDigits[mProvenance.CandidateSha256[I] & 15];
+      Source[I * 2] = HexDigits[mProvenance.SourceSha256[I] >> 4];
+      Source[I * 2 + 1] = HexDigits[mProvenance.SourceSha256[I] & 15];
+    }
+    Candidate[64] = Source[64] = 0;
+    DEBUG ((DEBUG_WARN, "DALI-UFS-PROVENANCE: run=%a candidate=%a source=%a\n",
+      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Candidate, Source));
+  }
   Print (L"UFS: controller start run=%a\r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken));
   MT6991_UFS_IO Io = { IoRead, IoWrite, Fence, Stall, Sip, NULL };
   MT6991_UFS_RESULT Result = Mt6991UfsStart (Fdt, TRUE, FixedPcdGetPtr (PcdDaliUfsStorageToken), &Io, &mControl);
