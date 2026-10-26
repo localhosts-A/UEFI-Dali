@@ -11,8 +11,8 @@ preparing the live FDT and RAM payload. The register-only probe is a separate,
 mutually exclusive mode. The host requires its own 32-hex storage token and
 rejects automatic recovery/reset modes.
 
-The platform protocol explicitly selects the repository's v4 command-policy
-extension. Existing providers retain version 3. HCE/link startup are performed
+The platform protocol explicitly selects the repository's v5 identity extension,
+including the v4 command policy. Existing providers retain versions 3/4. HCE/link startup are performed
 by the MT6991 control core, and the generic driver skips repeating them. The
 device reference-clock attribute is preserved. One transfer slot is exposed;
 async submissions and zero timeouts are refused before allocation. Positive
@@ -152,3 +152,23 @@ There is no write profile, authorization token, or physical scratch qualificatio
 Remaining work includes runtime identity/layout authorization, evidence export
 before original-boot_b restoration, full firmware/XNU ownership and repeated
 physical write/sync/reboot/readback qualification.
+
+The isolated v5 path now captures the controller's identity during PassThru
+startup, before ExtSCSI/BlockIo publication. It validates the actually returned
+Device Descriptor prefix (at least 26 bytes, possibly shorter than its declared
+length) and reads its named serial String Descriptor exactly once through the
+bounded query path. It hashes the two raw big-endian ManufacturerId bytes plus
+the complete serial descriptor including its header, matching source-only XNU.
+Only the digest is retained/logged; malformed/short responses, an empty serial,
+hash failure or duplicate capture cannot produce a ready identity. Connect must
+report exact success and a ready observation before diagnostics proceed. Legacy
+providers receive no additional query or callback.
+
+The 223-test firmware suite includes 10 native identity tests executing the
+complete production capture function and extracted production Mu query helper
+and Dali callback with real headers and an independent Python hash backend.
+Full DriverBindingStart/Initialize execution remains outside that harness.
+Both explicit-readonly and default-off ARM64 builds pass; actual final EFI
+identity/hash calls and the off entry have been inspected. This observation is
+not a runtime grant issuer, candidate/source authentication or physical identity
+qualification. The static scratch grant remains zero and all writes stay closed.

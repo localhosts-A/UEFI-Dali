@@ -176,7 +176,7 @@ index 78fc520..88142d4 100644
  /**
    Start this driver on ControllerHandle.
  
-@@ -359,6 +510,18 @@ ScsiDiskDriverBindingStart (
+@@ -359,6 +519,18 @@ ScsiDiskDriverBindingStart (
    }
  
    if (ScsiDiskDevice->DeviceType == EFI_SCSI_TYPE_DISK) {
@@ -195,7 +195,7 @@ index 78fc520..88142d4 100644
      Status = IsWriteProtected (ScsiDiskDevice, &WriteProtectionEnabled);
      if (EFI_ERROR (Status)) {
        DEBUG ((DEBUG_ERROR, "ScsiDisk: IsWriteProtected() fails. Status = %r\n", Status));
-@@ -990,10 +1153,14 @@ ScsiDiskFlushBlocks (
+@@ -990,10 +1162,14 @@ ScsiDiskFlushBlocks (
    IN  EFI_BLOCK_IO_PROTOCOL  *This
    )
  {
@@ -214,7 +214,7 @@ index 78fc520..88142d4 100644
  }
  
  /**
-@@ -1452,7 +1619,7 @@ ScsiDiskFlushBlocksEx (
+@@ -1452,7 +1628,7 @@ ScsiDiskFlushBlocksEx (
      Status = ScsiDiskDetectMedia (ScsiDiskDevice, FALSE, &MediaChange);
      if (EFI_ERROR (Status)) {
        Status = EFI_DEVICE_ERROR;
@@ -223,7 +223,7 @@ index 78fc520..88142d4 100644
      }
  
      if (MediaChange) {
-@@ -1492,16 +1659,16 @@ ScsiDiskFlushBlocksEx (
+@@ -1492,16 +1668,16 @@ ScsiDiskFlushBlocksEx (
          Status = EFI_NO_MEDIA;
        }
  
@@ -243,7 +243,7 @@ index 78fc520..88142d4 100644
      Status = EFI_WRITE_PROTECTED;
      goto Done;
    }
-@@ -1509,17 +1676,23 @@ ScsiDiskFlushBlocksEx (
+@@ -1509,17 +1685,23 @@ ScsiDiskFlushBlocksEx (
    //
    // Wait for the BlockIo2 requests queue to become empty
    //
@@ -305,7 +305,7 @@ index 194dac5..7b1c877 100644
    gEfiBlockIoProtocolGuid                       ## BY_START
    gEfiBlockIo2ProtocolGuid                      ## BY_START
 diff --git a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c
-index 14fc5e6..cd383f8 100644
+index 14fc5e6..8c126b3 100644
 --- a/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c
 +++ b/MdeModulePkg/Bus/Ufs/UfsPassThruDxe/UfsPassThru.c
 @@ -218,6 +218,11 @@ UfsPassThruPassThru (
@@ -345,7 +345,62 @@ index 14fc5e6..cd383f8 100644
      Status = UfsReadFlag (Private, UfsFlagDevInit, &DeviceInitStatus);
      if (EFI_ERROR (Status)) {
        return Status;
-@@ -842,11 +855,13 @@ UfsPassThruDriverBindingStart (
+@@ -788,6 +801,54 @@ UfsFinishDeviceInitialization (
+   }
+ }
+ 
++// v5 explicitly opts into one bounded read of the serial String Descriptor.
++// Older providers receive no new query/callback. Do not replay on any failure.
++STATIC
++EFI_STATUS
++UfsCaptureDeviceIdentity (
++  IN UFS_PASS_THRU_PRIVATE_DATA  *Private,
++  IN CONST UINT8                *Device,
++  IN UINT32                     DeviceBytes
++  )
++{
++  UINT8                         Serial[254];
++  UINT32                        SerialBytes;
++  EFI_STATUS                    Status;
++  EDKII_UFS_HC_DEVICE_IDENTITY  Identity;
++
++  if ((mUfsHcPlatform == NULL) ||
++      (mUfsHcPlatform->Version < EDKII_UFS_HC_PLATFORM_IDENTITY_VERSION)) {
++    return EFI_SUCCESS;
++  }
++
++  if ((mUfsHcPlatform->Callback == NULL) || (Device == NULL) ||
++      (DeviceBytes < 26) || (DeviceBytes > sizeof (UFS_DEV_DESC)) ||
++      (Device[0] < 26) || (Device[1] != UfsDeviceDesc) ||
++      (Device[22] == 0) || (Device[22] == MAX_UINT8)) {
++    return EFI_SECURITY_VIOLATION;
++  }
++
++  ZeroMem (Serial, sizeof (Serial));
++  SerialBytes = sizeof (Serial);
++  Status = UfsRwDeviceDesc (Private, TRUE, UfsStringDesc, Device[22], 0, Serial, &SerialBytes);
++  if (Status == EFI_SUCCESS) {
++    if ((SerialBytes < 4) || (SerialBytes > sizeof (Serial)) ||
++        (Serial[0] < 4) || (Serial[0] > SerialBytes) ||
++        ((Serial[0] & 1) != 0) || (Serial[1] != UfsStringDesc)) {
++      Status = EFI_COMPROMISED_DATA;
++    } else {
++      Identity.DeviceDescriptor      = Device;
++      Identity.DeviceDescriptorBytes = DeviceBytes;
++      Identity.SerialDescriptor      = Serial;
++      Identity.SerialDescriptorBytes = SerialBytes;
++      Status = UfsCommandPolicy (Private->Handle, EdkiiUfsHcDeviceIdentity, &Identity);
++    }
++  }
++
++  ZeroMem (Serial, sizeof (Serial));
++  return (Status == EFI_SUCCESS || EFI_ERROR (Status)) ? Status : EFI_DEVICE_ERROR;
++}
++
+ /**
+   Starts a device controller or a bus controller.
+ 
+@@ -842,11 +903,13 @@ UfsPassThruDriverBindingStart (
    UINT32                                 DeviceDescriptorSize;
    EDKII_UFS_CARD_REF_CLK_FREQ_ATTRIBUTE  Attributes;
    UINT8                                  RefClkAttr;
@@ -359,7 +414,7 @@ index 14fc5e6..cd383f8 100644
  
    DEBUG ((DEBUG_INFO, "==UfsPassThru Start== Controller = %x\n", Controller));
  
-@@ -906,6 +921,9 @@ UfsPassThruDriverBindingStart (
+@@ -906,6 +969,9 @@ UfsPassThruDriverBindingStart (
      DEBUG ((DEBUG_ERROR, "Failed to initialize UfsHcInfo\n"));
      goto Error;
    }
@@ -369,7 +424,7 @@ index 14fc5e6..cd383f8 100644
  
    //
    // Initialize UFS Host Controller H/W.
-@@ -977,7 +995,7 @@ UfsPassThruDriverBindingStart (
+@@ -977,7 +1043,7 @@ UfsPassThruDriverBindingStart (
           "Failure from platform driver during EdkiiUfsHcPostLinkStartup, Status = %r\n",
           Status)
          );
@@ -378,7 +433,7 @@ index 14fc5e6..cd383f8 100644
      }
    }
  
-@@ -989,12 +1007,16 @@ UfsPassThruDriverBindingStart (
+@@ -989,12 +1055,16 @@ UfsPassThruDriverBindingStart (
                    NULL
                    );
    // MU_CHANGE [END]
@@ -396,7 +451,7 @@ index 14fc5e6..cd383f8 100644
      Status = UfsRwDeviceDesc (Private, TRUE, UfsUnitDesc, (UINT8)Index, 0, &UnitDescriptor, &UnitDescriptorSize);
      if (EFI_ERROR (Status)) {
        DEBUG ((DEBUG_ERROR, "Failed to read unit descriptor, index = %X, status = %r\n", Index, Status));
-@@ -1002,6 +1024,19 @@ UfsPassThruDriverBindingStart (
+@@ -1002,6 +1072,19 @@ UfsPassThruDriverBindingStart (
      }
  
      if (UnitDescriptor.LunEn == 0x1) {
@@ -416,7 +471,27 @@ index 14fc5e6..cd383f8 100644
        DEBUG ((DEBUG_INFO, "UFS LUN %X is enabled\n", Index));
        Private->Luns.BitMask |= (BIT0 << Index);
      }
-@@ -1024,26 +1059,28 @@ UfsPassThruDriverBindingStart (
+@@ -1012,6 +1095,19 @@ UfsPassThruDriverBindingStart (
+   //
+   DeviceDescriptorSize = sizeof (UFS_DEV_DESC);
+   Status               = UfsRwDeviceDesc (Private, TRUE, UfsDeviceDesc, 0, 0, &DeviceDescriptor, &DeviceDescriptorSize);
++  if ((mUfsHcPlatform != NULL) &&
++      (mUfsHcPlatform->Version >= EDKII_UFS_HC_PLATFORM_IDENTITY_VERSION)) {
++    if (Status != EFI_SUCCESS) {
++      Status = EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR;
++      goto Error;
++    }
++
++    Status = UfsCaptureDeviceIdentity (Private, (CONST UINT8 *)&DeviceDescriptor, DeviceDescriptorSize);
++    if (Status != EFI_SUCCESS) {
++      goto Error;
++    }
++  }
++
+   if (EFI_ERROR (Status)) {
+     DEBUG ((DEBUG_ERROR, "Failed to read device descriptor, status = %r\n", Status));
+   } else {
+@@ -1024,26 +1120,28 @@ UfsPassThruDriverBindingStart (
    //
    // Start the asynchronous interrupt monitor
    //
@@ -454,7 +529,7 @@ index 14fc5e6..cd383f8 100644
    }
  
    // MU_CHANGE [BEGIN] - Install UFS Device Config Protocol before caching the device config
-@@ -1055,11 +1092,23 @@ UfsPassThruDriverBindingStart (
+@@ -1055,11 +1153,23 @@ UfsPassThruDriverBindingStart (
                    );
    // MU_CHANGE [END]
    ASSERT_EFI_ERROR (Status);
@@ -478,7 +553,7 @@ index 14fc5e6..cd383f8 100644
      if (Private->TmrlMapping != NULL) {
        UfsHc->Unmap (UfsHc, Private->TmrlMapping);
      }
-@@ -1192,6 +1241,9 @@ UfsPassThruDriverBindingStop (
+@@ -1192,6 +1302,9 @@ UfsPassThruDriverBindingStop (
    //
    Status = UfsControllerStop (Private);
    ASSERT_EFI_ERROR (Status);
@@ -1083,10 +1158,10 @@ index c1b71ff..83e13a3 100644
    // Enable the UTP Task Management Request List by setting the UTP Task Management
    // Request List RunStop Register (UTMRLRSR) to '1'.
 diff --git a/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h b/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h
-index d7ab738..229808f 100644
+index d7ab738..48fe275 100644
 --- a/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h
 +++ b/MdeModulePkg/Include/Protocol/UfsHostControllerPlatform.h
-@@ -9,8 +9,10 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+@@ -9,8 +9,11 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
  #pragma once
  
  #include <Protocol/UfsHostController.h>
@@ -1094,10 +1169,11 @@ index d7ab738..229808f 100644
  
  #define EDKII_UFS_HC_PLATFORM_PROTOCOL_VERSION  3
 +#define EDKII_UFS_HC_PLATFORM_COMMAND_POLICY_VERSION  4
++#define EDKII_UFS_HC_PLATFORM_IDENTITY_VERSION  5
  
  extern EFI_GUID  gEdkiiUfsHcPlatformProtocolGuid;
  
-@@ -79,9 +81,43 @@ typedef enum {
+@@ -79,9 +82,54 @@ typedef enum {
    EdkiiUfsHcPreHce,
    EdkiiUfsHcPostHce,
    EdkiiUfsHcPreLinkStartup,
@@ -1108,7 +1184,8 @@ index d7ab738..229808f 100644
 +  EdkiiUfsHcValidateScsi,
 +  EdkiiUfsHcCompleteScsi,
 +  EdkiiUfsHcValidateQuery,
-+  EdkiiUfsHcUnitDescriptor
++  EdkiiUfsHcUnitDescriptor,
++  EdkiiUfsHcDeviceIdentity
  } EDKII_UFS_HC_PLATFORM_CALLBACK_PHASE;
  
 +typedef struct {
@@ -1138,6 +1215,16 @@ index d7ab738..229808f 100644
 +  BOOLEAN  WriteProtectionKnown;
 +  BOOLEAN  WriteProtected;
 +} EDKII_UFS_HC_UNIT_DESCRIPTOR_POLICY;
++
++// Optional v5 observation after a successful Device Descriptor read. Pointers
++// are valid only during Callback; providers must copy/hash before returning.
++// DeviceDescriptor may be a prefix; SerialDescriptor includes its raw header.
++typedef struct {
++  CONST UINT8  *DeviceDescriptor;
++  UINT32       DeviceDescriptorBytes;
++  CONST UINT8  *SerialDescriptor;
++  UINT32       SerialDescriptorBytes;
++} EDKII_UFS_HC_DEVICE_IDENTITY;
 +
  typedef enum {
    EdkiiUfsCardRefClkFreq19p2Mhz,

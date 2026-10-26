@@ -18,6 +18,7 @@
 #include "UfsHostInternal.h"
 #include "UfsShutdown.h"
 #include "UfsScratch.h"
+#include "UfsIdentity.h"
 
 #define HCI 0x16810000U
 #define WINDOW 0x2A00U
@@ -27,6 +28,7 @@ STATIC MT6991_UFS_DMA mDma;
 STATIC MT6991_UFS_GEOMETRY mGeometry[8];
 // No runtime path populates a scratch grant yet; all write submissions remain denied.
 STATIC MT6991_UFS_SCRATCH_GRANT mScratchGrant;
+STATIC DALI_UFS_IDENTITY mIdentity;
 STATIC MT6991_UFS_PENDING mPending;
 STATIC volatile UINT64 mCompletedSync[8];
 STATIC EFI_HANDLE mController;
@@ -271,6 +273,27 @@ STATIC EFI_STATUS EFIAPI Callback (EFI_HANDLE Controller, EDKII_UFS_HC_PLATFORM_
   if (Controller != mController) { return EFI_ACCESS_DENIED; }
   if (Phase == EdkiiUfsHcAbort) { return StopController (); }
   if (mClosed) { return EFI_DEVICE_ERROR; }
+  if (Phase == EdkiiUfsHcDeviceIdentity) {
+    EDKII_UFS_HC_DEVICE_IDENTITY *Identity = Data;
+    if (Identity == NULL) { return EFI_INVALID_PARAMETER; }
+    EFI_STATUS Status = DaliUfsIdentityCapture (&mIdentity, Identity->DeviceDescriptor,
+      Identity->DeviceDescriptorBytes, Identity->SerialDescriptor, Identity->SerialDescriptorBytes);
+    // Raw serial bytes never leave the transient query/capture buffers.
+    DEBUG ((DEBUG_WARN, "DALI-UFS-IDENTITY: run=%a result=%r ready=%u\n",
+      (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Status, mIdentity.Ready));
+    if (Status == EFI_SUCCESS) {
+      STATIC CONST CHAR8 HexDigits[] = "0123456789abcdef";
+      CHAR8 Hex[SHA256_DIGEST_SIZE * 2 + 1];
+      for (UINTN Index = 0; Index < sizeof mIdentity.Digest; ++Index) {
+        Hex[Index * 2] = HexDigits[mIdentity.Digest[Index] >> 4];
+        Hex[Index * 2 + 1] = HexDigits[mIdentity.Digest[Index] & 15];
+      }
+      Hex[sizeof Hex - 1] = 0;
+      DEBUG ((DEBUG_WARN, "DALI-UFS-IDENTITY: run=%a sha256=%a\n",
+        (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Hex));
+    }
+    return Status;
+  }
   if (Phase == EdkiiUfsHcGetMediaPolicy) {
     if (Data == NULL) { return EFI_INVALID_PARAMETER; }
     EDKII_UFS_HC_MEDIA_POLICY *Policy = Data;
@@ -322,7 +345,7 @@ STATIC EFI_STATUS EFIAPI Callback (EFI_HANDLE Controller, EDKII_UFS_HC_PLATFORM_
   return Phase <= EdkiiUfsHcPostLinkStartup ? EFI_SUCCESS : EFI_UNSUPPORTED;
 }
 STATIC EDKII_UFS_HC_PLATFORM_PROTOCOL mPlatform = {
-  EDKII_UFS_HC_PLATFORM_COMMAND_POLICY_VERSION, Override, Callback,
+  EDKII_UFS_HC_PLATFORM_IDENTITY_VERSION, Override, Callback,
   EdkiiUfsCardRefClkFreqObsolete, TRUE, TRUE
 };
 STATIC struct { VENDOR_DEVICE_PATH Vendor; EFI_DEVICE_PATH_PROTOCOL End; } mPath = {
@@ -390,10 +413,12 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
     Print (L"UFS: connect PassThru / SCSI / BlockIo\r\n");
     Status = gBS->ConnectController (mController, NULL, NULL, TRUE);
   }
+  if (Status != EFI_SUCCESS && !EFI_ERROR (Status)) { Status = EFI_DEVICE_ERROR; }
+  if (Status == EFI_SUCCESS && !mIdentity.Ready) { Status = EFI_SECURITY_VIOLATION; }
   Print (L"UFS: connect result=%r\r\n", Status);
   *Controller = mController;
   DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a connect=%r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Status));
-  if (!EFI_ERROR (Status)) {
+  if (Status == EFI_SUCCESS) {
     Print (L"UFS: read-only BlockIo diagnostics\r\n");
     Status = DaliUfsReadOnlyDiagnostics (mController, FixedPcdGetPtr (PcdDaliUfsStorageToken), mCompletedSync);
     Print (L"UFS: BlockIo result=%r\r\n", Status);
