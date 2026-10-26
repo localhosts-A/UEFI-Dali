@@ -16,6 +16,7 @@
   UfsProvenance.c
   UfsRamMeasurement.c
   UfsGrant.c
+  UfsLog.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
