@@ -305,6 +305,10 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       if (UfsStatus == EFI_SUCCESS && FixedPcdGetBool (PcdDaliUfsLogEnabled)) {
         EFI_STATUS LogStatus = DaliUfsLogMenu (In, Out);
         DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a menu=%r\n", mRunToken, LogStatus));
+        if (Out != NULL) {
+          UnicodeSPrint (Text, sizeof Text, L"UFS: log menu result=%r (0x%lx)\r\n", LogStatus, LogStatus);
+          Out->OutputString (Out, Text);
+        }
       }
       if (Out != NULL) {
         UnicodeSPrint (Text, sizeof Text, L"UFS: initialization returned %r; stopping host.\r\n", UfsStatus);
@@ -312,9 +316,13 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       }
       // Until the generic DarwinBoot handoff exists, this diagnostic must always
       // close the physical host and release DMA before launching the RAM payload.
-      if (Ufs != NULL && EFI_ERROR (Ufs->Quiesce ())) {
-        DEBUG ((DEBUG_ERROR, "DALI-UFS-HOST: stop failed; refusing XNU/menu handoff\n"));
-        if (Out != NULL) { Out->OutputString (Out, L"UFS: stop failed; menu handoff refused.\r\n"); }
+      EFI_STATUS QuiesceStatus = Ufs != NULL ? Ufs->Quiesce () : EFI_SUCCESS;
+      if (EFI_ERROR (QuiesceStatus)) {
+        DEBUG ((DEBUG_ERROR, "DALI-UFS-HOST: stop failed status=%r; refusing XNU/menu handoff\n", QuiesceStatus));
+        if (Out != NULL) {
+          UnicodeSPrint (Text, sizeof Text, L"UFS: stop failed=%r (0x%lx); menu handoff refused.\r\n", QuiesceStatus, QuiesceStatus);
+          Out->OutputString (Out, Text);
+        }
         DiagnosticHalt ();
       }
       if (Out != NULL) { Out->OutputString (Out, L"UFS: stopped; opening RAM menu.\r\n"); }

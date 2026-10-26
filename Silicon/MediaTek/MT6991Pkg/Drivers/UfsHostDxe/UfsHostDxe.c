@@ -533,6 +533,11 @@ STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode
     Token, Mode, Status, mLogConsole.Attempted, mLogConsole.Record.WriteSubmitted,
     mLogConsole.Record.CommitSynced, mLogConsole.Record.Verified, mLogConsole.Record.BodyBytes,
     mGrantState.Sequence, Digest));
+  // Keep the outcome visible when a manual reset leaves no pstore file. These
+  // flags describe software progress; submitted alone never proves media IO.
+  Print (L"UFS: log result=%r attempted=%u submitted=%u synced=%u verified=%u bytes=%u\r\n",
+    Status, mLogConsole.Attempted, mLogConsole.Record.WriteSubmitted,
+    mLogConsole.Record.CommitSynced, mLogConsole.Record.Verified, mLogConsole.Record.BodyBytes);
   return Status;
 }
 STATIC DALI_UFS_LOG_PROTOCOL mLogProtocol = { DALI_UFS_LOG_REVISION, RunConsoleLog };

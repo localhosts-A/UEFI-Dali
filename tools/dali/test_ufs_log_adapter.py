@@ -21,6 +21,7 @@ class LogAdapterTests(unittest.TestCase):
 #include <stdlib.h>
 #include <Library/DebugLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiLib.h>
 #include <Library/Mt6991PlatformLib.h>
 #include <Protocol/DaliUfsLog.h>
 #include "UfsLogConsole.h"
@@ -35,6 +36,7 @@ static DALI_UFS_PROVENANCE mProvenance;
 static DALI_UFS_IDENTITY mIdentity;
 static MT6991_UFS_DMA mDma;
 static unsigned fault,core_calls,seals,tpl;
+UINTN EFIAPI Print(CONST CHAR16 *fmt,...){if(tpl!=TPL_APPLICATION)abort();(void)fmt;return 0;}
 #define FixedPcdGetBool(x) enabled
 #define FixedPcdGetPtr(x) "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 VOID EFIAPI DebugPrint(UINTN level,CONST CHAR8 *fmt,...){(void)level;(void)fmt;}
