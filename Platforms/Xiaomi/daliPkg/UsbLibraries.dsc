@@ -13,6 +13,7 @@
 !include MdePkg/MdeLibs.dsc.inc
 [LibraryClasses]
   UsbCoreLib|UsbCore/UsbCoreLib.inf
+  DaliUsbCdcLogLib|DaliUsbGadgetLog/DaliUsbCdcLogLib.inf
   DaliUsbLib|DaliUsb/DaliUsbLib.inf
   DaliUsbPmicLib|daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
   DaliUsbPlatformLib|daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
@@ -30,6 +31,7 @@
   UefiBootServicesTableLib|MdePkg/Library/UefiBootServicesTableLib/UefiBootServicesTableLib.inf
 [Components]
   UsbCore/UsbCoreLib.inf
+  DaliUsbGadgetLog/DaliUsbCdcLogLib.inf
   DaliUsb/DaliUsbLib.inf
   daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
   daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf

@@ -52,7 +52,8 @@ def main():
                         'usb_host_hub_poll', 'usb_host_hub_child_route', 'usb_host_hub_stop',
                         'usb_bot_command', 'usb_bot_read_only', 'usb_block_io_init', 'usb_block_io_transfer',
                         'usb_block_io_sync', 'usb_block_io_quiesce', 'usb_block_io_detach',
-                        'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init', 'usb_mtu3_device_init',
+                        'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init',
+                        'usb_mtu3_device_init', 'usb_mtu3_device_log',
                         'usb_xhci_read_capabilities',
                         'usb_xhci_transfer_ring_init', 'usb_xhci_transfer_ring_mark_active',
                         'usb_xhci_transfer_ring_enqueue', 'usb_xhci_transfer_ring_complete_through',
@@ -61,6 +62,9 @@ def main():
                         'usb_xhci_event_ring_read', 'usb_xhci_event_ring_dequeue_address',
                         'usb_xhci_event_ring_erst_address', 'usb_xhci_event_ring_halted',
                         'usb_xhci_event_ring_destroy')),
+        'DaliUsbCdcLogLib': (('DaliUsbCdcLog',),
+                             ('dali_usb_cdc_log_bind', 'dali_usb_cdc_log_unbind',
+                              'dali_usb_cdc_log_write', 'dali_usb_cdc_log_dropped')),
         'DaliUsbLib': (('DaliUsbPmif', 'DaliUsbVusb', 'DaliUsbTypec', 'DaliUsbMt6379Repeater', 'DaliUsbNxpRepeater', 'DaliUsbGpio', 'DaliUsbI2c', 'DaliUsbI2cPins', 'DaliUsbI2cClocks', 'DaliUsbPhy', 'DaliUsbDomains', 'DaliUsbResources', 'DaliUsbIppc', 'DaliUsbCalibration', 'DaliUsbClockRates'),
                        ('dali_usb_pmif_init', 'dali_mt6379_read', 'dali_usb_typec_start', 'dali_usb_vbus_enable',
                         'dali_mt6379_repeater_power_on', 'dali_nxp_repeater_probe', 'dali_usb_gpio72_set',
@@ -81,6 +85,8 @@ def main():
         'DaliUsbPlatformLib': (('UsbCalibration', 'UsbClockResources', 'UsbVusbResources', 'UsbI2cResources'), ('DaliUsbReadCalibration', 'DaliUsbReadClockResources', 'DaliUsbReadXhciResources', 'DaliUsbReadVusbResources', 'DaliUsbReadI2cResources')),
         'BaseFdtLib': (('fdt_check', 'FdtLib'), ('fdt_check_full', 'FdtGetProp')),
     }
+    required_undefined = {'DaliUsbCdcLogLib': ('usb_mtu3_device_log',)}
+    checked_undefined = {}
     for name, (objects, symbols) in required.items():
         matches = sorted((output / 'Build').rglob(name + '.lib'))
         if len(matches) != 1:
@@ -92,11 +98,19 @@ def main():
         defined = subprocess.check_output([nm, '--defined-only', str(archive)], text=True)
         if not set(symbols) <= {line.split()[-1] for line in defined.splitlines() if len(line.split()) >= 3 and line.split()[-2] == 'T'}:
             raise RuntimeError(f'missing production definitions in {archive}')
+        if name in required_undefined:
+            unresolved = subprocess.check_output([nm, '--undefined-only', str(archive)], text=True)
+            unresolved_symbols = {line.split()[-1] for line in unresolved.splitlines() if line.split()}
+            missing = set(required_undefined[name]) - unresolved_symbols
+            if missing:
+                raise RuntimeError(f'{archive} does not reference the portable MTU3 log API: {sorted(missing)}')
+            checked_undefined[name] = sorted(required_undefined[name])
         artifacts[str(archive.relative_to(output))] = hashlib.sha256(archive.read_bytes()).hexdigest()
         members[name], definitions[name] = inventory, symbols
     evidence = {'scope': 'actual EDK2 AArch64 library compilation/archive only; no OS binding or hardware qualification',
                 'command': command, 'artifacts': artifacts, 'members': members,
-                'checked_definitions': definitions, 'hardware_qualified': False}
+                'checked_definitions': definitions, 'checked_undefined': checked_undefined,
+                'hardware_qualified': False}
     (output / 'usb-library-build.json').write_text(json.dumps(evidence, indent=2) + '\n')
     print(json.dumps(evidence, indent=2))
 
