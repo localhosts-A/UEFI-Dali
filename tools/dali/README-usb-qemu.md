@@ -50,7 +50,13 @@ false in both DeviceBuild.py and dali.dsc. DiskIo/Fat/English already belong to
 the base FV. This opt-in assembles the class stack; native MT6991 port resources,
 MMIO-to-HC registration, qualified DMA, roles, CDC and EBS handoff remain separate
 implementation gates. The QEMU test application is never placed in the Dali FV.
-The same flag explicitly enables the default-false UniXNU pointer-input PCD;
+An independent `DALI_USB_CDC_LOG=true` build option adds a shared DXE CDC log
+protocol and maps DXE drivers/UEFI applications to a best-effort SerialPortLib
+tee. It remains off by default and keeps every byte in ramoops first. A future
+device-mode MTU3 provider must bind an initialized gadget through that protocol;
+no such UEFI provider is installed today. SEC, DXE Core, and runtime-driver
+serial writes remain ramoops-only, and early-log replay is not implemented.
+DALI_USB_HOST_STACK also explicitly enables the default-false UniXNU pointer-input PCD;
 the production menu reacquires physical input protocols, clears button history
 on reinstall/stream changes and requires a fresh same-item press/release.
 The inherited DSC still compiles several USB modules when the FV switch is off.
@@ -61,6 +67,9 @@ PE images with:
 python3 tools/dali/verify_usb_fv.py --fd Build/daliPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd --build Build/daliPkg/DEBUG_CLANGPDB --output ../.outputs/usb-core/firmware-usb-stack-evidence.json
 ```
 
+For a CDC-only FV, use `--cdc-log-only`; for the combined host/class/CDC profile,
+add `--resource-context --native-host-worker --cdc-log` as appropriate.
+
 These results do not qualify MT6991, a physical high-speed hub, the native MMIO
-bridge or XNU. Keep `hardware_qualified=false`. No phone command, flashing,
+bridge, UEFI CDC output or XNU. Keep `hardware_qualified=false`. No phone command, flashing,
 physical role switch, physical medium or internal UFS write belongs to this gate.

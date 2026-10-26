@@ -23,6 +23,9 @@
 !if $(DALI_USB_NATIVE_HOST) == TRUE
   INF daliPkg/Drivers/UsbNativeHostWorkerDxe/UsbNativeHostWorkerDxe.inf
 !endif
+!if $(DALI_USB_CDC_LOG) == TRUE
+  INF daliPkg/Drivers/UsbCdcLogDxe/UsbCdcLogDxe.inf
+!endif
   INF daliPkg/Drivers/DisplayDxe/DisplayDxe.inf
   INF SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
   INF SiliciumPkg/Drivers/KeypadDxe/KeypadDxe.inf

@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+[Defines]
+  INF_VERSION = 0x00010019
+  BASE_NAME = DaliUsbCdcLogDxe
+  FILE_GUID = 4D6D0C61-8EC8-4C71-9D89-BE3F7A952A4A
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DaliUsbCdcLogInitialize
+[Sources]
+  UsbCdcLogDxe.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  daliPkg/dali.dec
+  UsbCore/UsbCore.dec
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DaliUsbCdcLogLib
+  UsbCoreLib
+[Protocols]
+  gDaliUsbCdcLogProtocolGuid ## PRODUCES
+[Guids]
+  gEfiEventExitBootServicesGuid
+[Depex]
+  TRUE
+[BuildOptions]
+  *_*_*_CC_FLAGS = -DUNIXNU_USB_EDK2

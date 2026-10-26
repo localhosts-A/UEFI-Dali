@@ -20,6 +20,9 @@
 !ifndef DALI_USB_NATIVE_HOST
   DEFINE DALI_USB_NATIVE_HOST = FALSE
 !endif
+!ifndef DALI_USB_CDC_LOG
+  DEFINE DALI_USB_CDC_LOG = FALSE
+!endif
 !if $(DALI_USB_NATIVE_HOST) == TRUE
   !if $(DALI_USB_HOST_STACK) != TRUE
     !error DALI_USB_NATIVE_HOST requires DALI_USB_HOST_STACK=TRUE
@@ -42,8 +45,10 @@
   CpuLib|daliPkg/Library/PollingCpuLib/PollingCpuLib.inf
   KeypadDeviceLib|daliPkg/Library/KeypadDeviceLib/KeypadDeviceLib.inf
   UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
-!if $(DALI_USB_RESOURCE_CONTEXT) == TRUE
+!if $(DALI_USB_RESOURCE_CONTEXT) == TRUE || $(DALI_USB_CDC_LOG) == TRUE
   UsbCoreLib|UsbCore/UsbCoreLib.inf
+!endif
+!if $(DALI_USB_RESOURCE_CONTEXT) == TRUE
   DaliUsbLib|DaliUsb/DaliUsbLib.inf
   DaliUsbPlatformLib|daliPkg/Library/UsbPlatformLib/UsbPlatformLib.inf
   DaliUsbPmicLib|daliPkg/Library/UsbPmicLib/UsbPmicLib.inf
@@ -51,6 +56,14 @@
   DaliUsbXhciIoLib|daliPkg/Library/UsbXhciIoLib/UsbXhciIoLib.inf
   DaliUsbNativeHostLib|daliPkg/Library/UsbNativeHostLib/UsbNativeHostLib.inf
   FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
+!endif
+!if $(DALI_USB_CDC_LOG) == TRUE
+  DaliUsbCdcLogLib|DaliUsbGadgetLog/DaliUsbCdcLogLib.inf
+!endif
+
+!if $(DALI_USB_CDC_LOG) == TRUE
+[LibraryClasses.common.DXE_DRIVER, LibraryClasses.common.UEFI_DRIVER, LibraryClasses.common.UEFI_APPLICATION]
+  SerialPortLib|daliPkg/Library/RamoopsCdcSerialPortLib/RamoopsCdcSerialPortLib.inf
 !endif
 
 [PcdsFixedAtBuild]
@@ -75,6 +88,9 @@
 !endif
 !if $(DALI_USB_NATIVE_HOST) == TRUE
   daliPkg/Drivers/UsbNativeHostWorkerDxe/UsbNativeHostWorkerDxe.inf
+!endif
+!if $(DALI_USB_CDC_LOG) == TRUE
+  daliPkg/Drivers/UsbCdcLogDxe/UsbCdcLogDxe.inf
 !endif
 !if $(DALI_USB_HOST_STACK) == TRUE
   MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf

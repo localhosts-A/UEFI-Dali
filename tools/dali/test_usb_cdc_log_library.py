@@ -1,4 +1,4 @@
-"""The CDC log adapter is compiled separately and stays outside the Dali FV."""
+"""The CDC log adapter archive is separately built and only opt-in for the Dali FV."""
 from pathlib import Path
 import unittest
 
@@ -25,7 +25,9 @@ class CdcLogLibraryTests(unittest.TestCase):
         self.assertIn("--undefined-only", builder)
         self.assertIn("usb_mtu3_device_log", adapter)
         self.assertIn("size_t usb_mtu3_device_log", core)
-        self.assertNotIn("DaliUsbCdcLogLib", firmware)
+        self.assertIn("DEFINE DALI_USB_CDC_LOG = FALSE", firmware)
+        self.assertIn("DaliUsbCdcLogLib|DaliUsbGadgetLog/DaliUsbCdcLogLib.inf", firmware)
+        self.assertIn("UsbCdcLogDxe.inf", firmware)
 
 
 if __name__ == "__main__":

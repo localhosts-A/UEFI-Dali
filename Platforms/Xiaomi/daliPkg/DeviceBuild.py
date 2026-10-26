@@ -47,7 +47,8 @@ class CommonPlatform ():
     ) + ((
         os.environ.get("DALI_USB_CORE_DRIVERS", os.path.join(WorkspaceRoot, "../UniXNU/drivers")),
         os.environ.get("DALI_USB_DEVICE_DRIVERS", os.path.join(WorkspaceRoot, "../UniXNU-Dali/drivers")),
-    ) if os.environ.get("DALI_USB_RESOURCE_CONTEXT") == "true" else ())
+    ) if os.environ.get("DALI_USB_RESOURCE_CONTEXT") == "true" or
+         os.environ.get("DALI_USB_CDC_LOG") == "true" else ())
 
 # ####################################################################################### #
 #                         Configuration for Update & Setup                                #
@@ -186,6 +187,10 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
         if usb_native == "true" and (usb_stack != "true" or usb_context != "true"):
             raise ValueError("DALI_USB_NATIVE_HOST=true requires DALI_USB_HOST_STACK=true and DALI_USB_RESOURCE_CONTEXT=true")
         self.env.SetValue ("BLD_*_DALI_USB_NATIVE_HOST", "TRUE" if usb_native == "true" else "FALSE", "Opt-in fail-closed native USB2 host consumer")
+        usb_cdc_log = os.environ.get("DALI_USB_CDC_LOG", "false")
+        if usb_cdc_log not in ("true", "false"):
+            raise ValueError("DALI_USB_CDC_LOG must be true or false")
+        self.env.SetValue ("BLD_*_DALI_USB_CDC_LOG", "TRUE" if usb_cdc_log == "true" else "FALSE", "Opt-in shared DXE CDC diagnostic log service")
         ufs_probe = os.environ.get("DALI_UFS_PROBE", "false")
         if ufs_probe not in ("true", "false"):
             raise ValueError("DALI_UFS_PROBE must be true or false")

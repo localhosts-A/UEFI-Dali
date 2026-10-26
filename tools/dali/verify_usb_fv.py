@@ -27,14 +27,18 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--resource-context', action='store_true', help='also verify the opt-in native CPU mapping/FDT context')
     parser.add_argument('--native-host-worker', action='store_true', help='also verify the opt-in fail-closed native host consumer')
-    parser.add_argument('--default-off', action='store_true', help='verify that the optional USB stack/context/worker are absent')
+    parser.add_argument('--cdc-log', action='store_true', help='also verify the opt-in shared DXE CDC diagnostic log service')
+    parser.add_argument('--cdc-log-only', action='store_true', help='verify the CDC log service while the USB host/class stack is disabled')
+    parser.add_argument('--default-off', action='store_true', help='verify that the optional USB stack/context/worker/CDC log service are absent')
     args = parser.parse_args()
-    if args.default_off and (args.resource_context or args.native_host_worker):
+    if args.default_off and (args.resource_context or args.native_host_worker or args.cdc_log or args.cdc_log_only):
         parser.error('--default-off cannot be combined with enabled module options')
+    if args.cdc_log_only and (args.resource_context or args.native_host_worker or args.cdc_log):
+        parser.error('--cdc-log-only cannot be combined with the host stack, resource context or --cdc-log')
     if args.native_host_worker and not args.resource_context:
         parser.error('--native-host-worker requires --resource-context')
     fd = args.fd.read_bytes(); modules = {}
-    if args.default_off:
+    if args.default_off or args.cdc_log_only:
         inputs = [(name, MODULES[name], root / 'Mu_Basecore' / MODULES[name]) for name in ('DiskIoDxe', 'Fat')]
     else:
         inputs = [(name, inf, root / 'Mu_Basecore' / inf) for name, inf in MODULES.items()]
@@ -44,6 +48,9 @@ def main():
     if args.native_host_worker:
         inf = 'Platforms/Xiaomi/daliPkg/Drivers/UsbNativeHostWorkerDxe/UsbNativeHostWorkerDxe.inf'
         inputs.append(('DaliUsbNativeHostWorkerDxe', inf, root / inf))
+    if args.cdc_log or args.cdc_log_only:
+        inf = 'Platforms/Xiaomi/daliPkg/Drivers/UsbCdcLogDxe/UsbCdcLogDxe.inf'
+        inputs.append(('DaliUsbCdcLogDxe', inf, root / inf))
     for name, inf, source in inputs:
         matches = re.findall(r'^\s*FILE_GUID\s*=\s*([0-9a-fA-F-]{36})\s*$', source.read_text(), re.M)
         if len(matches) != 1:
@@ -57,12 +64,14 @@ def main():
                          'compiled_image': str(expected.resolve()), 'source_inf': inf,
                          'source_inf_sha256': hashlib.sha256(source.read_bytes()).hexdigest()}
     absent = []
-    if args.default_off:
+    if args.default_off or args.cdc_log_only:
         optional = dict(MODULES)
         optional.pop('DiskIoDxe')
         optional.pop('Fat')
         optional['DaliUsbResourceContextDxe'] = 'Platforms/Xiaomi/daliPkg/Drivers/UsbResourceContextDxe/UsbResourceContextDxe.inf'
         optional['DaliUsbNativeHostWorkerDxe'] = 'Platforms/Xiaomi/daliPkg/Drivers/UsbNativeHostWorkerDxe/UsbNativeHostWorkerDxe.inf'
+        if args.default_off:
+            optional['DaliUsbCdcLogDxe'] = 'Platforms/Xiaomi/daliPkg/Drivers/UsbCdcLogDxe/UsbCdcLogDxe.inf'
         for name, inf in optional.items():
             source = root / 'Mu_Basecore' / inf if inf.startswith(('MdeModulePkg/', 'FatPkg/')) else root / inf
             matches = re.findall(r'^\s*FILE_GUID\s*=\s*([0-9a-fA-F-]{36})\s*$', source.read_text(), re.M)
@@ -80,6 +89,8 @@ def main():
               'hardware_qualified': False, 'final_fd': str(args.fd.resolve()),
               'resource_context_requested': args.resource_context,
               'native_host_worker_requested': args.native_host_worker,
+              'cdc_log_requested': args.cdc_log or args.cdc_log_only,
+              'cdc_log_only_profile': args.cdc_log_only,
               'default_off_asserted': args.default_off,
               'final_fd_sha256': hashlib.sha256(fd).hexdigest(), 'modules': modules,
               'absent_optional_modules': absent,
