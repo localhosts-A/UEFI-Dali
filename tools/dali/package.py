@@ -13,6 +13,7 @@ import uuid
 
 from fdt import Fdt
 from firmware_volume import extract_bds, extract_module, BDS_GUID, UFS_HOST_GUID
+from loader_binding import loader_measurement_metadata
 
 PHYSICAL_UFS_MODULES = {
     'DaliDiagnosticBds': BDS_GUID, 'DaliUfsHostDxe': UFS_HOST_GUID,
@@ -209,15 +210,17 @@ def main():
     fd = mu / f"Build/daliPkg/{args.mode}_CLANGPDB/FV/SILICIUM_UEFI.fd"
     if fd.stat().st_size != fd_size:
         raise SystemExit("Unexpected dali FD size")
+    loader_measurement = None
     try:
         if args.ufs_xnu_read_only_token is not None:
             probe, host = ufs_read_only_metadata(fd.parent.parent / "AARCH64", args.ufs_xnu_read_only_token, fd=fd.read_bytes())
+            loader_measurement = loader_measurement_metadata(fd.parent.parent / "AARCH64", unixnu, fd=fd.read_bytes())
         elif args.ufs_read_only_token is not None:
             probe, host = ufs_read_only_metadata(fd.parent.parent / "AARCH64", args.ufs_read_only_token, fd=fd.read_bytes())
         else:
             probe = ufs_probe_metadata(fd.parent.parent / "AARCH64", args.ufs_probe_token, fd=fd.read_bytes())
             host = ufs_host_off_metadata(fd.parent.parent / "AARCH64", fd=fd.read_bytes())
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise SystemExit("UFS probe build verification failed: " + str(error)) from None
     payload = json.loads((out / "payload.json").read_text())
     if args.ufs_xnu_read_only_token is not None:
@@ -290,6 +293,7 @@ def main():
               "uefi_commit": uefi_commit,
               "mu_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
               "payload": payload, "ufs_probe": probe, "ufs_host": host,
+              "loader_measurement": loader_measurement,
               "ufs_xnu": ({"enabled": True, "run_token": args.ufs_xnu_read_only_token,
                            "live_fdt_sha256": payload['xnu_ufs_read_only']['live_fdt_sha256'],
                            "write_authorized": False, "physical_ufs_qualified": False}
