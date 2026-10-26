@@ -31,6 +31,7 @@ static void clocks_fixture(void)
     text(U,"clock-names","ref"); cell(U,"clocks",110);
     add(USB,"xhci0@16700000"); text(HOST,"compatible","mediatek,mtk-xhci");
     cells(HOST,"reg",(uint32_t[]){0,0x16700000,0,0x1000},4); text(HOST,"reg-names","mac");
+    cells(HOST,"interrupts",(uint32_t[]){0,600,4,0},4);
     text(HOST,"clock-names","sys_ck"); cell(HOST,"clocks",110);
     add("/soc","i2c@13170000"); text(I2C,"compatible","mediatek,mt6991-i2c");
     cells(I2C,"reg",(uint32_t[]){0,0x13170000,0,0x20000,0,0x16410000,0,0x10000},8);
@@ -43,6 +44,13 @@ static void fail(void)
     assert(DaliUsbReadClockResources(tree,sizeof tree,&out)!=EFI_SUCCESS && !memcmp(&out,&before,sizeof out));
     DALI_USB_XHCI_RESOURCES xhci,xhci_before; memset(&xhci,0xa5,sizeof xhci); memcpy(&xhci_before,&xhci,sizeof xhci);
     assert(DaliUsbReadXhciResources(tree,sizeof tree,&xhci)!=EFI_SUCCESS && !memcmp(&xhci,&xhci_before,sizeof xhci));
+}
+static void fail_xhci(void)
+{
+    DALI_USB_CLOCK_RESOURCES clocks;
+    assert(DaliUsbReadClockResources(tree,sizeof tree,&clocks)==EFI_SUCCESS);
+    DALI_USB_XHCI_RESOURCES xhci,before; memset(&xhci,0xa5,sizeof xhci); memcpy(&before,&xhci,sizeof xhci);
+    assert(DaliUsbReadXhciResources(tree,sizeof tree,&xhci)!=EFI_SUCCESS && !memcmp(&xhci,&before,sizeof xhci));
 }
 static void expect_status(const void *fdt,size_t capacity,EFI_STATUS expected)
 {
@@ -89,6 +97,13 @@ static void mutations(void)
     clocks_fixture(); list(USB,"clock-names","sys_ck\0sys_ck\0frmcnt_ck",24); fail();
     clocks_fixture(); text(I2C,"clock-names","main"); fail();
     clocks_fixture(); text(HOST,"clock-names","host_ck"); fail();
+    clocks_fixture(); assert(fdt_delprop(tree,node(HOST),"interrupts")==0); fail_xhci();
+    clocks_fixture(); cells(HOST,"interrupts",(uint32_t[]){0,600,4},3); fail_xhci();
+    clocks_fixture(); cells(HOST,"interrupts",(uint32_t[]){0,600,4,0,1},5); fail_xhci();
+    for (unsigned n=0;n<DALI_USB_XHCI_INTERRUPT_CELLS;++n) {
+        uint32_t irq[]={0,600,4,0}; irq[n]++;
+        clocks_fixture(); cells(HOST,"interrupts",irq,DALI_USB_XHCI_INTERRUPT_CELLS); fail_xhci();
+    }
     clocks_fixture(); text(U,"clock-names","other"); fail();
     clocks_fixture(); text(USB,"maximum-speed","super-speed"); fail();
     clocks_fixture(); text(USB,"dr_mode","host"); fail();
@@ -138,6 +153,8 @@ static void check(const DALI_USB_CLOCK_RESOURCES *out)
 static void check_xhci(const DALI_USB_XHCI_RESOURCES *out)
 {
     assert(out->Registers.Base==0x16700000 && out->Registers.Size==0x1000);
+    assert(out->InterruptSpecifier[0]==0 && out->InterruptSpecifier[1]==600 &&
+        out->InterruptSpecifier[2]==4 && out->InterruptSpecifier[3]==0);
 }
 int main(int argc,char **argv)
 {

@@ -90,7 +90,12 @@ EFI_STATUS DaliUsbReadXhciResources (CONST VOID *Fdt, UINTN FdtSize, DALI_USB_XH
   DALI_USB_CLOCK_RESOURCES Validated;
   EFI_STATUS Status = DaliUsbReadClockResources (Fdt, FdtSize, &Validated);
   if (Status != EFI_SUCCESS) { return Status; }
-  DALI_USB_XHCI_RESOURCES Value = {{0x16700000, 0x1000}};
+  INT32 Host = FdtPathOffset (Fdt, "/soc/usb0@16701000/xhci0@16700000");
+  CONST UINT32 Interrupts[DALI_USB_XHCI_INTERRUPT_CELLS] = {0, 600, 4, 0};
+  if (!Words (Fdt, Host, "interrupts", Interrupts, DALI_USB_XHCI_INTERRUPT_CELLS)) {
+    return EFI_UNSUPPORTED;
+  }
+  DALI_USB_XHCI_RESOURCES Value = {{0x16700000, 0x1000}, {0, 600, 4, 0}};
   *Out = Value;
   return EFI_SUCCESS;
 }

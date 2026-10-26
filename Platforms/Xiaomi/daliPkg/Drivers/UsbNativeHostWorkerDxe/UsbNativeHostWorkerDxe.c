@@ -44,6 +44,17 @@ STATIC BOOLEAN ValidLease(CONST DALI_USB_NATIVE_HOST_LEASE *Lease,
     Lease->Dma.Free != NULL && Lease->Guard != NULL && ValidPorts(Lease);
 }
 
+STATIC BOOLEAN ValidXhciDescription(CONST DALI_USB_XHCI_RESOURCES *Resources) {
+  CONST UINT32 Expected[DALI_USB_XHCI_INTERRUPT_CELLS] = {0, 600, 4, 0};
+  if (Resources->Registers.Base != DALI_XHCI_BASE || Resources->Registers.Size != DALI_XHCI_SIZE) {
+    return FALSE;
+  }
+  for (UINTN I = 0; I < DALI_USB_XHCI_INTERRUPT_CELLS; I++) {
+    if (Resources->InterruptSpecifier[I] != Expected[I]) { return FALSE; }
+  }
+  return TRUE;
+}
+
 STATIC VOID InitPath(DALI_USB_NATIVE_HOST_WORKER *Worker) {
   Worker->Path.VendorNode.Type = HARDWARE_DEVICE_PATH;
   Worker->Path.VendorNode.SubType = HW_VENDOR_DP;
@@ -121,7 +132,7 @@ EFI_STATUS DaliUsbNativeHostWorkerStart(DALI_USB_NATIVE_HOST_WORKER *Worker,
       Worker->Protocol.State == DaliUsbHostWorkerRetained) { return EFI_ALREADY_STARTED; }
   if (Worker->Lease.Active || Worker->Io.Initialized || Worker->Host.Engine != NULL ||
       Worker->Host.Io != NULL || Worker->Host.Published) { return EFI_NOT_READY; }
-  if (Resources->Revision < 5 || Resources->GetStatus == NULL ||
+  if (Resources->Revision < 6 || Resources->GetStatus == NULL ||
       Resources->GetXhciResources == NULL || Provider->Revision < DALI_USB_NATIVE_HOST_PROVIDER_REVISION ||
       Provider->Acquire == NULL || Provider->Release == NULL) { return EFI_UNSUPPORTED; }
 
@@ -143,7 +154,7 @@ EFI_STATUS DaliUsbNativeHostWorkerStart(DALI_USB_NATIVE_HOST_WORKER *Worker,
   if (!ContextStatus.SnapshotValid) { return FailStart(Worker, EFI_NOT_READY); }
   Status = Resources->GetXhciResources(Resources, &Xhci);
   if (EFI_ERROR(Status)) { return FailStart(Worker, Status); }
-  if (Xhci.Registers.Base != DALI_XHCI_BASE || Xhci.Registers.Size != DALI_XHCI_SIZE) {
+  if (!ValidXhciDescription(&Xhci)) {
     return FailStart(Worker, EFI_UNSUPPORTED);
   }
 

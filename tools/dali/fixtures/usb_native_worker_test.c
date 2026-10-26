@@ -47,6 +47,8 @@ static EFI_STATUS EFIAPI acquire(DALI_USB_NATIVE_HOST_PROVIDER_PROTOCOL *This,
   CONST DALI_USB_XHCI_RESOURCES *Expected, DALI_USB_NATIVE_HOST_LEASE *Lease) {
   assert(This == &provider && Expected != NULL && Lease != NULL);
   assert(Expected->Registers.Base == 0x16700000 && Expected->Registers.Size == 0x1000);
+  assert(Expected->InterruptSpecifier[0] == 0 && Expected->InterruptSpecifier[1] == 600 &&
+    Expected->InterruptSpecifier[2] == 4 && Expected->InterruptSpecifier[3] == 0);
   acquire_calls++;
   if (EFI_ERROR(acquire_result)) {
     if (acquire_active_on_error) {
@@ -128,12 +130,14 @@ static void worker_setup(void) {
   ZeroMem(&provider, sizeof(provider));
   context_status = (DALI_USB_RESOURCE_CONTEXT_STATUS){EFI_SUCCESS, 10, 10, TRUE, FALSE};
   xhci_resources.Registers = (DALI_USB_MMIO_RANGE){0x16700000, 0x1000};
+  xhci_resources.InterruptSpecifier[0] = 0; xhci_resources.InterruptSpecifier[1] = 600;
+  xhci_resources.InterruptSpecifier[2] = 4; xhci_resources.InterruptSpecifier[3] = 0;
   context_status_result = xhci_result = acquire_result = release_result = EFI_SUCCESS;
   acquire_calls = release_calls = acquire_active_on_error = 0;
   qualification_mask = DALI_USB_HOST_REQUIRED_QUALIFICATIONS;
   lease_base = 0x16700000; lease_size = 0x1000;
   port_count = 2; ports[0] = 1; ports[1] = 0;
-  resources.Revision = 5; resources.GetStatus = get_status; resources.GetXhciResources = get_xhci;
+  resources.Revision = 6; resources.GetStatus = get_status; resources.GetXhciResources = get_xhci;
   provider.Revision = DALI_USB_NATIVE_HOST_PROVIDER_REVISION;
   provider.Acquire = acquire; provider.Release = release;
   services.InstallMultipleProtocolInterfaces = worker_install;
@@ -147,6 +151,14 @@ static void resource_and_role_refusal(void) {
   assert(acquire_calls == 0 && !m.reads && !m.writes);
   tpl = TPL_APPLICATION;
 
+  worker_setup(); resources.Revision = 5;
+  assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_UNSUPPORTED);
+  assert(acquire_calls == 0 && !m.reads && !m.writes);
+
+  worker_setup(); provider.Revision = 1;
+  assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_UNSUPPORTED);
+  assert(acquire_calls == 0 && !m.reads && !m.writes);
+
   worker_setup(); context_status.InitializationStatus = EFI_DEVICE_ERROR;
   assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_DEVICE_ERROR);
   assert(acquire_calls == 0 && release_calls == 0 && !m.reads && !m.writes);
@@ -154,6 +166,10 @@ static void resource_and_role_refusal(void) {
   worker_setup(); context_status.SnapshotValid = FALSE;
   assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_NOT_READY);
   assert(worker.Protocol.State == DaliUsbHostWorkerWaitingForRole && acquire_calls == 0 && !m.reads && !m.writes);
+
+  worker_setup(); xhci_resources.InterruptSpecifier[1] = 599;
+  assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_UNSUPPORTED);
+  assert(worker.Protocol.State == DaliUsbHostWorkerFailed && acquire_calls == 0 && !release_calls && !m.reads && !m.writes);
 
   worker_setup(); acquire_result = EFI_NOT_READY;
   assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_NOT_READY);

@@ -8,8 +8,10 @@ Start/Stop, reset, cancellation or timer lifecycle.
 
 `DaliUsbNativeHostWorkerDxe` is the opt-in consumer. Its independent
 `DALI_USB_NATIVE_HOST` build flag requires both the USB class stack and
-ResourceContext. The worker reads the rev5 xHCI range, acquires a persistent
-provider lease, validates every mandatory qualification bit and the exact
+ResourceContext. Revision6 exposes the xHCI range and raw FDT interrupt cells
+`<0, 600, 4, 0>`; the worker validates both before acquiring provider revision2.
+The cells remain untranslated and do not prove a GIC vector or IRQ ownership.
+The worker validates every mandatory qualification bit and the exact
 `0x16700000/0x1000` window, then opens MMIO/DMA and starts the engine. Its
 provider contract covers powered MMIO, clocks, domain, PHY, host role, connector,
 VBUS, exclusive controller/IRQ, translated 32-bit DMA, cache policy and stable

@@ -6,7 +6,7 @@
 extern EFI_GUID gDaliUsbNativeHostProviderProtocolGuid;
 typedef struct _DALI_USB_NATIVE_HOST_PROVIDER_PROTOCOL DALI_USB_NATIVE_HOST_PROVIDER_PROTOCOL;
 
-#define DALI_USB_NATIVE_HOST_PROVIDER_REVISION 1U
+#define DALI_USB_NATIVE_HOST_PROVIDER_REVISION 2U
 #define DALI_USB_NATIVE_HOST_LEASE_REVISION 1U
 #define DALI_USB_NATIVE_HOST_MAX_PORTS 16U
 
@@ -42,7 +42,10 @@ typedef struct {
   BOOLEAN Active;
 } DALI_USB_NATIVE_HOST_LEASE;
 
-/* Provider contract: Acquire succeeds only while the exact requested MMIO
+/* Revision2 supplies the raw four-cell FDT interrupt specifier with the MMIO
+ * description. Those cells are not a GIC vector or ownership token; the provider
+ * must resolve the interrupt source and hold exclusive IRQ delivery itself.
+ * Provider contract: Acquire succeeds only while the exact requested MMIO
  * window is powered/mapped and exclusively owned, the clocks/domain/PHY and
  * USB host role are already valid, connector/VBUS policy is satisfied, the
  * controller and IRQ are exclusive, and real <=32-bit device DMA translation

@@ -40,13 +40,17 @@ EFI_STATUS DaliUsbReadClockResources (
   OUT DALI_USB_CLOCK_RESOURCES *Out
   );
 
+#define DALI_USB_XHCI_INTERRUPT_CELLS 4U
 typedef struct {
   DALI_USB_MMIO_RANGE Registers;
+  UINT32 InterruptSpecifier[DALI_USB_XHCI_INTERRUPT_CELLS];
 } DALI_USB_XHCI_RESOURCES;
 /* Validate the complete USB0/PHY/clock/calibration graph and copy the physical
- * xHCI register window described by the fixed Dali FDT. The window is a resource
- * description only: mapping/access is separate, and it grants no permission to
- * touch an unpowered controller or qualifies DMA, IRQ, power, role or hardware. */
+ * xHCI register window plus the four CPU-endian cells from the FDT interrupts
+ * property. The IRQ cells are an untranslated description, not a GIC vector,
+ * interrupt handle or proof of ownership; the provider must resolve and acquire
+ * the actual source separately. The accessor grants no permission to touch an
+ * unpowered controller and qualifies neither IRQ, DMA, power, role nor hardware. */
 EFI_STATUS DaliUsbReadXhciResources (
   IN CONST VOID *Fdt, IN UINTN FdtSize,
   OUT DALI_USB_XHCI_RESOURCES *Out

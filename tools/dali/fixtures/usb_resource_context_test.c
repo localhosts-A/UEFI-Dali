@@ -139,7 +139,7 @@ static void unchanged(EFI_STATUS expected) {
 }
 static void entry(EFI_STATUS expected) {
   assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_SUCCESS);
-  assert(published && published->Revision==5 && mContext.Status.InitializationStatus==expected && freed==0);
+  assert(published && published->Revision==6 && mContext.Status.InitializationStatus==expected && freed==0);
   DALI_USB_RESOURCE_CONTEXT_STATUS status;
   assert(published->GetStatus(published,&status)==EFI_SUCCESS && status.InitializationStatus==expected);
   assert(DaliUsbResourceContextInitialize(image,NULL)==EFI_ALREADY_STARTED && event_calls==1 && install_calls==1);
@@ -152,6 +152,8 @@ static void success(void) {
   DALI_USB_CLOCK_RESOURCES out; assert(published->GetClockResources(published,&out)==EFI_SUCCESS); check(&out);
   DALI_USB_XHCI_RESOURCES xhci; assert(published->GetXhciResources(published,&xhci)==EFI_SUCCESS);
   assert(xhci.Registers.Base==0x16700000 && xhci.Registers.Size==0x1000);
+  assert(xhci.InterruptSpecifier[0]==0 && xhci.InterruptSpecifier[1]==600 &&
+    xhci.InterruptSpecifier[2]==4 && xhci.InterruptSpecifier[3]==0);
   assert(cpu_mapped[index_of(xhci.Registers.Base)]);
   assert(mContext.Snapshot!=tree && !memcmp(mContext.Snapshot,tree,sizeof tree));
   memset(tree,0,sizeof tree); assert(published->GetClockResources(published,&out)==EFI_SUCCESS); check(&out);
