@@ -1,0 +1,31 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = Mt6991PlatformLib
+  FILE_GUID = 2E1F63DD-4034-43F3-B075-FAB741D0DB66
+  MODULE_TYPE = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = Mt6991PlatformLib
+[Sources]
+  PlatformLib.c
+  UfsProbe.c
+  UfsProbe.h
+  UfsController.c
+  MemoryWindow.h
+  MemoryWindowFdt.h
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  FdtLib
+  SerialPortLib
+  PrintLib
+  ArmSmcLib
+  IoLib
+  PcdLib
+[FixedPcd]
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeToken
