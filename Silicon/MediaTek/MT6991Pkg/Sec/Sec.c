@@ -31,8 +31,14 @@ InitializeMemory (VOID)
   EFI_HOB_HANDOFF_INFO_TABLE   *HobList;
 
   // Locate "DXE Heap" Memory Region
-  LocateMemoryRegionByName ("DXE Heap", &UefiMemoryRegion);
-  LocateMemoryRegionByName ("DXE_Heap", &UefiMemoryRegion);
+  Status = LocateMemoryRegionByName ("DXE Heap", &UefiMemoryRegion);
+  if (EFI_ERROR (Status)) {
+    Status = LocateMemoryRegionByName ("DXE_Heap", &UefiMemoryRegion);
+  }
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to Locate \"DXE Heap\" Memory Region!\n"));
+    return Status;
+  }
 
   // Save UEFI Memory Details
   UINTN UefiMemoryBase = UefiMemoryRegion.Address;
