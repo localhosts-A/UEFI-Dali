@@ -12,8 +12,14 @@
   gDaliTokenSpaceGuid = {0x372d9dc1, 0x7a6e, 0x42d0, {0x81, 0xc4, 0x5c, 0x9d, 0x67, 0x48, 0x21, 0x0f}}
 [Protocols]
   gDaliUfsDiagnosticProtocolGuid = {0x0e5c40d1, 0xd1b9, 0x4feb, {0xb9, 0x3c, 0x43, 0x04, 0x0b, 0x32, 0x91, 0x74}}
+  gDaliUfsLogProtocolGuid = {0x6e54ce7f, 0x374c, 0x47ec, {0xa0, 0x28, 0x62, 0xd9, 0x5c, 0x85, 0x84, 0x75}}
 [PcdsFixedAtBuild]
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled|FALSE|BOOLEAN|0x00000001
   gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|"none"|VOID*|0x00000002
   gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled|FALSE|BOOLEAN|0x00000003
   gDaliTokenSpaceGuid.PcdDaliUfsStorageToken|"none"|VOID*|0x00000004
+  gDaliTokenSpaceGuid.PcdDaliUfsMeasurePayload|FALSE|BOOLEAN|0x00000005
+  gDaliTokenSpaceGuid.PcdDaliUfsSourceRecord|{0x00}|VOID*|0x00000006
+  gDaliTokenSpaceGuid.PcdDaliUfsScratchEnabled|FALSE|BOOLEAN|0x00000007
+  gDaliTokenSpaceGuid.PcdDaliUfsScratchWire|{0x00}|VOID*|0x00000008
+  gDaliTokenSpaceGuid.PcdDaliUfsLogEnabled|FALSE|BOOLEAN|0x00000009
