@@ -38,6 +38,7 @@ typedef struct {
   UINT8 DeviceBinding[32];
   UINT8 CandidateSha256[32];
   UINT8 SourceSha256[32];
+  UINT8 BodySha256[32];
 } DALI_SLOT_INFO;
 
 STATIC UINT32 Le32 (CONST UINT8 *P) {
@@ -127,6 +128,7 @@ STATIC EFI_STATUS ValidateRecordFields (CONST UINT8 *Record, UINT32 BlockSize,
   CopyMem (Info->DeviceBinding, Record + LOG_DEVICE, sizeof Info->DeviceBinding);
   CopyMem (Info->CandidateSha256, Record + LOG_CANDIDATE, sizeof Info->CandidateSha256);
   CopyMem (Info->SourceSha256, Record + LOG_SOURCE, sizeof Info->SourceSha256);
+  CopyMem (Info->BodySha256, Record + LOG_BODY_HASH, sizeof Info->BodySha256);
   return EFI_SUCCESS;
 }
 
@@ -326,6 +328,7 @@ STATIC EFI_STATUS ComputeNextGeneration (CONST DALI_SLOT_INFO Slots[8],
   UINT64 Generations[4];
   UINTN Count = 0;
   Result->HasCommittedV2 = FALSE;
+  Result->CommittedUefiV2Count = 0;
   Result->MaxGeneration = 0;
   Result->NextGeneration = 0;
   Result->NextGenerationValid = FALSE;
@@ -356,6 +359,13 @@ STATIC EFI_STATUS ComputeNextGeneration (CONST DALI_SLOT_INFO Slots[8],
     }
     Generations[Count++] = Uefi->Generation;
     Result->HasCommittedV2 = TRUE;
+    ++Result->CommittedUefiV2Count;
+    Result->UefiV2[Pair].Valid = TRUE;
+    Result->UefiV2[Pair].Generation = Uefi->Generation;
+    CopyMem (Result->UefiV2[Pair].Token, Uefi->Token, sizeof Uefi->Token);
+    CopyMem (Result->UefiV2[Pair].CandidateSha256, Uefi->CandidateSha256, sizeof Uefi->CandidateSha256);
+    CopyMem (Result->UefiV2[Pair].SourceSha256, Uefi->SourceSha256, sizeof Uefi->SourceSha256);
+    CopyMem (Result->UefiV2[Pair].BodySha256, Uefi->BodySha256, sizeof Uefi->BodySha256);
     if (Uefi->Generation > Result->MaxGeneration) { Result->MaxGeneration = Uefi->Generation; }
   }
   if (Result->MaxGeneration == MAX_UINT64) { return EFI_OUT_OF_RESOURCES; }

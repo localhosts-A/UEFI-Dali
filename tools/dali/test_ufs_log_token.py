@@ -110,10 +110,11 @@ typedef struct {
   UINT8 GrantToken[32];
   UINT32 RecordVersions[3];
   UINT64 RecordGenerations[3];
+  UINT64 Submitted, WriteCalls, OldPreserved, PaddingZero;
 } HOST_RESULT;
 
 static UINT8 disk[SLOT_BYTES];
-static UINT64 reads, writes, flushes;
+static UINT64 reads, writes, flushes, write_calls, fail_write_at;
 static EFI_BLOCK_IO_MEDIA media;
 static EFI_BLOCK_IO_PROTOCOL io;
 
@@ -149,6 +150,8 @@ static EFI_STATUS ReadBlocks(EFI_BLOCK_IO_PROTOCOL *This, UINT32 MediaId,
 
 static EFI_STATUS WriteBlocks(EFI_BLOCK_IO_PROTOCOL *This, UINT32 MediaId,
   UINT64 Lba, UINTN BufferSize, CONST VOID *Buffer) {
+  ++write_calls;
+  if (fail_write_at != 0 && write_calls == fail_write_at) return EFI_DEVICE_ERROR;
   if (This != &io || MediaId != MEDIA_ID || media.ReadOnly || Buffer == NULL ||
       BufferSize == 0 || BufferSize % BLOCK_BYTES != 0 || Lba > SLOT_BLOCKS ||
       BufferSize / BLOCK_BYTES > SLOT_BLOCKS - Lba) { return EFI_ACCESS_DENIED; }
@@ -179,7 +182,7 @@ static void MakeGrant(MT6991_UFS_SCRATCH_GRANT *Grant) {
 
 static void ResetDisk(VOID) {
   memset(disk, 0, sizeof disk);
-  reads = writes = flushes = 0;
+  reads = writes = flushes = write_calls = fail_write_at = 0;
   memset(&media, 0, sizeof media);
   media.MediaId = MEDIA_ID;
   media.MediaPresent = TRUE;
@@ -198,7 +201,7 @@ static EFI_STATUS RunRecord(CONST UINT8 *Token, UINT64 Generation, BOOLEAN Readb
   static CONST UINT8 Body[] = "uefi-console-record";
   MT6991_UFS_SCRATCH_GRANT Grant;
   MakeGrant(&Grant);
-  return DaliUfsLogRun(&io, &Grant, DALI_UFS_LOG_OWNER_UEFI, 1, Generation, Token,
+  return DaliUfsLogRun(&io, &Grant, DALI_UFS_LOG_OWNER_UEFI, 1, Generation, Token, NULL,
     ReadbackOnly, ReadbackOnly ? NULL : Body,
     ReadbackOnly ? 0 : sizeof Body - 1, Work, DALI_UFS_LOG_WORK_BYTES, Result);
 }
@@ -215,7 +218,7 @@ int RunWriteWithGeneration(CONST UINT8 *Token, UINT64 Generation, HOST_RESULT *O
   DALI_UFS_LOG_RESULT Result = {0};
   static CONST UINT8 Body[] = "uefi-console-record";
   Out->Status = DaliUfsLogRun(&io, &GrantAfter, DALI_UFS_LOG_OWNER_UEFI, 1, Generation,
-    Token, FALSE, Body, sizeof Body - 1, Work, DALI_UFS_LOG_WORK_BYTES, &Result);
+    Token, NULL, FALSE, Body, sizeof Body - 1, Work, DALI_UFS_LOG_WORK_BYTES, &Result);
   Out->Attempted = Result.Attempted;
   Out->Verified = Result.Verified;
   Out->Reads = reads; Out->Writes = writes; Out->Flushes = flushes;
@@ -273,6 +276,62 @@ int RunRoundTripV2(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
   CONST UINT8 *WrongToken, UINT64 Generation, HOST_RESULT *Out) {
   return RunRoundTripWithGeneration(WriteToken, ReadToken, WrongToken, Generation, Out);
 }
+
+int RunReplacement(unsigned Scenario, HOST_RESULT *Out) {
+  static CONST UINT8 OldToken[] = "11111111111111111111111111111111";
+  static CONST UINT8 NewToken[] = "fedcba9876543210fedcba9876543210";
+  static CONST UINT8 OldBody[] = "previous-body-longer-than-new-record";
+  static CONST UINT8 NewBody[] = "new";
+  if (Out == NULL) return 1;
+  memset(Out, 0, sizeof *Out); ResetDisk();
+  VOID *Work = NULL;
+  if (posix_memalign(&Work, BLOCK_BYTES, DALI_UFS_LOG_WORK_BYTES) != 0) return 2;
+  MT6991_UFS_SCRATCH_GRANT OldGrant;
+  MakeGrant(&OldGrant);
+  DALI_UFS_LOG_RESULT Seed = {0};
+  EFI_STATUS SeedStatus = DaliUfsLogRun(&io, &OldGrant, DALI_UFS_LOG_OWNER_UEFI, 1, 5,
+    OldToken, NULL, FALSE, OldBody, sizeof OldBody - 1,
+    Work, DALI_UFS_LOG_WORK_BYTES, &Seed);
+  if (SeedStatus != EFI_SUCCESS || !Seed.Verified) { free(Work); return 3; }
+
+  DALI_UFS_LOG_V2_IDENTITY Victim = {0};
+  Victim.Valid = TRUE; Victim.Generation = 5;
+  memcpy(Victim.Token, OldToken, sizeof Victim.Token);
+  memcpy(Victim.CandidateSha256, OldGrant.CandidateSha256, sizeof Victim.CandidateSha256);
+  memcpy(Victim.SourceSha256, OldGrant.SourceSha256, sizeof Victim.SourceSha256);
+  Sha256HashAll(OldBody, sizeof OldBody - 1, Victim.BodySha256);
+  MT6991_UFS_SCRATCH_GRANT CurrentGrant = OldGrant;
+  memset(CurrentGrant.CandidateSha256, 0x64, sizeof CurrentGrant.CandidateSha256);
+  memset(CurrentGrant.SourceSha256, 0x75, sizeof CurrentGrant.SourceSha256);
+  MT6991_UFS_SCRATCH_GRANT CurrentBefore = CurrentGrant;
+  if (Scenario == 1) disk[2 * BLOCK_BYTES] ^= 1;
+  if (Scenario == 2) Victim.BodySha256[0] ^= 1;
+  if (Scenario == 3) fail_write_at = 1;
+  // Report only replacement I/O, not the fixture's successful seed write.
+  reads = writes = flushes = write_calls = 0;
+  DALI_UFS_LOG_RESULT Result = {0};
+  Out->Status = DaliUfsLogRun(&io, &CurrentGrant, DALI_UFS_LOG_OWNER_UEFI, 1, 6,
+    NewToken, &Victim, FALSE, NewBody, sizeof NewBody - 1,
+    Work, DALI_UFS_LOG_WORK_BYTES, &Result);
+  Out->Attempted = Result.Attempted; Out->Verified = Result.Verified;
+  Out->Submitted = Result.WriteSubmitted; Out->Reads = reads; Out->Writes = writes;
+  Out->Flushes = flushes; Out->WriteCalls = write_calls;
+  Out->GrantUnchanged = memcmp(&CurrentGrant, &CurrentBefore, sizeof CurrentGrant) == 0;
+  Out->OldPreserved = memcmp(disk + 24, OldToken, sizeof OldToken) == 0;
+  Out->PaddingZero = 1;
+  for (UINTN I = 2 * BLOCK_BYTES + sizeof NewBody - 1; I < SLOT_BYTES - BLOCK_BYTES; ++I) {
+    if (disk[I] != 0) { Out->PaddingZero = 0; break; }
+  }
+  for (UINTN I = 0; I < 3; ++I) {
+    UINTN At = I == 2 ? SLOT_BYTES - BLOCK_BYTES : I * BLOCK_BYTES;
+    memcpy(Out->RecordTokens[I], disk + At + 24, 32);
+    Out->RecordVersions[I] = (UINT32)disk[At + 20] | (UINT32)disk[At + 21] << 8 |
+      (UINT32)disk[At + 22] << 16 | (UINT32)disk[At + 23] << 24;
+    for (UINTN B = 0; B < 8; ++B) Out->RecordGenerations[I] |= (UINT64)disk[At + 244 + B] << (8U * B);
+  }
+  free(Work);
+  return 0;
+}
 ''')
         root = Path(__file__).resolve().parents[2]
         driver = root / "Silicon/MediaTek/MT6991Pkg/Drivers/UfsHostDxe"
@@ -286,6 +345,7 @@ int RunRoundTripV2(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
                                         ctypes.POINTER(ctypes.c_uint8), ctypes.c_void_p]
         cls.lib.RunRoundTripV2.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint8),
                                           ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint64, ctypes.c_void_p]
+        cls.lib.RunReplacement.argtypes = [ctypes.c_uint, ctypes.c_void_p]
 
     @classmethod
     def tearDownClass(cls):
@@ -306,6 +366,10 @@ int RunRoundTripV2(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
             ("grant_token", ctypes.c_uint8 * 32),
             ("record_versions", ctypes.c_uint32 * 3),
             ("record_generations", ctypes.c_uint64 * 3),
+            ("submitted", ctypes.c_uint64),
+            ("write_calls", ctypes.c_uint64),
+            ("old_preserved", ctypes.c_uint64),
+            ("padding_zero", ctypes.c_uint64),
         ]
 
     def test_runtime_token_is_record_identity_and_grant_is_unchanged(self):
@@ -363,6 +427,30 @@ int RunRoundTripV2(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
         self.assertEqual((out.status, out.verified, out.attempted), (0, 1, 1))
         self.assertEqual(out.wrong_read_status, 0x8000000000000000 | 33)
         self.assertEqual(out.wrong_generation_status, 0x8000000000000000 | 33)
+
+    def test_replacement_revalidates_victim_clears_slot_and_commits_new_generation(self):
+        out = self.HostResult()
+        self.assertEqual(self.lib.RunReplacement(0, ctypes.byref(out)), 0)
+        self.assertEqual((out.status, out.attempted, out.verified, out.submitted), (0, 1, 1, 1))
+        self.assertEqual((out.reads, out.writes, out.flushes, out.write_calls), (3, 4, 4, 4))
+        self.assertEqual(list(out.record_versions), [2, 2, 2])
+        self.assertEqual(list(out.record_generations), [6, 6, 6])
+        self.assertEqual(bytes(out.record_tokens), b"fedcba9876543210fedcba9876543210" * 3)
+        self.assertEqual(out.padding_zero, 1)
+
+    def test_replacement_rejects_changed_victim_before_any_write(self):
+        for scenario in (1, 2):
+            out = self.HostResult()
+            self.assertEqual(self.lib.RunReplacement(scenario, ctypes.byref(out)), 0)
+            self.assertEqual(out.status, 0x8000000000000000 | 33)
+            self.assertEqual((out.attempted, out.reads, out.writes, out.flushes), (1, 1, 0, 0))
+
+    def test_replacement_write_failure_stops_after_clear_submission(self):
+        out = self.HostResult()
+        self.assertEqual(self.lib.RunReplacement(3, ctypes.byref(out)), 0)
+        self.assertEqual(out.status, 0x8000000000000000 | 7)
+        self.assertEqual((out.attempted, out.submitted, out.reads, out.writes,
+                          out.flushes, out.write_calls), (1, 1, 1, 0, 0, 1))
 
 
 if __name__ == "__main__":

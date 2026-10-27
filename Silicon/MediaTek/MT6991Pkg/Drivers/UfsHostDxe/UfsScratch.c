@@ -252,8 +252,8 @@ EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
     Status = DaliUfsClassifyUserdataLogSlots (&Layout, &mScratch.Grant,
       mScratch.ParentAlign, mScratch.ScsiAlign, ReadLayout, NULL, LogScanResult);
     if (Status == EFI_SUCCESS) {
-      Status = DaliUfsSelectEmptyUserdataPairFromStates (&Layout,
-        mScratch.Grant.Sequence, LogScanResult->Slots);
+      Status = DaliUfsSelectUserdataPairFromScan (&Layout,
+        mScratch.Grant.Sequence, LogScanResult);
     }
   }
   mScratch.Busy = FALSE;

@@ -30,7 +30,8 @@ STATIC EFI_STATUS Snapshot (CONST DALI_RAM_CONSOLE *Ring, UINTN Capacity,
 
 EFI_STATUS DaliUfsLogConsoleRun (DALI_UFS_LOG_CONSOLE *State,
   CONST MT6991_UFS_SCRATCH_GRANT *Live, UINT64 Sequence, UINT64 Generation,
-  CONST UINT8 *RecordToken, BOOLEAN ReadbackOnly,
+  CONST UINT8 *RecordToken, CONST DALI_UFS_LOG_V2_IDENTITY *Replacement,
+  BOOLEAN ReadbackOnly,
   CONST DALI_RAM_CONSOLE *Ring, UINTN Capacity) {
   if (State == NULL) { return EFI_INVALID_PARAMETER; }
   if (!ReadbackOnly && RecordToken == NULL) { return EFI_SECURITY_VIOLATION; }
@@ -59,7 +60,8 @@ EFI_STATUS DaliUfsLogConsoleRun (DALI_UFS_LOG_CONSOLE *State,
     State->Status = ReadbackOnly ? EFI_SUCCESS : Snapshot (Ring, Capacity, Body, Maximum, &Bytes);
     if (State->Status == EFI_SUCCESS) {
       State->Status = DaliUfsLogRun (Io, &Grant, DALI_UFS_LOG_OWNER_UEFI, Sequence,
-        Generation, RecordToken, ReadbackOnly, Body, Bytes, Work, DALI_UFS_LOG_WORK_BYTES, &State->Record);
+        Generation, RecordToken, Replacement, ReadbackOnly, Body, Bytes, Work,
+        DALI_UFS_LOG_WORK_BYTES, &State->Record);
     }
   }
   // Preserve diagnostic flags/hash/length, never a pointer into freed work.

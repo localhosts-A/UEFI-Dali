@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 #include "UfsLayout.h"
+#include "UfsLogRecord.h"
 
 #define DALI_UFS_LOG_SLOT_COUNT 8U
 
@@ -20,9 +21,15 @@ typedef struct {
   BOOLEAN HasInconsistentPair;
   // Generation comes only from fully verified committed UEFI v2 records.
   BOOLEAN HasCommittedV2;
+  UINT32 CommittedUefiV2Count;
   UINT64 MaxGeneration;
   UINT64 NextGeneration;
   BOOLEAN NextGenerationValid;
+  DALI_UFS_LOG_V2_IDENTITY UefiV2[4];
+  // Filled by the selector from this same complete scan result.
+  BOOLEAN RotationRequired;
+  UINT64 SelectedSequence;
+  DALI_UFS_LOG_V2_IDENTITY Victim;
 } DALI_UFS_LOG_SLOT_SCAN_RESULT;
 
 // Read and classify the eight owner slots without changing write authority.

@@ -15,5 +15,6 @@ typedef struct {
 // No automatic mode switch: ReadbackOnly cannot write or initialize any record.
 EFI_STATUS DaliUfsLogConsoleRun (DALI_UFS_LOG_CONSOLE *State,
   CONST MT6991_UFS_SCRATCH_GRANT *Live, UINT64 Sequence, UINT64 Generation,
-  CONST UINT8 *RecordToken, BOOLEAN ReadbackOnly,
+  CONST UINT8 *RecordToken, CONST DALI_UFS_LOG_V2_IDENTITY *Replacement,
+  BOOLEAN ReadbackOnly,
   CONST DALI_RAM_CONSOLE *Ring, UINTN Capacity);

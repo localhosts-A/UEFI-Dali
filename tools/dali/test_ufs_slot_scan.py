@@ -36,6 +36,7 @@ typedef size_t UINTN; typedef bool BOOLEAN; typedef char CHAR8; typedef uint64_t
 #define EFI_OUT_OF_RESOURCES 9ULL
 #define EFI_ALREADY_STARTED 20ULL
 #define EFI_SECURITY_VIOLATION 26ULL
+#define EFI_COMPROMISED_DATA (0x8000000000000000ULL | 33ULL)
 #define EFI_PAGE_SIZE 4096ULL
 #define EFI_SIZE_TO_PAGES(n) (((n) + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE)
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
@@ -222,6 +223,78 @@ int RunAuthorize(unsigned Scenario, UINT64 Out[12]) {
   Out[7] = map_calls; Out[8] = map_absolute; Out[9] = map_count;
   return 0;
 }
+
+static void SetV2(DALI_UFS_LOG_SLOT_SCAN_RESULT *R, UINTN Pair,
+  UINT64 Generation, DALI_UFS_LOG_SLOT_STATE XnuState) {
+  R->Slots[Pair * 2] = DaliUfsLogSlotValidV2;
+  R->Slots[Pair * 2 + 1] = XnuState;
+  R->PairConsistent[Pair] = TRUE;
+  R->UefiV2[Pair].Valid = TRUE;
+  R->UefiV2[Pair].Generation = Generation;
+  memset(R->UefiV2[Pair].Token, (int)Pair + 1, sizeof R->UefiV2[Pair].Token);
+  memset(R->UefiV2[Pair].CandidateSha256, 0x42, sizeof R->UefiV2[Pair].CandidateSha256);
+  memset(R->UefiV2[Pair].SourceSha256, 0x53, sizeof R->UefiV2[Pair].SourceSha256);
+  memset(R->UefiV2[Pair].BodySha256, 0x64, sizeof R->UefiV2[Pair].BodySha256);
+}
+
+int RunSelection(unsigned Scenario, UINT64 Out[8]) {
+  DALI_UFS_LOG_SLOT_SCAN_RESULT R; memset(&R, 0, sizeof R);
+  for (UINTN I = 0; I < 8; ++I) R.Slots[I] = DaliUfsLogSlotUnknown;
+  UINT64 Preferred = Scenario == 0 ? 1 : 4;
+  DALI_UFS_LAYOUT L = MakeLayout(Preferred);
+  R.NextGenerationValid = TRUE;
+  if (Scenario == 0) {
+    SetV2(&R, 0, 2, DaliUfsLogSlotEmpty);
+    R.Slots[2] = R.Slots[3] = DaliUfsLogSlotEmpty;
+    R.PairConsistent[1] = TRUE;
+    R.HasCommittedV2 = TRUE; R.CommittedUefiV2Count = 1;
+    R.MaxGeneration = 2; R.NextGeneration = 3;
+  } else if (Scenario == 1) {
+    SetV2(&R, 0, 9, DaliUfsLogSlotEmpty);
+    SetV2(&R, 1, 2, DaliUfsLogSlotEmpty);
+    R.Slots[4] = DaliUfsLogSlotValidV1; R.Slots[5] = DaliUfsLogSlotEmpty;
+    R.Slots[6] = DaliUfsLogSlotInterruptedV2; R.Slots[7] = DaliUfsLogSlotUnknown;
+    R.HasCommittedV2 = TRUE; R.CommittedUefiV2Count = 2;
+    R.MaxGeneration = 9; R.NextGeneration = 10;
+  } else if (Scenario == 2) {
+    SetV2(&R, 0, 1, DaliUfsLogSlotValidV2);
+    SetV2(&R, 1, 3, DaliUfsLogSlotEmpty);
+    R.Slots[4] = DaliUfsLogSlotValidV1; R.Slots[5] = DaliUfsLogSlotUnknown;
+    R.Slots[6] = R.Slots[7] = DaliUfsLogSlotInterruptedV2;
+    R.HasCommittedV2 = TRUE; R.CommittedUefiV2Count = 2;
+    R.MaxGeneration = 3; R.NextGeneration = 4;
+  } else if (Scenario == 3) {
+    SetV2(&R, 0, 1, DaliUfsLogSlotValidV2);
+    R.Slots[2] = DaliUfsLogSlotValidV1; R.Slots[3] = DaliUfsLogSlotEmpty;
+    R.Slots[4] = DaliUfsLogSlotUnknown; R.Slots[5] = DaliUfsLogSlotInterruptedV2;
+    R.Slots[6] = DaliUfsLogSlotValidV1; R.Slots[7] = DaliUfsLogSlotUnknown;
+    R.HasCommittedV2 = TRUE; R.CommittedUefiV2Count = 1;
+    R.MaxGeneration = 1; R.NextGeneration = 2;
+  } else if (Scenario == 4) {
+    SetV2(&R, 0, 1, DaliUfsLogSlotEmpty);
+    R.Slots[2] = DaliUfsLogSlotValidV1; R.Slots[3] = DaliUfsLogSlotUnknown;
+    R.Slots[4] = R.Slots[5] = DaliUfsLogSlotInterruptedV2;
+    R.Slots[6] = R.Slots[7] = DaliUfsLogSlotValidV1;
+    R.HasCommittedV2 = TRUE; R.CommittedUefiV2Count = 1;
+    R.MaxGeneration = 1; R.NextGeneration = 2;
+  } else if (Scenario == 5) {
+    SetV2(&R, 0, 1, DaliUfsLogSlotValidV2);
+    SetV2(&R, 1, 2, DaliUfsLogSlotValidV2);
+    R.Slots[4] = R.Slots[5] = DaliUfsLogSlotUnknown;
+    R.Slots[6] = R.Slots[7] = DaliUfsLogSlotValidV1;
+    R.HasCommittedV2 = TRUE; R.CommittedUefiV2Count = 2;
+    R.MaxGeneration = 2; R.NextGeneration = 3;
+  } else {
+    SetV2(&R, 0, 1, DaliUfsLogSlotEmpty);
+    R.HasCommittedV2 = TRUE; R.CommittedUefiV2Count = 2;
+    R.MaxGeneration = 1; R.NextGeneration = 2;
+  }
+  EFI_STATUS Status = DaliUfsSelectUserdataPairFromScan(&L, Preferred, &R);
+  Out[0] = Status; Out[1] = L.Sequence; Out[2] = R.SelectedSequence;
+  Out[3] = R.RotationRequired; Out[4] = R.Victim.Generation; Out[5] = R.Victim.Valid;
+  Out[6] = L.ScratchStartLba; Out[7] = L.TailGuardBlocks;
+  return 0;
+}
 ''')
         root = Path(__file__).resolve().parents[2]
         driver = root / "Silicon/MediaTek/MT6991Pkg/Drivers/UfsHostDxe"
@@ -233,6 +306,7 @@ int RunAuthorize(unsigned Scenario, UINT64 Out[12]) {
         cls.lib.RunScan.argtypes = [ctypes.c_uint, ctypes.c_uint64, ctypes.c_uint32,
                                     ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)]
         cls.lib.RunAuthorize.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint64)]
+        cls.lib.RunSelection.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint64)]
 
     @classmethod
     def tearDownClass(cls):
@@ -246,6 +320,11 @@ int RunAuthorize(unsigned Scenario, UINT64 Out[12]) {
     def authorize(self, scenario=0):
         out = (ctypes.c_uint64 * 12)()
         self.lib.RunAuthorize(scenario, out)
+        return list(out)
+
+    def select(self, scenario=0):
+        out = (ctypes.c_uint64 * 8)()
+        self.lib.RunSelection(scenario, out)
         return list(out)
 
     def test_scans_exact_partition_in_bounded_aligned_chunks_and_selects_preferred_pair(self):
@@ -286,6 +365,32 @@ int RunAuthorize(unsigned Scenario, UINT64 Out[12]) {
         for scenario in (1, 2, 3):
             out = self.authorize(scenario)
             self.assertEqual((out[0], out[1], out[7]), (26, 0, 0))
+
+    def test_empty_pair_precedes_any_v2_rotation_candidate(self):
+        out = self.select(0)
+        self.assertEqual(out[:6], [0, 2, 2, 0, 0, 0])
+
+    def test_rotation_selects_oldest_eligible_v2_and_binds_victim_identity(self):
+        out = self.select(1)
+        self.assertEqual(out[:6], [0, 2, 2, 1, 2, 1])
+        self.assertEqual((out[6], out[7]), (64565240 + 2 * 1024, 5120))
+
+    def test_v2_with_nonempty_xnu_sibling_is_pinned(self):
+        out = self.select(2)
+        self.assertEqual(out[:6], [0, 2, 2, 1, 3, 1])
+
+    def test_single_v2_record_is_not_recycled(self):
+        out = self.select(3)
+        self.assertEqual((out[0], out[3], out[5]), (9, 0, 0))
+
+    def test_v1_unknown_interrupted_and_xnu_owned_pairs_are_preserved(self):
+        for scenario in (4, 5):
+            out = self.select(scenario)
+            self.assertEqual((out[0], out[3], out[5]), (9, 0, 0))
+
+    def test_inconsistent_scan_summary_fails_closed(self):
+        out = self.select(6)
+        self.assertEqual((out[0], out[3], out[5]), (0x8000000000000000 | 33, 0, 0))
 
 
 if __name__ == "__main__":

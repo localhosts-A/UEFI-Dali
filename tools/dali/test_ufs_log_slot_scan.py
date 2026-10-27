@@ -250,7 +250,7 @@ static VOID WriteSlot(UINTN Slot, UINT32 Schema, UINT64 Generation,
   BuildRecord(Base + SLOT_BYTES - BLOCK_BYTES, 3, Schema, Owner, Sequence, Generation, Token, Body, BodyBytes, ZeroCandidate);
 }
 
-int RunScenario(unsigned Scenario, UINT64 Out[21]) {
+int RunScenario(unsigned Scenario, UINT64 Out[27]) {
   static CONST UINT8 TokenA[] = "11111111111111111111111111111111";
   static CONST UINT8 TokenB[] = "22222222222222222222222222222222";
   memset(disk, 0, sizeof disk); reads = bad_reads = fail_at = live_allocations = 0;
@@ -295,6 +295,12 @@ int RunScenario(unsigned Scenario, UINT64 Out[21]) {
   Out[13] = Result.HasInconsistentPair;
   for (UINTN I = 0; I < 4; ++I) Out[14 + I] = Result.PairConsistent[I];
   Out[18] = reads; Out[19] = bad_reads; Out[20] = live_allocations;
+  Out[21] = Result.CommittedUefiV2Count;
+  Out[22] = Result.UefiV2[1].Valid;
+  Out[23] = Result.UefiV2[1].Generation;
+  Out[24] = Result.UefiV2[1].Token[0];
+  Out[25] = Result.UefiV2[1].CandidateSha256[0];
+  Out[26] = Result.UefiV2[1].BodySha256[0];
   return 0;
 }
 ''')
@@ -311,19 +317,21 @@ int RunScenario(unsigned Scenario, UINT64 Out[21]) {
         cls.temp.cleanup()
 
     def scan(self, scenario=0):
-        out = (ctypes.c_uint64 * 21)()
+        out = (ctypes.c_uint64 * 27)()
         self.assertEqual(self.lib.RunScenario(scenario, out), 0)
         return list(out)
 
     def test_empty_partition_starts_generation_one_with_bounded_reads(self):
         out = self.scan()
-        self.assertEqual((out[0], out[11], out[12], out[18:]), (0, 1, 1, [32, 0, 0]))
+        self.assertEqual((out[0], out[11], out[12], out[18:21]), (0, 1, 1, [32, 0, 0]))
         self.assertEqual(out[1:9], [0] * 8)
 
     def test_valid_v1_is_preserved_and_committed_v2_sets_next_generation(self):
         out = self.scan(1)
         self.assertEqual((out[0], out[1], out[3], out[9], out[10], out[11], out[12]),
                          (0, 1, 2, 1, 4, 5, 1))
+        self.assertEqual((out[21], out[22], out[23], out[24], out[25]), (1, 1, 4, ord("1"), 0x42))
+        self.assertNotEqual(out[26], 0)
 
     def test_matching_uefi_and_xnu_v2_pair_is_valid(self):
         out = self.scan(2)

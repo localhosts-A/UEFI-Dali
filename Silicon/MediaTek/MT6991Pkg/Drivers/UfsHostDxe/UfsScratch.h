@@ -6,7 +6,7 @@
 #include <Protocol/BlockIo.h>
 
 // Invoked after real GPT inspection (and, for userdata logs, a bounded read-only
-// scan that selects a wholly empty UEFI/XNU pair) before child installation.
+// scan that selects an empty pair or a proven eligible UEFI v2 victim) before child installation.
 // Until then Proposal is never the host's live write grant. Callback returns
 // the verified live grant pointer, which all later requests recheck for revocation.
 // An enabled proposal with no authorizer is always refused.

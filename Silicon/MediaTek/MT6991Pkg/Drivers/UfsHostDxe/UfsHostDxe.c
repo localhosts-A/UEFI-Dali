@@ -494,12 +494,15 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
       Status = DaliUfsScratchPublishChecked (mController, &mGrantState.Proposal, mGeometry,
         &mClosed, mCompletedSync, &mLogScanResult, AuthorizeScratch, &mGrantState);
       if (mGrantState.Proposal.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
-        DEBUG ((DEBUG_WARN, "DALI-UFS-LOG-SCAN: result=%r v2=%u max-generation=%Lu next-generation=%Lu ready=%u inconsistent-pair=%u pairs=%u/%u/%u/%u slots=%u/%u/%u/%u/%u/%u/%u/%u\n",
-          Status, mLogScanResult.HasCommittedV2, mLogScanResult.MaxGeneration,
-          mLogScanResult.NextGeneration, mLogScanResult.NextGenerationValid,
+        DEBUG ((DEBUG_WARN, "DALI-UFS-LOG-SCAN: result=%r v2=%u committed=%u max-generation=%Lu next-generation=%Lu ready=%u inconsistent-pair=%u pairs=%u/%u/%u/%u selected=%Lu rotation=%u victim-generation=%Lu slots=%u/%u/%u/%u/%u/%u/%u/%u\n",
+          Status, mLogScanResult.HasCommittedV2, mLogScanResult.CommittedUefiV2Count,
+          mLogScanResult.MaxGeneration, mLogScanResult.NextGeneration,
+          mLogScanResult.NextGenerationValid,
           mLogScanResult.HasInconsistentPair, mLogScanResult.PairConsistent[0],
           mLogScanResult.PairConsistent[1], mLogScanResult.PairConsistent[2],
           mLogScanResult.PairConsistent[3],
+          mLogScanResult.SelectedSequence, mLogScanResult.RotationRequired,
+          mLogScanResult.Victim.Generation,
           mLogScanResult.Slots[0], mLogScanResult.Slots[1], mLogScanResult.Slots[2],
           mLogScanResult.Slots[3], mLogScanResult.Slots[4], mLogScanResult.Slots[5],
           mLogScanResult.Slots[6], mLogScanResult.Slots[7]));
@@ -539,8 +542,23 @@ STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode
   if (mDma.Busy || mLogConsole.Attempted) { return EFI_ALREADY_STARTED; }
   if (Mode == DALI_UFS_LOG_WRITE && mWritesInhibited) { return EFI_WRITE_PROTECTED; }
   UINT64 Generation = RequestedGeneration;
+  CONST DALI_UFS_LOG_V2_IDENTITY *Replacement = NULL;
   if (Mode == DALI_UFS_LOG_WRITE && mScratchGrant.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
     if (!mLogScanResult.NextGenerationValid || mLogScanResult.NextGeneration == 0) {
+      return EFI_SECURITY_VIOLATION;
+    }
+    if (mLogScanResult.SelectedSequence == 0 ||
+        mLogScanResult.SelectedSequence != mGrantState.Sequence ||
+        mGrantState.Sequence != mScratchGrant.Sequence) {
+      return EFI_SECURITY_VIOLATION;
+    }
+    if (mLogScanResult.RotationRequired) {
+      if (!mLogScanResult.Victim.Valid || mLogScanResult.Victim.Generation == 0 ||
+          mLogScanResult.Victim.Generation >= mLogScanResult.NextGeneration) {
+        return EFI_SECURITY_VIOLATION;
+      }
+      Replacement = &mLogScanResult.Victim;
+    } else if (mLogScanResult.Victim.Valid) {
       return EFI_SECURITY_VIOLATION;
     }
     Generation = mLogScanResult.NextGeneration;
@@ -560,7 +578,7 @@ STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode
   DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u target=%u begin sequence=%Lu generation=%Lu owner=1\n",
     Token, Mode, mScratchGrant.Target, mGrantState.Sequence, Generation));
   EFI_STATUS Status = DaliUfsLogConsoleRun (&mLogConsole, &mScratchGrant, mGrantState.Sequence,
-    Generation, RecordToken, Mode == DALI_UFS_LOG_READBACK,
+    Generation, RecordToken, Replacement, Mode == DALI_UFS_LOG_READBACK,
     (CONST VOID *)(UINTN)DALI_CONSOLE_BASE, DALI_CONSOLE_SIZE - 12);
   CHAR8 Digest[65]; STATIC CONST CHAR8 Hex[] = "0123456789abcdef";
   for (UINTN I = 0; I < 32; ++I) {

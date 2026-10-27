@@ -3,6 +3,7 @@
 #include <Uefi.h>
 #include <Protocol/BlockIo.h>
 #include <Library/Mt6991UfsPolicy.h>
+#include "UfsLogRecord.h"
 
 #define DALI_UFS_LOG_WINDOW_BYTES (1024U * 1024U)
 #define DALI_UFS_LOG_USERDATA_SLOT_BYTES (4U * 1024U * 1024U)
@@ -25,6 +26,7 @@ typedef struct {
 // A result object is single-use; any I/O/hash failure stops the attempt.
 EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
   CONST MT6991_UFS_SCRATCH_GRANT *Grant, UINT32 Owner, UINT64 Sequence, UINT64 Generation,
-  CONST UINT8 *RecordToken, BOOLEAN ReadbackOnly,
+  CONST UINT8 *RecordToken, CONST DALI_UFS_LOG_V2_IDENTITY *Replacement,
+  BOOLEAN ReadbackOnly,
   CONST UINT8 *Body, UINTN BodyBytes,
   VOID *Workspace, UINTN WorkspaceBytes, DALI_UFS_LOG_RESULT *Result);
