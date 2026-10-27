@@ -345,7 +345,7 @@ STATIC VOID DisplayAndInputProbe (VOID) {
         EFI_STATUS LogStatus = gBS->LocateProtocol (&gDaliUfsLogProtocolGuid, NULL, (VOID **)&Log);
         if (!EFI_ERROR (LogStatus) && Log != NULL && Log->Revision == DALI_UFS_LOG_REVISION && Log->Run != NULL) {
           LogStatus = CreateLogRecordToken ();
-          if (LogStatus == EFI_SUCCESS) { LogStatus = Log->Run (Log, DALI_UFS_LOG_WRITE, mLogRecordToken); }
+          if (LogStatus == EFI_SUCCESS) { LogStatus = Log->Run (Log, DALI_UFS_LOG_WRITE, mLogRecordToken, 0); }
         } else if (!EFI_ERROR (LogStatus)) {
           LogStatus = EFI_UNSUPPORTED;
         }

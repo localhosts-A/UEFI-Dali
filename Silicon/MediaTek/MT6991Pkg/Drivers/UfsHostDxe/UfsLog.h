@@ -24,7 +24,7 @@ typedef struct {
 // ReadbackOnly: read/verify only, never initialize/replay an incomplete record.
 // A result object is single-use; any I/O/hash failure stops the attempt.
 EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
-  CONST MT6991_UFS_SCRATCH_GRANT *Grant, UINT32 Owner, UINT64 Sequence,
+  CONST MT6991_UFS_SCRATCH_GRANT *Grant, UINT32 Owner, UINT64 Sequence, UINT64 Generation,
   CONST UINT8 *RecordToken, BOOLEAN ReadbackOnly,
   CONST UINT8 *Body, UINTN BodyBytes,
   VOID *Workspace, UINTN WorkspaceBytes, DALI_UFS_LOG_RESULT *Result);

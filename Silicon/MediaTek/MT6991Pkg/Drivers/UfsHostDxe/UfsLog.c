@@ -3,10 +3,12 @@
 #include <Library/BaseCryptLib.h>
 #include "UfsLog.h"
 
-STATIC CONST UINT8 Magic[16] = "DALIUFSLOG1";
+STATIC CONST UINT8 MagicV1[16] = "DALIUFSLOG1";
+STATIC CONST UINT8 MagicV2[16] = "DALIUFSLOG2";
 enum { Kind = 16, Version = 20, Token = 24, OwnerAt = 56, SequenceAt = 60,
   LengthAt = 68, BlockAt = 72, BlocksAt = 76, DeviceAt = 84,
-  CandidateAt = 116, SourceAt = 148, BodyHashAt = 180, RecordHashAt = 212 };
+  CandidateAt = 116, SourceAt = 148, BodyHashAt = 180, RecordHashAt = 212,
+  GenerationAt = 244, FlagsAt = 252, CaptureStageAt = 256, BodyFormatAt = 260 };
 
 STATIC VOID Put (UINT8 *P, UINT64 V, UINTN Bytes) {
   for (UINTN I = 0; I < Bytes; ++I) { P[I] = (UINT8)(V >> (I * 8)); }
@@ -34,14 +36,21 @@ STATIC UINTN WindowBytes (CONST MT6991_UFS_SCRATCH_GRANT *G) {
 
 STATIC BOOLEAN Record (UINT8 *P, UINT32 Block, UINT32 Type,
   CONST MT6991_UFS_SCRATCH_GRANT *G, CONST UINT8 *RecordToken,
-  UINT32 Owner, UINT64 Sequence,
+  UINT32 Owner, UINT64 Sequence, UINT64 Generation,
   UINT32 Bytes, CONST UINT8 Digest[32]) {
-  ZeroMem (P, Block); CopyMem (P, Magic, sizeof Magic);
-  Put (P + Kind, Type, 4); Put (P + Version, 1, 4); CopyMem (P + Token, RecordToken, 32);
+  BOOLEAN IsV2 = Generation != 0;
+  ZeroMem (P, Block); CopyMem (P, IsV2 ? MagicV2 : MagicV1, sizeof MagicV1);
+  Put (P + Kind, Type, 4); Put (P + Version, IsV2 ? 2 : 1, 4); CopyMem (P + Token, RecordToken, 32);
   Put (P + OwnerAt, Owner, 4); Put (P + SequenceAt, Sequence, 8);
   Put (P + LengthAt, Bytes, 4); Put (P + BlockAt, Block, 4); Put (P + BlocksAt, G->ScratchBlocks, 8);
   CopyMem (P + DeviceAt, G->DeviceBinding, 32); CopyMem (P + CandidateAt, G->CandidateSha256, 32);
   CopyMem (P + SourceAt, G->SourceSha256, 32); CopyMem (P + BodyHashAt, Digest, 32);
+  if (IsV2) {
+    Put (P + GenerationAt, Generation, 8);
+    Put (P + FlagsAt, 0, 4);
+    Put (P + CaptureStageAt, Owner == DALI_UFS_LOG_OWNER_UEFI ? 1 : 2, 4);
+    Put (P + BodyFormatAt, Owner == DALI_UFS_LOG_OWNER_UEFI ? 1 : 2, 4);
+  }
   UINT8 Self[32];
   if (!Sha256HashAll (P, Block, Self)) { return FALSE; }
   CopyMem (P + RecordHashAt, Self, 32); return TRUE;
@@ -49,7 +58,7 @@ STATIC BOOLEAN Record (UINT8 *P, UINT32 Block, UINT32 Type,
 
 STATIC EFI_STATUS Verify (UINT8 *Read, UINT8 *Expected,
   CONST MT6991_UFS_SCRATCH_GRANT *G, CONST UINT8 *RecordToken,
-  UINT32 Owner, UINT64 Sequence,
+  UINT32 Owner, UINT64 Sequence, UINT64 Generation,
   UINTN Window, DALI_UFS_LOG_RESULT *Result) {
   UINT32 Block = G->BlockSize;
   CONST UINT8 *Header = Read + Block;
@@ -61,7 +70,7 @@ STATIC EFI_STATUS Verify (UINT8 *Read, UINT8 *Expected,
   ZeroMem (Expected, Window);
   for (UINT32 I = 0; I < 3; ++I) {
     UINTN At = I == 2 ? Window - Block : I * Block;
-    if (!Record (Expected + At, Block, I + 1, G, RecordToken, Owner, Sequence,
+    if (!Record (Expected + At, Block, I + 1, G, RecordToken, Owner, Sequence, Generation,
         (UINT32)Length, Digest)) { return EFI_DEVICE_ERROR; }
     if (CompareMem (Expected + At, Read + At, Block)) { return EFI_COMPROMISED_DATA; }
   }
@@ -73,7 +82,7 @@ STATIC EFI_STATUS Verify (UINT8 *Read, UINT8 *Expected,
 }
 
 EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
-  CONST MT6991_UFS_SCRATCH_GRANT *G, UINT32 Owner, UINT64 Sequence,
+  CONST MT6991_UFS_SCRATCH_GRANT *G, UINT32 Owner, UINT64 Sequence, UINT64 Generation,
   CONST UINT8 *RecordToken, BOOLEAN ReadbackOnly,
   CONST UINT8 *Body, UINTN BodyBytes,
   VOID *Workspace, UINTN WorkspaceBytes, DALI_UFS_LOG_RESULT *Result) {
@@ -86,6 +95,13 @@ EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
       (!ReadbackOnly && Io->WriteBlocks == NULL) || Workspace == NULL || WorkspaceBytes < DALI_UFS_LOG_WORK_BYTES) {
     return EFI_INVALID_PARAMETER;
   }
+  if (Generation != 0 && G->Target != MT6991_UFS_TARGET_USERDATA_LOGS) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  if (G->Target == MT6991_UFS_TARGET_USERDATA_LOGS && !ReadbackOnly && Generation == 0) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  if (Generation != 0 && RecordToken == NULL) { return EFI_SECURITY_VIOLATION; }
   if (!ReadbackOnly && RecordToken == NULL) { return EFI_SECURITY_VIOLATION; }
   if (RecordToken == NULL) { RecordToken = (CONST UINT8 *)G->Token; }
   if (!ValidToken (RecordToken)) { return EFI_SECURITY_VIOLATION; }
@@ -115,13 +131,13 @@ EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
     if (!Sha256HashAll (Image + 2 * Block, BodyBytes, Digest)) { return EFI_DEVICE_ERROR; }
     for (UINT32 I = 0; I < 3; ++I) {
       UINTN At = I == 2 ? Window - Block : I * Block;
-      if (!Record (Image + At, Block, I + 1, G, RecordToken, Owner, Sequence,
+      if (!Record (Image + At, Block, I + 1, G, RecordToken, Owner, Sequence, Generation,
           (UINT32)BodyBytes, Digest)) { return EFI_DEVICE_ERROR; }
     }
   }
   EFI_STATUS Status = Exact (Io->ReadBlocks (Io, Media.MediaId, 0, Window, Read));
   if (Status != EFI_SUCCESS) { return Status; }
-  if (ReadbackOnly) { return Verify (Read, Image, G, RecordToken, Owner, Sequence, Window, Result); }
+  if (ReadbackOnly) { return Verify (Read, Image, G, RecordToken, Owner, Sequence, Generation, Window, Result); }
   if (!Zero (Read, Window)) { return EFI_ALREADY_STARTED; }
   for (UINT32 Phase = 0; Phase < 3; ++Phase) {
     UINT64 Lba = Phase == 2 ? G->ScratchBlocks - 1 : Phase;
@@ -136,5 +152,5 @@ EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
   Status = Exact (Io->ReadBlocks (Io, Media.MediaId, 0, Window, Read));
   if (Status != EFI_SUCCESS) { return Status; }
   if (CompareMem (Read, Image, Window)) { return EFI_COMPROMISED_DATA; }
-  return Verify (Read, Image, G, RecordToken, Owner, Sequence, Window, Result);
+  return Verify (Read, Image, G, RecordToken, Owner, Sequence, Generation, Window, Result);
 }

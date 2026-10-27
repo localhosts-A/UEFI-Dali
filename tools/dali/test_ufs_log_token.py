@@ -105,9 +105,11 @@ BOOLEAN Mt6991UfsScratchGrantValid(CONST MT6991_UFS_SCRATCH_GRANT *Grant);
 
 typedef struct {
   UINT64 Status, Attempted, Verified, Reads, Writes, Flushes, GrantUnchanged;
-  UINT64 WrongReadStatus;
+  UINT64 WrongReadStatus, WrongGenerationStatus;
   UINT8 RecordTokens[3][32];
   UINT8 GrantToken[32];
+  UINT32 RecordVersions[3];
+  UINT64 RecordGenerations[3];
 } HOST_RESULT;
 
 static UINT8 disk[SLOT_BYTES];
@@ -191,17 +193,17 @@ static void ResetDisk(VOID) {
   io.FlushBlocks = FlushBlocks;
 }
 
-static EFI_STATUS RunRecord(CONST UINT8 *Token, BOOLEAN ReadbackOnly,
+static EFI_STATUS RunRecord(CONST UINT8 *Token, UINT64 Generation, BOOLEAN ReadbackOnly,
   DALI_UFS_LOG_RESULT *Result, VOID *Work) {
   static CONST UINT8 Body[] = "uefi-console-record";
   MT6991_UFS_SCRATCH_GRANT Grant;
   MakeGrant(&Grant);
-  return DaliUfsLogRun(&io, &Grant, DALI_UFS_LOG_OWNER_UEFI, 1, Token,
+  return DaliUfsLogRun(&io, &Grant, DALI_UFS_LOG_OWNER_UEFI, 1, Generation, Token,
     ReadbackOnly, ReadbackOnly ? NULL : Body,
     ReadbackOnly ? 0 : sizeof Body - 1, Work, DALI_UFS_LOG_WORK_BYTES, Result);
 }
 
-int RunWrite(CONST UINT8 *Token, HOST_RESULT *Out) {
+int RunWriteWithGeneration(CONST UINT8 *Token, UINT64 Generation, HOST_RESULT *Out) {
   if (Out == NULL) { return 1; }
   memset(Out, 0, sizeof *Out);
   ResetDisk();
@@ -212,7 +214,7 @@ int RunWrite(CONST UINT8 *Token, HOST_RESULT *Out) {
   if (posix_memalign(&Work, BLOCK_BYTES, DALI_UFS_LOG_WORK_BYTES) != 0) return 2;
   DALI_UFS_LOG_RESULT Result = {0};
   static CONST UINT8 Body[] = "uefi-console-record";
-  Out->Status = DaliUfsLogRun(&io, &GrantAfter, DALI_UFS_LOG_OWNER_UEFI, 1,
+  Out->Status = DaliUfsLogRun(&io, &GrantAfter, DALI_UFS_LOG_OWNER_UEFI, 1, Generation,
     Token, FALSE, Body, sizeof Body - 1, Work, DALI_UFS_LOG_WORK_BYTES, &Result);
   Out->Attempted = Result.Attempted;
   Out->Verified = Result.Verified;
@@ -222,6 +224,42 @@ int RunWrite(CONST UINT8 *Token, HOST_RESULT *Out) {
   for (UINTN I = 0; I < 3; ++I) {
     UINTN At = I == 2 ? SLOT_BYTES - BLOCK_BYTES : I * BLOCK_BYTES;
     memcpy(Out->RecordTokens[I], disk + At + 24, 32);
+    Out->RecordVersions[I] = (UINT32)disk[At + 20] | (UINT32)disk[At + 21] << 8 |
+      (UINT32)disk[At + 22] << 16 | (UINT32)disk[At + 23] << 24;
+    for (UINTN B = 0; B < 8; ++B) Out->RecordGenerations[I] |= (UINT64)disk[At + 244 + B] << (8U * B);
+  }
+  free(Work);
+  return 0;
+}
+
+int RunWrite(CONST UINT8 *Token, HOST_RESULT *Out) {
+  return RunWriteWithGeneration(Token, 1, Out);
+}
+int RunWriteV2(CONST UINT8 *Token, UINT64 Generation, HOST_RESULT *Out) {
+  return RunWriteWithGeneration(Token, Generation, Out);
+}
+
+int RunRoundTripWithGeneration(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
+  CONST UINT8 *WrongToken, UINT64 Generation, HOST_RESULT *Out) {
+  if (Out == NULL) { return 1; }
+  memset(Out, 0, sizeof *Out);
+  ResetDisk();
+  VOID *Work = NULL;
+  if (posix_memalign(&Work, BLOCK_BYTES, DALI_UFS_LOG_WORK_BYTES) != 0) return 2;
+  DALI_UFS_LOG_RESULT WriteResult = {0}, ReadResult = {0}, WrongResult = {0};
+  Out->Status = RunRecord(WriteToken, Generation, FALSE, &WriteResult, Work);
+  RunRecord(ReadToken, Generation, TRUE, &ReadResult, Work);
+  Out->Verified = ReadResult.Verified;
+  Out->Reads = reads; Out->Writes = writes; Out->Flushes = flushes;
+  Out->Attempted = ReadResult.Attempted;
+  if (WrongToken != NULL) {
+    Out->WrongReadStatus = RunRecord(WrongToken, Generation, TRUE, &WrongResult, Work);
+    Out->Reads = reads; Out->Writes = writes; Out->Flushes = flushes;
+  }
+  if (Generation != 0) {
+    memset(&WrongResult, 0, sizeof WrongResult);
+    Out->WrongGenerationStatus = RunRecord(ReadToken, Generation + 1, TRUE, &WrongResult, Work);
+    Out->Reads = reads; Out->Writes = writes; Out->Flushes = flushes;
   }
   free(Work);
   return 0;
@@ -229,23 +267,11 @@ int RunWrite(CONST UINT8 *Token, HOST_RESULT *Out) {
 
 int RunRoundTrip(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
   CONST UINT8 *WrongToken, HOST_RESULT *Out) {
-  if (Out == NULL) { return 1; }
-  memset(Out, 0, sizeof *Out);
-  ResetDisk();
-  VOID *Work = NULL;
-  if (posix_memalign(&Work, BLOCK_BYTES, DALI_UFS_LOG_WORK_BYTES) != 0) return 2;
-  DALI_UFS_LOG_RESULT WriteResult = {0}, ReadResult = {0}, WrongResult = {0};
-  Out->Status = RunRecord(WriteToken, FALSE, &WriteResult, Work);
-  RunRecord(ReadToken, TRUE, &ReadResult, Work);
-  Out->Verified = ReadResult.Verified;
-  Out->Reads = reads; Out->Writes = writes; Out->Flushes = flushes;
-  Out->Attempted = ReadResult.Attempted;
-  if (WrongToken != NULL) {
-    Out->WrongReadStatus = RunRecord(WrongToken, TRUE, &WrongResult, Work);
-    Out->Reads = reads; Out->Writes = writes; Out->Flushes = flushes;
-  }
-  free(Work);
-  return 0;
+  return RunRoundTripWithGeneration(WriteToken, ReadToken, WrongToken, 1, Out);
+}
+int RunRoundTripV2(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
+  CONST UINT8 *WrongToken, UINT64 Generation, HOST_RESULT *Out) {
+  return RunRoundTripWithGeneration(WriteToken, ReadToken, WrongToken, Generation, Out);
 }
 ''')
         root = Path(__file__).resolve().parents[2]
@@ -255,8 +281,11 @@ int RunRoundTrip(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
                         str(base / "harness.c"), "-o", str(base / "ufs_log.so")], check=True)
         cls.lib = ctypes.CDLL(str(base / "ufs_log.so"))
         cls.lib.RunWrite.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_void_p]
+        cls.lib.RunWriteV2.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint64, ctypes.c_void_p]
         cls.lib.RunRoundTrip.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint8),
                                         ctypes.POINTER(ctypes.c_uint8), ctypes.c_void_p]
+        cls.lib.RunRoundTripV2.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint8),
+                                          ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint64, ctypes.c_void_p]
 
     @classmethod
     def tearDownClass(cls):
@@ -272,8 +301,11 @@ int RunRoundTrip(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
             ("flushes", ctypes.c_uint64),
             ("grant_unchanged", ctypes.c_uint64),
             ("wrong_read_status", ctypes.c_uint64),
+            ("wrong_generation_status", ctypes.c_uint64),
             ("record_tokens", ctypes.c_uint8 * 96),
             ("grant_token", ctypes.c_uint8 * 32),
+            ("record_versions", ctypes.c_uint32 * 3),
+            ("record_generations", ctypes.c_uint64 * 3),
         ]
 
     def test_runtime_token_is_record_identity_and_grant_is_unchanged(self):
@@ -301,8 +333,36 @@ int RunRoundTrip(CONST UINT8 *WriteToken, CONST UINT8 *ReadToken,
         out = self.HostResult()
         self.assertEqual(self.lib.RunRoundTrip(token, token, wrong, ctypes.byref(out)), 0)
         self.assertEqual((out.status, out.verified, out.attempted), (0, 1, 1))
-        self.assertEqual((out.reads, out.writes, out.flushes), (4, 3, 3))
+        self.assertEqual((out.reads, out.writes, out.flushes), (5, 3, 3))
         self.assertEqual(out.wrong_read_status, 0x8000000000000000 | 33)
+        self.assertEqual(out.wrong_generation_status, 0x8000000000000000 | 33)
+
+    def test_v2_write_persists_generation_in_all_three_records_without_changing_grant(self):
+        token = (ctypes.c_uint8 * 32).from_buffer_copy(b"fedcba9876543210fedcba9876543210")
+        out = self.HostResult()
+        generation = 0x1020304050607080
+        self.assertEqual(self.lib.RunWriteV2(token, generation, ctypes.byref(out)), 0)
+        self.assertEqual((out.status, out.attempted, out.verified, out.grant_unchanged), (0, 1, 1, 1))
+        self.assertEqual(list(out.record_versions), [2, 2, 2])
+        self.assertEqual(list(out.record_generations), [generation] * 3)
+        self.assertEqual(bytes(out.record_tokens), bytes(token) * 3)
+
+    def test_userdata_write_rejects_missing_generation_before_io(self):
+        token = (ctypes.c_uint8 * 32).from_buffer_copy(b"fedcba9876543210fedcba9876543210")
+        out = self.HostResult()
+        self.assertEqual(self.lib.RunWriteV2(token, 0, ctypes.byref(out)), 0)
+        self.assertEqual(out.status, 0x8000000000000000 | 26)
+        self.assertEqual((out.attempted, out.reads, out.writes, out.flushes), (0, 0, 0, 0))
+
+    def test_v2_readback_checks_runtime_token_and_generation(self):
+        token = (ctypes.c_uint8 * 32).from_buffer_copy(b"fedcba9876543210fedcba9876543210")
+        wrong = (ctypes.c_uint8 * 32).from_buffer_copy(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        out = self.HostResult()
+        generation = 37
+        self.assertEqual(self.lib.RunRoundTripV2(token, token, wrong, generation, ctypes.byref(out)), 0)
+        self.assertEqual((out.status, out.verified, out.attempted), (0, 1, 1))
+        self.assertEqual(out.wrong_read_status, 0x8000000000000000 | 33)
+        self.assertEqual(out.wrong_generation_status, 0x8000000000000000 | 33)
 
 
 if __name__ == "__main__":

@@ -522,15 +522,31 @@ STATIC BOOLEAN ValidRecordToken (CONST UINT8 *Token) {
   return TRUE;
 }
 STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode,
-  CONST UINT8 *RecordToken) {
+  CONST UINT8 *RecordToken, UINT64 RequestedGeneration) {
   if (This != &mLogProtocol || !FixedPcdGetBool (PcdDaliUfsLogEnabled) ||
       (Mode != DALI_UFS_LOG_WRITE && Mode != DALI_UFS_LOG_READBACK)) { return EFI_ACCESS_DENIED; }
-  if (Mode == DALI_UFS_LOG_WRITE && !ValidRecordToken (RecordToken)) { return EFI_SECURITY_VIOLATION; }
+  if ((Mode == DALI_UFS_LOG_WRITE &&
+       (RequestedGeneration != 0 || !ValidRecordToken (RecordToken))) ||
+      (Mode == DALI_UFS_LOG_READBACK && RequestedGeneration != 0 && !ValidRecordToken (RecordToken)) ||
+      (Mode == DALI_UFS_LOG_READBACK && RequestedGeneration == 0 && RecordToken != NULL &&
+       !ValidRecordToken (RecordToken))) { return EFI_SECURITY_VIOLATION; }
+  if (RequestedGeneration != 0 && mScratchGrant.Target != MT6991_UFS_TARGET_USERDATA_LOGS) {
+    return EFI_SECURITY_VIOLATION;
+  }
   if (mClosed || mQuiescing || mQuiesced || !mGrantState.Prepared || !mScratchGrant.Enabled ||
       !mProvenance.Ready || !mIdentity.Ready) { return EFI_NOT_READY; }
   if (EfiGetCurrentTpl () != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
   if (mDma.Busy || mLogConsole.Attempted) { return EFI_ALREADY_STARTED; }
   if (Mode == DALI_UFS_LOG_WRITE && mWritesInhibited) { return EFI_WRITE_PROTECTED; }
+  UINT64 Generation = RequestedGeneration;
+  if (Mode == DALI_UFS_LOG_WRITE && mScratchGrant.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
+    if (!mLogScanResult.NextGenerationValid || mLogScanResult.NextGeneration == 0) {
+      return EFI_SECURITY_VIOLATION;
+    }
+    Generation = mLogScanResult.NextGeneration;
+  } else if (Mode == DALI_UFS_LOG_WRITE) {
+    Generation = 0;
+  }
   if (Mode == DALI_UFS_LOG_READBACK) {
     // Inhibit both SCSI admission and the owned-descriptor doorbell before
     // changing the child's media flag. No path reopens writes this boot.
@@ -541,10 +557,10 @@ STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode
     if (Sealed != EFI_SUCCESS) { return Sealed; }
   }
   CONST CHAR8 *Token = FixedPcdGetPtr (PcdDaliUfsStorageToken);
-  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u target=%u begin sequence=%Lu owner=1\n",
-    Token, Mode, mScratchGrant.Target, mGrantState.Sequence));
+  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u target=%u begin sequence=%Lu generation=%Lu owner=1\n",
+    Token, Mode, mScratchGrant.Target, mGrantState.Sequence, Generation));
   EFI_STATUS Status = DaliUfsLogConsoleRun (&mLogConsole, &mScratchGrant, mGrantState.Sequence,
-    RecordToken, Mode == DALI_UFS_LOG_READBACK,
+    Generation, RecordToken, Mode == DALI_UFS_LOG_READBACK,
     (CONST VOID *)(UINTN)DALI_CONSOLE_BASE, DALI_CONSOLE_SIZE - 12);
   CHAR8 Digest[65]; STATIC CONST CHAR8 Hex[] = "0123456789abcdef";
   for (UINTN I = 0; I < 32; ++I) {
@@ -552,10 +568,10 @@ STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode
     Digest[2 * I + 1] = Hex[mLogConsole.Record.BodySha256[I] & 15];
   }
   Digest[64] = 0;
-  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u result=%r attempted=%u submitted=%u synced=%u verified=%u bytes=%u sequence=%Lu sha256=%a\n",
+  DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u result=%r attempted=%u submitted=%u synced=%u verified=%u bytes=%u sequence=%Lu generation=%Lu sha256=%a\n",
     Token, Mode, Status, mLogConsole.Attempted, mLogConsole.Record.WriteSubmitted,
     mLogConsole.Record.CommitSynced, mLogConsole.Record.Verified, mLogConsole.Record.BodyBytes,
-    mGrantState.Sequence, Digest));
+    mGrantState.Sequence, Generation, Digest));
   // Keep the outcome visible when a manual reset leaves no pstore file. These
   // flags describe software progress; submitted alone never proves media IO.
   Print (L"UFS: log result=%r attempted=%u submitted=%u synced=%u verified=%u bytes=%u\r\n",
