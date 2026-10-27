@@ -1,0 +1,7 @@
+# Dali UniXNU UEFI: inherited GOP/input and a read-only in-memory FAT payload.
+[uefi_fd]
+base = 0xC1000000
+size = 0x4000000
+# The FD must be relocated by DaliShim before entry. build-dali.sh packages it.
+[payload]
+type = "raw"
