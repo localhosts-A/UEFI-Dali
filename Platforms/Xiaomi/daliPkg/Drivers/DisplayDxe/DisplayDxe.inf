@@ -1,0 +1,30 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliDisplayDxe
+  FILE_GUID = 6C81B78B-9B56-478E-981A-87FA491D8230
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DaliDisplayInitialize
+[Sources]
+  DisplayDxe.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  MemoryAllocationLib
+  BaseMemoryLib
+  BaseLib
+  IoLib
+  FdtLib
+  DebugLib
+  FrameBufferBltLib
+  CacheMaintenanceLib
+[Protocols]
+  gEfiGraphicsOutputProtocolGuid ## PRODUCES
+  gEfiDevicePathProtocolGuid ## PRODUCES
+[Depex]
+  TRUE
