@@ -12,6 +12,7 @@
   UfsShutdown.c
   UfsScratch.c
   UfsSlotScan.c
+  UfsLogSlotScan.c
   UfsIdentity.c
   UfsLayout.c
   UfsProvenance.c

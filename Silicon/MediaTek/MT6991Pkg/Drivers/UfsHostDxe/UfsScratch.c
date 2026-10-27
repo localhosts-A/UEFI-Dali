@@ -188,7 +188,11 @@ STATIC EFI_STATUS ReadLayout (VOID *Context, UINT8 Lun, UINT64 Lba, UINTN Bytes,
 EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
   CONST MT6991_UFS_SCRATCH_GRANT *Grant, CONST MT6991_UFS_GEOMETRY *Geometry,
   CONST volatile BOOLEAN *Closed, CONST volatile UINT64 *CompletedSync,
+  DALI_UFS_LOG_SLOT_SCAN_RESULT *LogScanResult,
   DALI_UFS_SCRATCH_AUTHORIZE Authorize, VOID *Context) {
+  DALI_UFS_LOG_SLOT_SCAN_RESULT LocalScan;
+  if (LogScanResult == NULL) { LogScanResult = &LocalScan; }
+  ZeroMem (LogScanResult, sizeof *LogScanResult);
   // Default-off return precedes all Boot Services use and all device access.
   if (Grant == NULL || !Grant->Enabled) { return EFI_NOT_STARTED; }
   if (Authorize == NULL) { return EFI_ACCESS_DENIED; }
@@ -243,10 +247,14 @@ EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
   Status = DaliUfsInspectScratchLayout (Geometry, &mScratch.Grant, ReadLayout, NULL,
     Workspace, DALI_UFS_LAYOUT_WORK_BYTES, &Layout);
   if (Status == EFI_SUCCESS && Layout.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
-    // Keep shutdown admission fenced across the complete partition scan too;
-    // CloseAdmission must not stop or disconnect the parent during a read.
-    Status = DaliUfsSelectEmptyUserdataPair (&Layout, mScratch.Grant.Sequence,
-      mScratch.ParentAlign, mScratch.ScsiAlign, ReadLayout, NULL);
+    // Keep shutdown admission fenced across record classification and pair
+    // selection; the selection reuses this scan without rereading the parent.
+    Status = DaliUfsClassifyUserdataLogSlots (&Layout, &mScratch.Grant,
+      mScratch.ParentAlign, mScratch.ScsiAlign, ReadLayout, NULL, LogScanResult);
+    if (Status == EFI_SUCCESS) {
+      Status = DaliUfsSelectEmptyUserdataPairFromStates (&Layout,
+        mScratch.Grant.Sequence, LogScanResult->Slots);
+    }
   }
   mScratch.Busy = FALSE;
   FreeAlignedPages (Workspace, EFI_SIZE_TO_PAGES (DALI_UFS_LAYOUT_WORK_BYTES));

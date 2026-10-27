@@ -2,6 +2,7 @@
 #pragma once
 #include <Library/Mt6991UfsPolicy.h>
 #include "UfsLayout.h"
+#include "UfsLogSlotScan.h"
 #include <Protocol/BlockIo.h>
 
 // Invoked after real GPT inspection (and, for userdata logs, a bounded read-only
@@ -15,6 +16,7 @@ typedef EFI_STATUS (*DALI_UFS_SCRATCH_AUTHORIZE)(VOID *Context,
 EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
   CONST MT6991_UFS_SCRATCH_GRANT *Proposal, CONST MT6991_UFS_GEOMETRY *Geometry,
   CONST volatile BOOLEAN *Closed, CONST volatile UINT64 *CompletedSync,
+  DALI_UFS_LOG_SLOT_SCAN_RESULT *LogScanResult,
   DALI_UFS_SCRATCH_AUTHORIZE Authorize, VOID *Context);
 // BSP only, under the host's TPL_NOTIFY admission lock. Close child admission
 // first; NOT_READY forbids parent stop/disconnect until its one request returns.

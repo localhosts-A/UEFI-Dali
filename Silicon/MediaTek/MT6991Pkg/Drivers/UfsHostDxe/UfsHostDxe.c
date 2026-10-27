@@ -36,6 +36,7 @@ STATIC MT6991_UFS_SCRATCH_GRANT mScratchGrant;
 STATIC CONST MT6991_UFS_SCRATCH_GRANT mDeniedGrant;
 STATIC BOOLEAN mWritesInhibited;
 STATIC DALI_UFS_GRANT_STATE mGrantState;
+STATIC DALI_UFS_LOG_SLOT_SCAN_RESULT mLogScanResult;
 STATIC DALI_UFS_IDENTITY mIdentity;
 STATIC DALI_UFS_PROVENANCE mProvenance;
 STATIC MT6991_UFS_PENDING mPending;
@@ -491,7 +492,18 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   if (Status == EFI_SUCCESS) {
     if (FixedPcdGetBool (PcdDaliUfsScratchEnabled)) {
       Status = DaliUfsScratchPublishChecked (mController, &mGrantState.Proposal, mGeometry,
-        &mClosed, mCompletedSync, AuthorizeScratch, &mGrantState);
+        &mClosed, mCompletedSync, &mLogScanResult, AuthorizeScratch, &mGrantState);
+      if (mGrantState.Proposal.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
+        DEBUG ((DEBUG_WARN, "DALI-UFS-LOG-SCAN: result=%r v2=%u max-generation=%Lu next-generation=%Lu ready=%u inconsistent-pair=%u pairs=%u/%u/%u/%u slots=%u/%u/%u/%u/%u/%u/%u/%u\n",
+          Status, mLogScanResult.HasCommittedV2, mLogScanResult.MaxGeneration,
+          mLogScanResult.NextGeneration, mLogScanResult.NextGenerationValid,
+          mLogScanResult.HasInconsistentPair, mLogScanResult.PairConsistent[0],
+          mLogScanResult.PairConsistent[1], mLogScanResult.PairConsistent[2],
+          mLogScanResult.PairConsistent[3],
+          mLogScanResult.Slots[0], mLogScanResult.Slots[1], mLogScanResult.Slots[2],
+          mLogScanResult.Slots[3], mLogScanResult.Slots[4], mLogScanResult.Slots[5],
+          mLogScanResult.Slots[6], mLogScanResult.Slots[7]));
+      }
     } else {
       Status = EFI_SUCCESS;
     }

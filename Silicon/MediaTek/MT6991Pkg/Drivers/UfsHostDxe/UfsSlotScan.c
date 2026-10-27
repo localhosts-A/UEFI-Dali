@@ -14,6 +14,46 @@ STATIC BOOLEAN ZeroBytes (CONST UINT8 *Bytes, UINTN Length) {
   return Any == 0;
 }
 
+EFI_STATUS DaliUfsSelectEmptyUserdataPairFromStates (DALI_UFS_LAYOUT *Layout,
+  UINT64 Preferred, CONST DALI_UFS_LOG_SLOT_STATE Slots[DALI_UFS_LOG_SLOT_COUNT]) {
+  STATIC CONST UINT8 UserdataLogsGuid[16] = {
+    0xcd, 0xe9, 0xab, 0x32, 0x18, 0xd8, 0x47, 0x77,
+    0x8c, 0xed, 0x69, 0x1e, 0x7c, 0xd5, 0xc6, 0x36
+  };
+  if (Layout == NULL || Slots == NULL || !Layout->Verified ||
+      Layout->Target != MT6991_UFS_TARGET_USERDATA_LOGS || Layout->Lun != 2 ||
+      Layout->BlockSize != 4096 || Layout->CapacityBlocks != 64577536ULL ||
+      Layout->BootStartLba != 64565240ULL || Layout->BootBlocks != 8192ULL ||
+      Layout->ScratchBlocks != MT6991_UFS_DATA_LOG_SLOT_BYTES / Layout->BlockSize ||
+      Preferred == 0 || Preferred > 4 || Layout->Sequence != Preferred ||
+      CompareMem (Layout->PartitionGuid, UserdataLogsGuid, sizeof UserdataLogsGuid)) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  UINT64 PartitionEnd = Layout->BootStartLba + Layout->BootBlocks;
+  if (PartitionEnd < Layout->BootStartLba || PartitionEnd > Layout->CapacityBlocks) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  UINT64 Selected = 0;
+  for (UINT64 Offset = 0; Offset < 4; ++Offset) {
+    UINT64 Sequence = ((Preferred - 1 + Offset) % 4) + 1;
+    UINTN First = (UINTN)((Sequence - 1) * 2);
+    if (Slots[First] == DaliUfsLogSlotEmpty && Slots[First + 1] == DaliUfsLogSlotEmpty) {
+      Selected = Sequence; break;
+    }
+  }
+  if (Selected == 0) { return EFI_OUT_OF_RESOURCES; }
+  UINT64 SlotBlocks = Layout->ScratchBlocks;
+  UINT64 SlotOffset = (Selected - 1) * 2 * SlotBlocks;
+  Layout->Sequence = Selected;
+  Layout->ScratchStartLba = Layout->BootStartLba + SlotOffset;
+  Layout->TailGuardBlocks = Layout->BootBlocks - SlotOffset - SlotBlocks;
+  if (Layout->ScratchStartLba < Layout->BootStartLba ||
+      Layout->ScratchStartLba > PartitionEnd || SlotBlocks > PartitionEnd - Layout->ScratchStartLba) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  return EFI_SUCCESS;
+}
+
 // Called under the scratch driver's admission fence. The callback must retain
 // its media/closure checks on every read; this helper independently bounds all
 // requests to the verified unixnu_logs GPT extent and 1 MiB DMA transfer size.
@@ -42,6 +82,7 @@ EFI_STATUS DaliUfsSelectEmptyUserdataPair (DALI_UFS_LAYOUT *Layout, UINT64 Prefe
   VOID *Buffer = AllocateAlignedPages (EFI_SIZE_TO_PAGES (MT6991_UFS_DMA_MAX_TRANSFER), Align);
   if (Buffer == NULL) { return EFI_OUT_OF_RESOURCES; }
   BOOLEAN Empty[8];
+  DALI_UFS_LOG_SLOT_STATE States[DALI_UFS_LOG_SLOT_COUNT];
   ZeroMem (Empty, sizeof Empty);
   UINT64 SlotBlocks = Layout->ScratchBlocks;
   UINT64 ChunkBlocks = MT6991_UFS_DMA_MAX_TRANSFER / Layout->BlockSize;
@@ -76,21 +117,8 @@ EFI_STATUS DaliUfsSelectEmptyUserdataPair (DALI_UFS_LAYOUT *Layout, UINT64 Prefe
   }
   FreeAlignedPages (Buffer, EFI_SIZE_TO_PAGES (MT6991_UFS_DMA_MAX_TRANSFER));
   if (Status != EFI_SUCCESS) { return Status; }
-
-  UINT64 Selected = 0;
-  for (UINT64 Offset = 0; Offset < 4; ++Offset) {
-    UINT64 Sequence = ((Preferred - 1 + Offset) % 4) + 1;
-    UINTN First = (UINTN)((Sequence - 1) * 2);
-    if (Empty[First] && Empty[First + 1]) { Selected = Sequence; break; }
+  for (UINTN Slot = 0; Slot < ARRAY_SIZE (States); ++Slot) {
+    States[Slot] = Empty[Slot] ? DaliUfsLogSlotEmpty : DaliUfsLogSlotUnknown;
   }
-  if (Selected == 0) { return EFI_OUT_OF_RESOURCES; }
-  UINT64 SlotOffset = (Selected - 1) * 2 * SlotBlocks;
-  Layout->Sequence = Selected;
-  Layout->ScratchStartLba = Layout->BootStartLba + SlotOffset;
-  Layout->TailGuardBlocks = Layout->BootBlocks - SlotOffset - SlotBlocks;
-  if (Layout->ScratchStartLba < Layout->BootStartLba ||
-      Layout->ScratchStartLba > PartitionEnd || SlotBlocks > PartitionEnd - Layout->ScratchStartLba) {
-    return EFI_SECURITY_VIOLATION;
-  }
-  return EFI_SUCCESS;
+  return DaliUfsSelectEmptyUserdataPairFromStates (Layout, Preferred, States);
 }
