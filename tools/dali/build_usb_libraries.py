@@ -56,6 +56,7 @@ def main():
                         'usb_mtu3_device_init', 'usb_mtu3_device_log',
                         'usb_xhci_read_capabilities', 'usb_xhci_controller_start', 'usb_xhci_controller_stop',
                         'usb_xhci_controller_submit_command', 'usb_xhci_controller_next_event',
+                        'usb_xhci_root_port_reset',
                         'usb_xhci_control_submit', 'usb_xhci_control_event',
                         'usb_xhci_control_finish', 'usb_xhci_control_release_stopped',
                         'usb_xhci_controller_command', 'usb_xhci_device_prepare',
