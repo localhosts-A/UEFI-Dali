@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliPollingCpuLib
+  FILE_GUID = 89CDB144-6190-49A7-8866-E59B6DA8E923
+  MODULE_TYPE = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = CpuLib
+[Sources.AARCH64]
+  Cpu.S
+[Packages]
+  MdePkg/MdePkg.dec
