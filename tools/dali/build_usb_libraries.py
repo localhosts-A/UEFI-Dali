@@ -63,6 +63,8 @@ def main():
                         'usb_xhci_device_address', 'usb_xhci_device_configure_hub',
                         'usb_xhci_device_control', 'usb_xhci_device_disable',
                         'usb_xhci_device_release_stopped',
+                        'usb_xhci_device_configure_endpoint', 'usb_xhci_device_interrupt',
+                        'usb_xhci_device_bulk', 'usb_xhci_device_reset_endpoint',
                         'usb_xhci_transfer_ring_init', 'usb_xhci_transfer_ring_mark_active',
                         'usb_xhci_transfer_ring_enqueue', 'usb_xhci_transfer_ring_complete_through',
                         'usb_xhci_transfer_ring_halted', 'usb_xhci_transfer_ring_destroy',
