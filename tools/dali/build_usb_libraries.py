@@ -55,6 +55,7 @@ def main():
                         'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init',
                         'usb_mtu3_device_init', 'usb_mtu3_device_log',
                         'usb_xhci_read_capabilities', 'usb_xhci_controller_start', 'usb_xhci_controller_stop',
+                        'usb_xhci_controller_submit_command', 'usb_xhci_controller_next_event',
                         'usb_xhci_transfer_ring_init', 'usb_xhci_transfer_ring_mark_active',
                         'usb_xhci_transfer_ring_enqueue', 'usb_xhci_transfer_ring_complete_through',
                         'usb_xhci_transfer_ring_halted', 'usb_xhci_transfer_ring_destroy',
