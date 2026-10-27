@@ -485,7 +485,8 @@ def main ():
     cleanup_old_build (ctx.device, ctx.device_model, ctx.cleanup)
 
     # Remove Mu_Basecore Patches
-    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "Timer.patch", "Usb-Bus.patch"]:
+    mu_patches = ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "Timer.patch", "Usb-Bus.patch", "Ufs-Storage-Policy.patch"]
+    for patch_name in mu_patches:
         handle_git_patch (MU_BASECORE_PATH, patch_name, True)
 
     # Update Local Repo
@@ -506,7 +507,7 @@ def main ():
         sys.exit (1)
 
     # Apply Mu_Basecore Patches
-    for patch_name in ["AsmMacroLib.patch", "Auth-Service.patch", "Boot-Manager.patch", "Timer.patch", "Usb-Bus.patch"]:
+    for patch_name in mu_patches:
         if not handle_git_patch (MU_BASECORE_PATH, patch_name, False):
             logger.error (f"Failed to Apply \"{patch_name}\" Git Patch!")
             sys.exit (1)

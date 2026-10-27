@@ -1,0 +1,68 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliUfsHostDxe
+  FILE_GUID = 071ca928-9d14-41f2-9a35-d01287493376
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DaliUfsHostEntry
+[Sources]
+  UfsHostDxe.c
+  UfsPolicy.c
+  UfsDiagnostics.c
+  UfsShutdown.c
+  UfsScratch.c
+  UfsIdentity.c
+  UfsLayout.c
+  UfsProvenance.c
+  UfsRamMeasurement.c
+  UfsGrant.c
+  UfsLog.c
+  UfsLogConsole.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
+  CryptoPkg/CryptoPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  UniXNUPkg/UniXNUPkg.dec
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  IoLib
+  ArmSmcLib
+  PcdLib
+  Mt6991PlatformLib
+  Mt6991UfsDmaLib
+  BaseCryptLib
+  DevicePathLib
+  MemoryAllocationLib
+[FixedPcd]
+  gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsStorageToken
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsMeasurePayload
+  gDaliTokenSpaceGuid.PcdDaliUfsSourceRecord
+  gDaliTokenSpaceGuid.PcdDaliUfsScratchEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsScratchWire
+  gDaliTokenSpaceGuid.PcdDaliUfsLogEnabled
+[Protocols]
+  gEfiBlockIoProtocolGuid ## CONSUMES
+  gEfiScsiIoProtocolGuid ## SOMETIMES_CONSUMES
+  gEfiExtScsiPassThruProtocolGuid ## SOMETIMES_CONSUMES
+  gEfiCpuArchProtocolGuid ## CONSUMES
+  gDaliUfsDiagnosticProtocolGuid ## PRODUCES
+  gDaliUfsLogProtocolGuid ## SOMETIMES_PRODUCES
+  gUniXNUStorageQuiesceProtocolGuid ## PRODUCES
+  gEdkiiUfsHostControllerProtocolGuid ## PRODUCES
+  gEdkiiUfsHcPlatformProtocolGuid ## PRODUCES
+  gEfiDevicePathProtocolGuid ## PRODUCES
+  gEfiSimpleFileSystemProtocolGuid ## SOMETIMES_CONSUMES
+[Guids]
+  gEfiFileInfoGuid
+[Depex]
+  gEfiCpuArchProtocolGuid
