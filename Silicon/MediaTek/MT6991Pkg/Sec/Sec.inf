@@ -1,0 +1,71 @@
+##
+#  Copyright (c) 2015 Hewlett-Packard Development Company, L.P.
+#  Copyright (c) 2011-2017, ARM Ltd. All rights reserved.
+#  Copyright (c) 2020, Arm Limited. All rights reserved.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = Mt6991Sec
+  FILE_GUID                      = 3FCE2E6C-4D57-48AD-99F2-65C9E56D4721
+  MODULE_TYPE                    = SEC
+  VERSION_STRING                 = 1.0
+
+[Sources]
+  Sec.c
+
+[Sources.AArch64]
+  AArch64/ArchSec.c
+  AArch64/Exception.S
+  AArch64/Helper.S
+  AArch64/ModuleEntryPoint.S
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  MdePkg/MdePkg.dec
+  ArmPlatformPkg/ArmPlatformPkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+
+[LibraryClasses]
+  Mt6991PlatformLib
+  ArmLib
+  PrePiLib
+  DebugLib
+  DebugAgentLib
+  BaseMemoryLib
+  PlatformSecLib
+  PrePiHobListPointerLib
+  CacheMaintenanceLib
+  MemoryMapHelperLib
+  MemoryInitPeiLib
+  PlatformPeiLib
+  SerialPortLib
+  PrintLib
+  TimerLib
+  HobLib
+
+[Ppis]
+  gArmMpCoreInfoPpiGuid
+
+[Guids]
+  gArmMpCoreInfoGuid
+
+[Pcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString
+
+[FixedPcd]
+  gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase
+  gArmPlatformTokenSpaceGuid.PcdCPUCorePrimaryStackSize
+
+  gArmTokenSpaceGuid.PcdFdBaseAddress
+  gArmTokenSpaceGuid.PcdFdSize
+
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemManufacturer
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemModel
+
+  gEmbeddedTokenSpaceGuid.PcdPrePiCpuIoSize
