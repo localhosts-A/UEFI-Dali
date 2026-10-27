@@ -99,7 +99,7 @@ BOOLEAN Mt6991UfsScratchGrantValid (CONST MT6991_UFS_SCRATCH_GRANT *Grant) {
     UINT64 SlotOffset;
     // This target is the dedicated raw GPT partition created for Dali logs.
     // Each round reserves adjacent 4 MiB UEFI and XNU slots; this grant exposes
-    // only the UEFI slot. The XNU writer separately checks its sibling slot.
+    // only the UEFI slot. No XNU writer or sibling-slot grant exists yet.
     if (Grant->Lun != 2 || Grant->BlockSize != 4096 || Grant->CapacityBlocks != 64577536ULL ||
         Grant->BootStartLba != 64565240ULL || Grant->BootBlocks != 8192ULL ||
         Grant->CandidateBytes != 0 || Grant->ScratchBlocks != SlotBlocks ||
