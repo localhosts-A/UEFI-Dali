@@ -1,0 +1,58 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliDiagnosticBds
+  FILE_GUID = E7437B10-23C2-4568-9B18-9B1B7A3E0925
+  MODULE_TYPE = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT = DiagnosticInitialize
+[Sources]
+  DiagnosticBdsDxe.c
+  DaliUfsLogMenu.c
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  PrintLib
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DebugLib
+  MemoryAllocationLib
+  Mt6991PlatformLib
+  Mt6991UfsDmaLib
+  UefiBootManagerLib
+  UefiLib
+  TimerLib
+  DevicePathLib
+  PcdLib
+[FixedPcd]
+  gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsLogEnabled
+[Protocols]
+  gDaliUfsDiagnosticProtocolGuid ## CONSUMES
+  gDaliUfsLogProtocolGuid ## SOMETIMES_CONSUMES
+  gEfiBdsArchProtocolGuid ## PRODUCES
+  gEfiTimerArchProtocolGuid ## CONSUMES
+  gEfiCpuArchProtocolGuid ## CONSUMES
+  gEfiResetArchProtocolGuid ## CONSUMES
+  gEfiGraphicsOutputProtocolGuid ## CONSUMES
+  gEfiSimpleTextOutProtocolGuid ## CONSUMES
+  gEfiSimpleTextInProtocolGuid ## CONSUMES
+  gKeypadDeviceProtocolGuid ## CONSUMES
+  gEfiBlockIoProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiHiiStringProtocolGuid
+  gEfiHiiDatabaseProtocolGuid
+  gEfiHiiConfigRoutingProtocolGuid
+  gEfiLoadedImageProtocolGuid
+[Guids]
+  gFdtTableGuid
+  gEfiEndOfDxeEventGroupGuid
+[Depex]
+  gEfiTimerArchProtocolGuid AND gEfiCpuArchProtocolGuid AND gEfiResetArchProtocolGuid AND
+  gEfiHiiStringProtocolGuid AND gEfiHiiDatabaseProtocolGuid AND gEfiHiiConfigRoutingProtocolGuid
