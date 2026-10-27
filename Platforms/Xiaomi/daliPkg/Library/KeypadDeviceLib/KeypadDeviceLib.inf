@@ -1,0 +1,23 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = DaliKeypadDeviceLib
+  FILE_GUID = B9BD14AB-1EF3-42C4-B067-07EC21672E24
+  MODULE_TYPE = BASE
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS = KeypadDeviceLib
+  CONSTRUCTOR = KeypadDeviceConstructor
+[Sources]
+  KeypadDeviceLib.c
+  KeypadTiming.h
+  PmicKeys.c
+  PmicKeys.h
+[Packages]
+  MdePkg/MdePkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+  MT6991Pkg/MT6991Pkg.dec
+[LibraryClasses]
+  IoLib
+  FdtLib
+  DebugLib
+  TimerLib
+  BaseLib
