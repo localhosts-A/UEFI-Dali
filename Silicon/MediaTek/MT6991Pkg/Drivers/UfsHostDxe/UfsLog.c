@@ -17,6 +17,13 @@ STATIC UINT64 Get (CONST UINT8 *P, UINTN Bytes) {
 STATIC BOOLEAN Zero (CONST UINT8 *P, UINTN Bytes) {
   for (UINTN I = 0; I < Bytes; ++I) { if (P[I] != 0) { return FALSE; } } return TRUE;
 }
+STATIC BOOLEAN ValidToken (CONST UINT8 *P) {
+  if (P == NULL) { return FALSE; }
+  for (UINTN I = 0; I < 32; ++I) {
+    if (!((P[I] >= '0' && P[I] <= '9') || (P[I] >= 'a' && P[I] <= 'f'))) { return FALSE; }
+  }
+  return TRUE;
+}
 STATIC EFI_STATUS Exact (EFI_STATUS Status) {
   return Status == EFI_SUCCESS || EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR;
 }
@@ -26,10 +33,11 @@ STATIC UINTN WindowBytes (CONST MT6991_UFS_SCRATCH_GRANT *G) {
 }
 
 STATIC BOOLEAN Record (UINT8 *P, UINT32 Block, UINT32 Type,
-  CONST MT6991_UFS_SCRATCH_GRANT *G, UINT32 Owner, UINT64 Sequence,
+  CONST MT6991_UFS_SCRATCH_GRANT *G, CONST UINT8 *RecordToken,
+  UINT32 Owner, UINT64 Sequence,
   UINT32 Bytes, CONST UINT8 Digest[32]) {
   ZeroMem (P, Block); CopyMem (P, Magic, sizeof Magic);
-  Put (P + Kind, Type, 4); Put (P + Version, 1, 4); CopyMem (P + Token, G->Token, 32);
+  Put (P + Kind, Type, 4); Put (P + Version, 1, 4); CopyMem (P + Token, RecordToken, 32);
   Put (P + OwnerAt, Owner, 4); Put (P + SequenceAt, Sequence, 8);
   Put (P + LengthAt, Bytes, 4); Put (P + BlockAt, Block, 4); Put (P + BlocksAt, G->ScratchBlocks, 8);
   CopyMem (P + DeviceAt, G->DeviceBinding, 32); CopyMem (P + CandidateAt, G->CandidateSha256, 32);
@@ -40,7 +48,8 @@ STATIC BOOLEAN Record (UINT8 *P, UINT32 Block, UINT32 Type,
 }
 
 STATIC EFI_STATUS Verify (UINT8 *Read, UINT8 *Expected,
-  CONST MT6991_UFS_SCRATCH_GRANT *G, UINT32 Owner, UINT64 Sequence,
+  CONST MT6991_UFS_SCRATCH_GRANT *G, CONST UINT8 *RecordToken,
+  UINT32 Owner, UINT64 Sequence,
   UINTN Window, DALI_UFS_LOG_RESULT *Result) {
   UINT32 Block = G->BlockSize;
   CONST UINT8 *Header = Read + Block;
@@ -52,7 +61,8 @@ STATIC EFI_STATUS Verify (UINT8 *Read, UINT8 *Expected,
   ZeroMem (Expected, Window);
   for (UINT32 I = 0; I < 3; ++I) {
     UINTN At = I == 2 ? Window - Block : I * Block;
-    if (!Record (Expected + At, Block, I + 1, G, Owner, Sequence, (UINT32)Length, Digest)) { return EFI_DEVICE_ERROR; }
+    if (!Record (Expected + At, Block, I + 1, G, RecordToken, Owner, Sequence,
+        (UINT32)Length, Digest)) { return EFI_DEVICE_ERROR; }
     if (CompareMem (Expected + At, Read + At, Block)) { return EFI_COMPROMISED_DATA; }
   }
   if (!Zero (Read + 2 * Block + (UINTN)Length,
@@ -64,7 +74,8 @@ STATIC EFI_STATUS Verify (UINT8 *Read, UINT8 *Expected,
 
 EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
   CONST MT6991_UFS_SCRATCH_GRANT *G, UINT32 Owner, UINT64 Sequence,
-  BOOLEAN ReadbackOnly, CONST UINT8 *Body, UINTN BodyBytes,
+  CONST UINT8 *RecordToken, BOOLEAN ReadbackOnly,
+  CONST UINT8 *Body, UINTN BodyBytes,
   VOID *Workspace, UINTN WorkspaceBytes, DALI_UFS_LOG_RESULT *Result) {
   if (Result == NULL) { return EFI_INVALID_PARAMETER; }
   if (Result->Attempted) { return EFI_ALREADY_STARTED; }
@@ -75,6 +86,9 @@ EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
       (!ReadbackOnly && Io->WriteBlocks == NULL) || Workspace == NULL || WorkspaceBytes < DALI_UFS_LOG_WORK_BYTES) {
     return EFI_INVALID_PARAMETER;
   }
+  if (!ReadbackOnly && RecordToken == NULL) { return EFI_SECURITY_VIOLATION; }
+  if (RecordToken == NULL) { RecordToken = (CONST UINT8 *)G->Token; }
+  if (!ValidToken (RecordToken)) { return EFI_SECURITY_VIOLATION; }
   EFI_BLOCK_IO_MEDIA Media = *Io->Media;
   UINT32 Block = G->BlockSize, Align = Media.IoAlign;
   UINTN Window = WindowBytes (G);
@@ -101,12 +115,13 @@ EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
     if (!Sha256HashAll (Image + 2 * Block, BodyBytes, Digest)) { return EFI_DEVICE_ERROR; }
     for (UINT32 I = 0; I < 3; ++I) {
       UINTN At = I == 2 ? Window - Block : I * Block;
-      if (!Record (Image + At, Block, I + 1, G, Owner, Sequence, (UINT32)BodyBytes, Digest)) { return EFI_DEVICE_ERROR; }
+      if (!Record (Image + At, Block, I + 1, G, RecordToken, Owner, Sequence,
+          (UINT32)BodyBytes, Digest)) { return EFI_DEVICE_ERROR; }
     }
   }
   EFI_STATUS Status = Exact (Io->ReadBlocks (Io, Media.MediaId, 0, Window, Read));
   if (Status != EFI_SUCCESS) { return Status; }
-  if (ReadbackOnly) { return Verify (Read, Image, G, Owner, Sequence, Window, Result); }
+  if (ReadbackOnly) { return Verify (Read, Image, G, RecordToken, Owner, Sequence, Window, Result); }
   if (!Zero (Read, Window)) { return EFI_ALREADY_STARTED; }
   for (UINT32 Phase = 0; Phase < 3; ++Phase) {
     UINT64 Lba = Phase == 2 ? G->ScratchBlocks - 1 : Phase;
@@ -121,5 +136,5 @@ EFI_STATUS DaliUfsLogRun (EFI_BLOCK_IO_PROTOCOL *Io,
   Status = Exact (Io->ReadBlocks (Io, Media.MediaId, 0, Window, Read));
   if (Status != EFI_SUCCESS) { return Status; }
   if (CompareMem (Read, Image, Window)) { return EFI_COMPROMISED_DATA; }
-  return Verify (Read, Image, G, Owner, Sequence, Window, Result);
+  return Verify (Read, Image, G, RecordToken, Owner, Sequence, Window, Result);
 }

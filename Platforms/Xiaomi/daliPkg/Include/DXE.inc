@@ -16,6 +16,7 @@
   INF EmbeddedPkg/MetronomeDxe/MetronomeDxe.inf
   INF ArmPkg/Drivers/ArmGicDxe/ArmGicDxe.inf
   INF ArmPkg/Drivers/TimerDxe/TimerDxe.inf
+  INF SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
   INF daliPkg/Drivers/DisplayDxe/DisplayDxe.inf
   INF SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
   INF SiliciumPkg/Drivers/KeypadDxe/KeypadDxe.inf

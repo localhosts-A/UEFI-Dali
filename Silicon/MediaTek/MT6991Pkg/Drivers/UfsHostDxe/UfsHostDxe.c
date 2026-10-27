@@ -502,9 +502,18 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
 }
 STATIC DALI_UFS_DIAGNOSTIC_PROTOCOL mDiagnostic = { Initialize, Quiesce };
 STATIC UNIXNU_STORAGE_QUIESCE_PROTOCOL mStorage = { UNIXNU_STORAGE_QUIESCE_REVISION, StorageQuiesce };
-STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode) {
+STATIC BOOLEAN ValidRecordToken (CONST UINT8 *Token) {
+  if (Token == NULL) { return FALSE; }
+  for (UINTN I = 0; I < 32; ++I) {
+    if (!((Token[I] >= '0' && Token[I] <= '9') || (Token[I] >= 'a' && Token[I] <= 'f'))) { return FALSE; }
+  }
+  return TRUE;
+}
+STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode,
+  CONST UINT8 *RecordToken) {
   if (This != &mLogProtocol || !FixedPcdGetBool (PcdDaliUfsLogEnabled) ||
       (Mode != DALI_UFS_LOG_WRITE && Mode != DALI_UFS_LOG_READBACK)) { return EFI_ACCESS_DENIED; }
+  if (Mode == DALI_UFS_LOG_WRITE && !ValidRecordToken (RecordToken)) { return EFI_SECURITY_VIOLATION; }
   if (mClosed || mQuiescing || mQuiesced || !mGrantState.Prepared || !mScratchGrant.Enabled ||
       !mProvenance.Ready || !mIdentity.Ready) { return EFI_NOT_READY; }
   if (EfiGetCurrentTpl () != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
@@ -523,7 +532,8 @@ STATIC EFI_STATUS EFIAPI RunConsoleLog (DALI_UFS_LOG_PROTOCOL *This, UINT32 Mode
   DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a mode=%u target=%u begin sequence=%Lu owner=1\n",
     Token, Mode, mScratchGrant.Target, mGrantState.Sequence));
   EFI_STATUS Status = DaliUfsLogConsoleRun (&mLogConsole, &mScratchGrant, mGrantState.Sequence,
-    Mode == DALI_UFS_LOG_READBACK, (CONST VOID *)(UINTN)DALI_CONSOLE_BASE, DALI_CONSOLE_SIZE - 12);
+    RecordToken, Mode == DALI_UFS_LOG_READBACK,
+    (CONST VOID *)(UINTN)DALI_CONSOLE_BASE, DALI_CONSOLE_SIZE - 12);
   CHAR8 Digest[65]; STATIC CONST CHAR8 Hex[] = "0123456789abcdef";
   for (UINTN I = 0; I < 32; ++I) {
     Digest[2 * I] = Hex[mLogConsole.Record.BodySha256[I] >> 4];

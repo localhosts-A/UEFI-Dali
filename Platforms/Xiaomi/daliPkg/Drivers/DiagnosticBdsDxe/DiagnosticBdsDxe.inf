@@ -36,6 +36,7 @@
 [Protocols]
   gDaliUfsDiagnosticProtocolGuid ## CONSUMES
   gDaliUfsLogProtocolGuid ## SOMETIMES_CONSUMES
+  gEfiRngProtocolGuid ## SOMETIMES_CONSUMES
   gEfiBdsArchProtocolGuid ## PRODUCES
   gEfiTimerArchProtocolGuid ## CONSUMES
   gEfiCpuArchProtocolGuid ## CONSUMES

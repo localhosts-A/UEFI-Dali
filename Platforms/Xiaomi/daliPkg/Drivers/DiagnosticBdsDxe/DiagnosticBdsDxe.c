@@ -7,6 +7,7 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/LoadedImage.h>
+#include <Protocol/Rng.h>
 #include <Protocol/DaliUfsDiagnostic.h>
 #include <Protocol/DaliUfsLog.h>
 #include <Guid/Fdt.h>
@@ -34,6 +35,43 @@ STATIC BOOLEAN mResetQualification;
 STATIC UINT32 mResetMethod;
 STATIC UINT32 mWatchdogTimeoutSeconds = 31;
 STATIC CHAR8 mRunToken[33] = "none";
+STATIC UINT8 mLogRecordToken[33];
+STATIC BOOLEAN mLogRecordTokenReady;
+
+STATIC EFI_STATUS CreateLogRecordToken (VOID) {
+  if (mLogRecordTokenReady) { return EFI_SUCCESS; }
+  EFI_RNG_PROTOCOL *Rng = NULL;
+  EFI_STATUS Status = gBS->LocateProtocol (&gEfiRngProtocolGuid, NULL, (VOID **)&Rng);
+  if (Status != EFI_SUCCESS || Rng == NULL || Rng->GetRNG == NULL) {
+    ZeroMem (mLogRecordToken, sizeof mLogRecordToken);
+    return Status == EFI_SUCCESS ? EFI_NOT_READY : Status;
+  }
+  UINT8 Entropy[16];
+  ZeroMem (Entropy, sizeof Entropy);
+  Status = Rng->GetRNG (Rng, NULL, sizeof Entropy, Entropy);
+  if (Status != EFI_SUCCESS) {
+    ZeroMem (Entropy, sizeof Entropy);
+    ZeroMem (mLogRecordToken, sizeof mLogRecordToken);
+    return Status;
+  }
+  UINT8 Any = 0;
+  for (UINTN I = 0; I < sizeof Entropy; ++I) { Any |= Entropy[I]; }
+  if (Any == 0) {
+    ZeroMem (Entropy, sizeof Entropy);
+    ZeroMem (mLogRecordToken, sizeof mLogRecordToken);
+    return EFI_SECURITY_VIOLATION;
+  }
+  STATIC CONST UINT8 Hex[] = "0123456789abcdef";
+  for (UINTN I = 0; I < sizeof Entropy; ++I) {
+    mLogRecordToken[2 * I] = Hex[Entropy[I] >> 4];
+    mLogRecordToken[2 * I + 1] = Hex[Entropy[I] & 0x0f];
+  }
+  mLogRecordToken[32] = 0;
+  ZeroMem (Entropy, sizeof Entropy);
+  mLogRecordTokenReady = TRUE;
+  return EFI_SUCCESS;
+}
+
 STATIC VOID EFIAPI Tick (IN EFI_EVENT Event, IN VOID *Context) { mTicks++; }
 STATIC VOID EFIAPI Heartbeat (IN EFI_EVENT Event, IN VOID *Context) {
   ++mHeartbeats;
@@ -306,7 +344,8 @@ STATIC VOID DisplayAndInputProbe (VOID) {
         DALI_UFS_LOG_PROTOCOL *Log = NULL;
         EFI_STATUS LogStatus = gBS->LocateProtocol (&gDaliUfsLogProtocolGuid, NULL, (VOID **)&Log);
         if (!EFI_ERROR (LogStatus) && Log != NULL && Log->Revision == DALI_UFS_LOG_REVISION && Log->Run != NULL) {
-          LogStatus = Log->Run (Log, DALI_UFS_LOG_WRITE);
+          LogStatus = CreateLogRecordToken ();
+          if (LogStatus == EFI_SUCCESS) { LogStatus = Log->Run (Log, DALI_UFS_LOG_WRITE, mLogRecordToken); }
         } else if (!EFI_ERROR (LogStatus)) {
           LogStatus = EFI_UNSUPPORTED;
         }

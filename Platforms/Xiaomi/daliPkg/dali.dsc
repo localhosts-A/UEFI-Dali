@@ -88,6 +88,12 @@
   MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
   MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
   MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
+  SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf {
+    <LibraryClasses>
+      # RNDR is used only when the CPU capability register advertises support;
+      # otherwise the provider exposes no algorithm and persistent logging fails closed.
+      RngLib|MdePkg/Library/BaseRngLib/BaseRngLib.inf
+  }
   daliPkg/Drivers/PayloadDxe/PayloadDxe.inf
   DarwinBootPkg/Driver/DarwinBoot.inf
   UniXNUPkg/Application/UniXNU/UniXNU.inf

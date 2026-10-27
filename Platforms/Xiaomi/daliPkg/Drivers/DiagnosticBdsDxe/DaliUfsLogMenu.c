@@ -4,7 +4,7 @@
 #include "DaliUfsLogMenu.h"
 
 EFI_STATUS DaliUfsLogMenu (EFI_SIMPLE_TEXT_INPUT_PROTOCOL *In,
-  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *Out) {
+  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *Out, CONST UINT8 *RecordToken) {
   if (In == NULL || In->ReadKeyStroke == NULL || Out == NULL || Out->OutputString == NULL) { return EFI_UNSUPPORTED; }
   DALI_UFS_LOG_PROTOCOL *Log = NULL;
   EFI_STATUS Status = gBS->LocateProtocol (&gDaliUfsLogProtocolGuid, NULL, (VOID **)&Log);
@@ -21,7 +21,9 @@ EFI_STATUS DaliUfsLogMenu (EFI_SIMPLE_TEXT_INPUT_PROTOCOL *In,
         Status = Out->OutputString (Out, Mode == DALI_UFS_LOG_WRITE ? L"Selected: WRITE new userdata log\r\n" : L"Selected: READBACK (no writes)\r\n");
         if (Status != EFI_SUCCESS) { return EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR; }
       }
-      else if (Key.UnicodeChar == CHAR_CARRIAGE_RETURN || Key.ScanCode == 0x0102) { return Log->Run (Log, Mode); }
+      else if (Key.UnicodeChar == CHAR_CARRIAGE_RETURN || Key.ScanCode == 0x0102) {
+        return Log->Run (Log, Mode, RecordToken);
+      }
     }
     gBS->Stall (10000);
   }
