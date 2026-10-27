@@ -46,7 +46,7 @@ def main():
     subprocess.run(command, cwd=output, env=env, check=True)
     artifacts, members, definitions = {}, {}, {}
     required = {
-        'UsbCoreLib': (('UsbCore', 'UsbHost', 'UsbStorage', 'UsbMtu3Qmu', 'UsbMtu3Ep0', 'UsbMtu3Endpoints', 'UsbMtu3Device', 'UsbXhci'),
+        'UsbCoreLib': (('UsbCore', 'UsbHost', 'UsbStorage', 'UsbMtu3Qmu', 'UsbMtu3Ep0', 'UsbMtu3Endpoints', 'UsbMtu3Device', 'UsbXhci', 'UsbXhciController'),
                        ('usb_cdc_control', 'usb_host_enumerate', 'usb_host_start_storage',
                         'usb_host_poll_input', 'usb_host_disconnect', 'usb_host_hub_start',
                         'usb_host_hub_poll', 'usb_host_hub_child_route', 'usb_host_hub_stop',
@@ -54,7 +54,7 @@ def main():
                         'usb_block_io_sync', 'usb_block_io_quiesce', 'usb_block_io_detach',
                         'usb_qmu_init', 'usb_mtu3_ep0_init', 'usb_mtu3_endpoints_init',
                         'usb_mtu3_device_init', 'usb_mtu3_device_log',
-                        'usb_xhci_read_capabilities',
+                        'usb_xhci_read_capabilities', 'usb_xhci_controller_start', 'usb_xhci_controller_stop',
                         'usb_xhci_transfer_ring_init', 'usb_xhci_transfer_ring_mark_active',
                         'usb_xhci_transfer_ring_enqueue', 'usb_xhci_transfer_ring_complete_through',
                         'usb_xhci_transfer_ring_halted', 'usb_xhci_transfer_ring_destroy',
