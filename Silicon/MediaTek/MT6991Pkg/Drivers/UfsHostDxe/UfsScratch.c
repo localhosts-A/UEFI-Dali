@@ -2,6 +2,7 @@
 #include <Uefi.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DevicePathLib.h>
+#include <Library/Mt6991UfsDmaLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
@@ -9,6 +10,7 @@
 #include <Protocol/ScsiIo.h>
 #include "UfsScratch.h"
 #include "UfsLayout.h"
+#include "UfsSlotScan.h"
 
 typedef struct {
   EFI_BLOCK_IO_PROTOCOL Io;
@@ -174,7 +176,8 @@ STATIC BOOLEAN RootLun (CONST EFI_DEVICE_PATH_PROTOCOL *Parent, CONST EFI_DEVICE
 
 STATIC EFI_STATUS ReadLayout (VOID *Context, UINT8 Lun, UINT64 Lba, UINTN Bytes, VOID *Buffer) {
   (VOID)Context;
-  if (Lun != mScratch.Grant.Lun || mScratch.CloseRequested || *mScratch.HostClosed || !SameMedia ()) {
+  if (!mScratch.Busy || Lun != mScratch.Grant.Lun || mScratch.CloseRequested ||
+      *mScratch.HostClosed || !SameMedia ()) {
     return EFI_MEDIA_CHANGED;
   }
   EFI_STATUS Status = mScratch.Parent->ReadBlocks (mScratch.Parent, mScratch.Media.MediaId, Lba, Bytes, Buffer);
@@ -239,6 +242,12 @@ EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
   DALI_UFS_LAYOUT Layout;
   Status = DaliUfsInspectScratchLayout (Geometry, &mScratch.Grant, ReadLayout, NULL,
     Workspace, DALI_UFS_LAYOUT_WORK_BYTES, &Layout);
+  if (Status == EFI_SUCCESS && Layout.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
+    // Keep shutdown admission fenced across the complete partition scan too;
+    // CloseAdmission must not stop or disconnect the parent during a read.
+    Status = DaliUfsSelectEmptyUserdataPair (&Layout, mScratch.Grant.Sequence,
+      mScratch.ParentAlign, mScratch.ScsiAlign, ReadLayout, NULL);
+  }
   mScratch.Busy = FALSE;
   FreeAlignedPages (Workspace, EFI_SIZE_TO_PAGES (DALI_UFS_LAYOUT_WORK_BYTES));
   if (Status != EFI_SUCCESS) { return Status; }
@@ -249,8 +258,19 @@ EFI_STATUS DaliUfsScratchPublishChecked (EFI_HANDLE Controller,
     Status = Authorize (Context, &mScratch.Grant, &Layout, &Live);
     mScratch.Busy = FALSE;
     if (Status != EFI_SUCCESS) { return EFI_ERROR (Status) ? Status : EFI_SECURITY_VIOLATION; }
-    if (Live == NULL || CompareMem (Live, &mScratch.Grant, sizeof *Live) ||
-        mScratch.CloseRequested || *mScratch.HostClosed) { return EFI_SECURITY_VIOLATION; }
+    if (Live == NULL || mScratch.CloseRequested || *mScratch.HostClosed) { return EFI_SECURITY_VIOLATION; }
+    if (mScratch.Grant.Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
+      MT6991_UFS_SCRATCH_GRANT Selected = mScratch.Grant;
+      Selected.Sequence = Layout.Sequence;
+      Selected.ScratchStartLba = Layout.ScratchStartLba;
+      Selected.TailGuardBlocks = Layout.TailGuardBlocks;
+      if (!Mt6991UfsScratchGrantValid (Live) || CompareMem (Live, &Selected, sizeof Selected)) {
+        return EFI_SECURITY_VIOLATION;
+      }
+      CopyMem (&mScratch.Grant, Live, sizeof mScratch.Grant);
+    } else if (CompareMem (Live, &mScratch.Grant, sizeof *Live)) {
+      return EFI_SECURITY_VIOLATION;
+    }
     mScratch.LiveGrant = Live;
     if (!SameMedia ()) { return EFI_MEDIA_CHANGED; }
   }

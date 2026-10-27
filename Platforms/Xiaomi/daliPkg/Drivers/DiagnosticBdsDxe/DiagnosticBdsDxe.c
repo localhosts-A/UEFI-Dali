@@ -8,6 +8,7 @@
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/DaliUfsDiagnostic.h>
+#include <Protocol/DaliUfsLog.h>
 #include <Guid/Fdt.h>
 #include <Guid/EventGroup.h>
 #include <Library/BaseLib.h>
@@ -23,7 +24,6 @@
 #include <Library/PcdLib.h>
 #include <Configuration/BootDevices.h>
 #include "DaliBootPolicy.h"
-#include "DaliUfsLogMenu.h"
 
 STATIC volatile UINTN mTicks;
 STATIC EFI_HANDLE mBdsImage;
@@ -303,10 +303,16 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       if (!EFI_ERROR (UfsStatus)) { UfsStatus = Ufs->Initialize ((VOID *)(UINTN)DALI_FDT_BASE, &Controller); }
       DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: diagnostic initialization=%r\n", UfsStatus));
       if (UfsStatus == EFI_SUCCESS && FixedPcdGetBool (PcdDaliUfsLogEnabled)) {
-        EFI_STATUS LogStatus = DaliUfsLogMenu (In, Out);
-        DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a menu=%r\n", mRunToken, LogStatus));
+        DALI_UFS_LOG_PROTOCOL *Log = NULL;
+        EFI_STATUS LogStatus = gBS->LocateProtocol (&gDaliUfsLogProtocolGuid, NULL, (VOID **)&Log);
+        if (!EFI_ERROR (LogStatus) && Log != NULL && Log->Revision == DALI_UFS_LOG_REVISION && Log->Run != NULL) {
+          LogStatus = Log->Run (Log, DALI_UFS_LOG_WRITE);
+        } else if (!EFI_ERROR (LogStatus)) {
+          LogStatus = EFI_UNSUPPORTED;
+        }
+        DEBUG ((DEBUG_WARN, "DALI-UFS-LOG: run=%a automatic-write=%r\n", mRunToken, LogStatus));
         if (Out != NULL) {
-          UnicodeSPrint (Text, sizeof Text, L"UFS: log menu result=%r (0x%lx)\r\n", LogStatus, LogStatus);
+          UnicodeSPrint (Text, sizeof Text, L"UFS: automatic log result=%r (0x%lx)\r\n", LogStatus, LogStatus);
           Out->OutputString (Out, Text);
         }
       }

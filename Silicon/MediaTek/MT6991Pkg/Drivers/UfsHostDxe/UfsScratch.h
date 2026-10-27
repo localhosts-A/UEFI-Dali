@@ -4,9 +4,10 @@
 #include "UfsLayout.h"
 #include <Protocol/BlockIo.h>
 
-// Invoked after real GPT inspection and before child installation. Until then
-// Proposal is never the host's live write grant. Callback returns the verified
-// live grant pointer, which all subsequent requests recheck for revocation.
+// Invoked after real GPT inspection (and, for userdata logs, a bounded read-only
+// scan that selects a wholly empty UEFI/XNU pair) before child installation.
+// Until then Proposal is never the host's live write grant. Callback returns
+// the verified live grant pointer, which all later requests recheck for revocation.
 // An enabled proposal with no authorizer is always refused.
 typedef EFI_STATUS (*DALI_UFS_SCRATCH_AUTHORIZE)(VOID *Context,
   CONST MT6991_UFS_SCRATCH_GRANT *Proposal, CONST DALI_UFS_LAYOUT *Observed,

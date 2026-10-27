@@ -53,18 +53,40 @@ EFI_STATUS DaliUfsGrantAuthorize (DALI_UFS_GRANT_STATE *S,
   if (S == NULL || !S->Attempted || !S->Prepared || S->AuthorizationAttempted) { return EFI_ACCESS_DENIED; }
   S->AuthorizationAttempted = TRUE;
   CONST MT6991_UFS_SCRATCH_GRANT *G = &S->Proposal;
+  MT6991_UFS_SCRATCH_GRANT Selected = *G;
   if (Closed || !Mt6991UfsScratchGrantValid (G) || Identity == NULL || !Identity->Attempted || !Identity->Ready ||
       Provenance == NULL || !Provenance->Ready || CompareMem (Provenance, &S->Provenance, sizeof *Provenance) ||
       CompareMem (Identity->Digest, G->DeviceBinding, 32) || Geometry == NULL || L == NULL || !L->Verified ||
       L->Target != G->Target || L->Lun != G->Lun ||
       L->BlockSize != G->BlockSize || L->CapacityBlocks != G->CapacityBlocks ||
       L->BootStartLba != G->BootStartLba || L->BootBlocks != G->BootBlocks ||
-      L->ScratchStartLba != G->ScratchStartLba || L->ScratchBlocks != G->ScratchBlocks ||
-      L->TailGuardBlocks != G->TailGuardBlocks || CompareMem (L->PartitionGuid, G->PartitionGuid, 16)) {
+      L->ScratchBlocks != G->ScratchBlocks || CompareMem (L->PartitionGuid, G->PartitionGuid, 16)) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  if (G->Target == MT6991_UFS_TARGET_USERDATA_LOGS) {
+    if (L->Sequence == 0 || L->Sequence > 4 || L->BootBlocks != 8192ULL ||
+        L->BlockSize != 4096 || L->ScratchBlocks != MT6991_UFS_DATA_LOG_SLOT_BYTES / 4096ULL) {
+      return EFI_SECURITY_VIOLATION;
+    }
+    UINT64 SlotOffset = (L->Sequence - 1) * 2 * L->ScratchBlocks;
+    Selected.Sequence = L->Sequence;
+    Selected.ScratchStartLba = L->BootStartLba + SlotOffset;
+    Selected.TailGuardBlocks = L->BootBlocks - SlotOffset - L->ScratchBlocks;
+  } else if (L->Sequence != G->Sequence || L->ScratchStartLba != G->ScratchStartLba ||
+             L->TailGuardBlocks != G->TailGuardBlocks) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  if (!Mt6991UfsScratchGrantValid (&Selected) || L->Sequence != Selected.Sequence ||
+      L->ScratchStartLba != Selected.ScratchStartLba || L->TailGuardBlocks != Selected.TailGuardBlocks) {
     return EFI_SECURITY_VIOLATION;
   }
   UINT64 Absolute, Count;
-  EFI_STATUS Status = Mt6991UfsScratchMapRange (Geometry, G, G->Lun, 0, G->BlockSize, TRUE, &Absolute, &Count);
-  if (Status != EFI_SUCCESS || Absolute != G->ScratchStartLba || Count != 1) { return EFI_SECURITY_VIOLATION; }
-  *Live = *G; return EFI_SUCCESS;
+  EFI_STATUS Status = Mt6991UfsScratchMapRange (Geometry, &Selected, Selected.Lun, 0,
+    Selected.BlockSize, TRUE, &Absolute, &Count);
+  if (Status != EFI_SUCCESS || Absolute != Selected.ScratchStartLba || Count != 1) {
+    return EFI_SECURITY_VIOLATION;
+  }
+  S->Proposal = Selected;
+  S->Sequence = Selected.Sequence;
+  *Live = Selected; return EFI_SUCCESS;
 }

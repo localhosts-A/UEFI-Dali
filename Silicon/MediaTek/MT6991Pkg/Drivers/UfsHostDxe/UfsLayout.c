@@ -135,6 +135,7 @@ EFI_STATUS DaliUfsInspectScratchLayout (CONST MT6991_UFS_GEOMETRY *Geometry,
   ZeroMem (&L, sizeof L);
   L.Lun = Expected->Lun; L.BlockSize = G.BlockSize; L.CapacityBlocks = G.Blocks;
   L.Target = Expected->Target;
+  L.Sequence = Expected->Sequence;
   L.BootStartLba = Le64 (Boot + 32); L.BootBlocks = Le64 (Boot + 40) - L.BootStartLba + 1;
   Guid (Boot + 16, L.PartitionGuid);
   L.ScratchBlocks = L.TailGuardBlocks = (UINT64)(Expected->Target == MT6991_UFS_TARGET_USERDATA_LOGS ?

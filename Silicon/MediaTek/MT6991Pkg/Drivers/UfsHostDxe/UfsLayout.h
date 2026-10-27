@@ -13,6 +13,9 @@ typedef struct {
   UINT8 Lun;
   UINT32 BlockSize, EntryCount, EntryCrc32, PrimaryCrc32, BackupCrc32;
   UINT64 CapacityBlocks, BootStartLba, BootBlocks, ScratchStartLba, ScratchBlocks, TailGuardBlocks;
+  // Physical log pair 1..4; userdata inspection initially copies the proposal,
+  // then the bounded empty-pair scan replaces it with the selected pair.
+  UINT64 Sequence;
   // RFC 4122 byte order, as in the host/XNU grant, rather than GPT's mixed endian GUID.
   UINT8 PartitionGuid[16];
   UINT32 Target;

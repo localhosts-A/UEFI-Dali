@@ -19,9 +19,10 @@ typedef struct {
 EFI_STATUS DaliUfsGrantPrepare (DALI_UFS_GRANT_STATE *State,
   CONST VOID *Wire, UINTN Bytes, CONST CHAR8 *Token, UINTN TokenBytes,
   CONST DALI_UFS_PROVENANCE *Provenance);
-// Called once, under serialized admission, only after real GPT reads. Output
-// is cleared on every failure; candidate/source and identity never self-copy
-// from expected fields to fabricate observations. Geometry is indexed by LUN.
+// Called once, under serialized admission, only after real GPT reads. Userdata
+// sequence/window fields are rebound to the scanner-selected empty physical pair.
+// Output is cleared on every failure; candidate/source and identity never
+// self-copy from expected fields to fabricate observations. Geometry is indexed by LUN.
 EFI_STATUS DaliUfsGrantAuthorize (DALI_UFS_GRANT_STATE *State,
   CONST DALI_UFS_IDENTITY *Identity, CONST DALI_UFS_PROVENANCE *Provenance,
   CONST MT6991_UFS_GEOMETRY *Geometry, CONST DALI_UFS_LAYOUT *Layout,
