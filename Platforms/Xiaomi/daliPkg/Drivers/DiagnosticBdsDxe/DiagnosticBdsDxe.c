@@ -33,6 +33,8 @@ STATIC BOOLEAN mResetQualification;
 STATIC UINT32 mResetMethod;
 STATIC UINT32 mWatchdogTimeoutSeconds = 31;
 STATIC CHAR8 mRunToken[33] = "none";
+STATIC DALI_UFS_DIAGNOSTIC_PROTOCOL *mBootStageUfs;
+STATIC BOOLEAN mBootStageStarted;
 STATIC VOID EFIAPI Tick (IN EFI_EVENT Event, IN VOID *Context) { mTicks++; }
 STATIC VOID EFIAPI Heartbeat (IN EFI_EVENT Event, IN VOID *Context) {
   ++mHeartbeats;
@@ -97,6 +99,14 @@ STATIC EFI_STATUS ReadRecoverySettings (EFI_FILE_PROTOCOL *Root) {
   return EFI_SUCCESS;
 }
 
+STATIC EFI_STATUS StopBootStageUfs (VOID) {
+  if (!mBootStageStarted || mBootStageUfs == NULL) { return EFI_SUCCESS; }
+  EFI_STATUS Status = mBootStageUfs->Quiesce ();
+  DEBUG ((DEBUG_WARN, "DALI-UFS-BOOT: returned-to-firmware quiesce=%r\n", Status));
+  if (!EFI_ERROR (Status)) { mBootStageStarted = FALSE; mBootStageUfs = NULL; }
+  return Status;
+}
+
 STATIC BOOLEAN PrepareUniXNU (VOID) {
   EFI_STATUS Status;
   EFI_HANDLE *Handles;
@@ -113,9 +123,23 @@ STATIC BOOLEAN PrepareUniXNU (VOID) {
   if (!EFI_ERROR (Status)) { Status = EfiBootManagerConnectAllDefaultConsoles (); }
   DEBUG ((DEBUG_WARN, "DALI: system consoles status=%r input=%p output=%p\n", Status, gST->ConIn, gST->ConOut));
   if (EFI_ERROR (Status) || gST->ConIn == NULL || gST->ConOut == NULL) { return FALSE; }
+  if (FixedPcdGetBool (PcdDaliUfsBootStageEnabled)) {
+    EFI_HANDLE Controller = NULL;
+    Status = gBS->SetWatchdogTimer (0, 0, 0, NULL);
+    if (!EFI_ERROR (Status)) {
+      Status = gBS->LocateProtocol (&gDaliUfsDiagnosticProtocolGuid, NULL, (VOID **)&mBootStageUfs);
+    }
+    if (!EFI_ERROR (Status)) { Status = mBootStageUfs->Initialize ((VOID *)(UINTN)DALI_FDT_BASE, &Controller); }
+    if (!EFI_ERROR (Status)) { mBootStageStarted = TRUE; Status = mBootStageUfs->PublishBootStage (); }
+    DEBUG ((DEBUG_WARN, "DALI-UFS-BOOT: controller=%p publish=%r; bounded read-only source\n", Controller, Status));
+    if (EFI_ERROR (Status)) {
+      if (mBootStageUfs != NULL && Controller != NULL) { mBootStageStarted = TRUE; StopBootStageUfs (); }
+      return FALSE;
+    }
+  }
   ConnectProtocol (&gEfiBlockIoProtocolGuid);
   Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL, &Count, &Handles);
-  if (EFI_ERROR (Status)) { return FALSE; }
+  if (EFI_ERROR (Status)) { StopBootStageUfs (); return FALSE; }
   for (UINTN I = 0; I < Count; I++) {
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
     EFI_FILE_PROTOCOL *Root, *File;
@@ -148,7 +172,9 @@ STATIC BOOLEAN PrepareUniXNU (VOID) {
   DEBUG ((DEBUG_WARN, "DALI: payload filesystem=%a volumes=%lu\n", PayloadOk ? "PASS" : "FAIL", Count));
   Status = gBS->InstallConfigurationTable (&gFdtTableGuid, (VOID *)(UINTN)DALI_FDT_BASE);
   DEBUG ((DEBUG_WARN, "DALI: EFI_DTB_TABLE status=%r\n", Status));
-  return PayloadOk && !EFI_ERROR (Status);
+  BOOLEAN Ready = PayloadOk && !EFI_ERROR (Status);
+  if (!Ready) { StopBootStageUfs (); }
+  return Ready;
 }
 
 STATIC EFI_STATUS LaunchUniXNU (VOID) {
@@ -289,7 +315,7 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       if (!EFI_ERROR (UfsStatus)) { UfsStatus = Mt6991ProbeUfs ((VOID *)(UINTN)DALI_FDT_BASE); }
       DEBUG ((DEBUG_WARN, "DALI-UFS: probe status=%r; no physical storage commands submitted\n", UfsStatus));
     }
-    if (FixedPcdGetBool (PcdDaliUfsReadOnlyEnabled)) {
+    if (FixedPcdGetBool (PcdDaliUfsReadOnlyEnabled) && !FixedPcdGetBool (PcdDaliUfsBootStageEnabled)) {
       if (mAutoFastboot || mResetQualification || FixedPcdGetBool (PcdDaliUfsProbeEnabled)) {
         DEBUG ((DEBUG_ERROR, "DALI-UFS-HOST: refused competing diagnostic/reset policy\n"));
         DiagnosticHalt ();
@@ -315,7 +341,16 @@ STATIC VOID DisplayAndInputProbe (VOID) {
       if (Out != NULL) { Out->OutputString (Out, L"UFS: stopped; opening RAM menu.\r\n"); }
     }
     DEBUG ((DEBUG_WARN, "DALI: UEFI_UNIXNU_READY\n"));
-    if (LaunchUniXNU () == EFI_ABORTED) { RecoverAfterExit (Out); }
+    EFI_STATUS LaunchStatus = LaunchUniXNU ();
+    if (EFI_ERROR (StopBootStageUfs ())) {
+      DEBUG ((DEBUG_ERROR, "DALI-UFS-BOOT: failed to close source after UniXNU returned\n"));
+      DiagnosticHalt ();
+    }
+    if (FixedPcdGetBool (PcdDaliUfsBootStageEnabled)) {
+      DEBUG ((DEBUG_ERROR, "DALI-UFS-BOOT: UniXNU returned status=%r; source is closed; manual recovery required\n", LaunchStatus));
+      DiagnosticHalt ();
+    }
+    if (LaunchStatus == EFI_ABORTED) { RecoverAfterExit (Out); }
     if (Out != NULL) {
       Out->OutputString (Out, L"\r\nReturned to dali firmware. Tap Power to reopen UniXNU.\r\n");
       Out->OutputString (Out, L"Power + Volume down: enter fastboot for Android recovery.\r\n");

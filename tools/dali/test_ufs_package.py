@@ -6,8 +6,9 @@ import struct
 import subprocess
 import tempfile
 import unittest
-from package import (ufs_probe_metadata, ufs_host_off_metadata, ufs_read_only_metadata,
-                     validate_diagnostic_payload, PHYSICAL_UFS_MODULES)
+from package import (BOOT_STAGE_DESCRIPTOR, ufs_probe_metadata, ufs_host_off_metadata,
+                     ufs_read_only_metadata, validate_boot_stage_artifacts,
+                     validate_boot_stage_descriptor, validate_diagnostic_payload, PHYSICAL_UFS_MODULES)
 from firmware_volume import BDS_GUID, LZMA_GUID, UFS_HOST_GUID, extract_bds
 
 
@@ -152,36 +153,40 @@ def combined_firmware(modules):
     return bytes(output)
 
 
+def physical_ufs_fixture(folder, token):
+    sources = [('daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG', 'Probe', b'none\0'),
+               ('MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG', 'Storage', token.encode() + b'\0')]
+    for directory, pcd, value in sources:
+        auto = folder / directory
+        auto.mkdir(parents=True, exist_ok=True)
+        (auto / 'AutoGen.h').write_text('#define _PCD_VALUE_PcdDaliUfsProbeEnabled 0U\n'
+                                      '#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled 1U\n')
+        (auto / 'AutoGen.c').write_text(f'const UINT8 _gPcd_FixedAtBuild_PcdDaliUfs{pcd}Token[{len(value)}] = {{' +
+                                      ','.join(str(byte) for byte in value) + '};\n')
+    output = folder / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/OUTPUT'
+    output.mkdir(parents=True, exist_ok=True)
+    (output / 'static_library_files.lst').write_text(
+        '/build/OpensslPkg/Library/BaseCryptLib/BaseCryptLib/OUTPUT/BaseCryptLib.lib\n')
+    modules = []
+    for name, guid in PHYSICAL_UFS_MODULES.items():
+        data = bytearray(128)
+        data[:2] = b'MZ'
+        struct.pack_into('<I', data, 0x3c, 64)
+        data[64:68] = b'PE\0\0'
+        struct.pack_into('<H', data, 68, 0xaa64)
+        data += name.encode() + b'\0'
+        if name == 'DaliUfsHostDxe':
+            data += token.encode() + b'\0'
+        (folder / (name + '.efi')).write_bytes(data)
+        modules.append((guid, bytes(data)))
+    return combined_firmware(modules)
+
+
 class PhysicalPackagingTests(unittest.TestCase):
     token = 'a1' * 16
 
     def fixture(self, folder):
-        sources = [('daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG', 'Probe', b'none\0'),
-                   ('MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG', 'Storage', self.token.encode() + b'\0')]
-        for directory, pcd, value in sources:
-            auto = folder / directory
-            auto.mkdir(parents=True, exist_ok=True)
-            (auto / 'AutoGen.h').write_text('#define _PCD_VALUE_PcdDaliUfsProbeEnabled 0U\n'
-                                          '#define _PCD_VALUE_PcdDaliUfsReadOnlyEnabled 1U\n')
-            (auto / 'AutoGen.c').write_text(f'const UINT8 _gPcd_FixedAtBuild_PcdDaliUfs{pcd}Token[{len(value)}] = {{' +
-                                          ','.join(str(b) for b in value) + '};\n')
-        output = folder / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/OUTPUT'
-        output.mkdir(parents=True, exist_ok=True)
-        (output / 'static_library_files.lst').write_text(
-            '/build/OpensslPkg/Library/BaseCryptLib/BaseCryptLib/OUTPUT/BaseCryptLib.lib\n')
-        modules = []
-        for name, guid in PHYSICAL_UFS_MODULES.items():
-            data = bytearray(128)
-            data[:2] = b'MZ'
-            struct.pack_into('<I', data, 0x3c, 64)
-            data[64:68] = b'PE\0\0'
-            struct.pack_into('<H', data, 68, 0xaa64)
-            data += name.encode() + b'\0'
-            if name == 'DaliUfsHostDxe':
-                data += self.token.encode() + b'\0'
-            (folder / (name + '.efi')).write_bytes(data)
-            modules.append((guid, bytes(data)))
-        return combined_firmware(modules)
+        return physical_ufs_fixture(folder, self.token)
 
     def test_explicit_profile_binds_both_consumers_and_all_final_fd_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -218,9 +223,93 @@ class PhysicalPackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'token mismatch'):
                 ufs_read_only_metadata(folder, self.token, fd=fd)
 
+
+class BootStagePackagingTests(unittest.TestCase):
+    token = '0123456789abcdef0123456789abcdef'
+
+    def physical_fixture(self, folder):
+        return physical_ufs_fixture(folder, self.token)
+
+    def fixture(self, root):
+        root_bytes = 1 << 20
+        boot_offset = 2 << 20
+        boot = bytes([0x5a]) * 4096
+        boot_hash = __import__('hashlib').sha256(boot).digest()
+        root_manifest_hash = __import__('hashlib').sha256(bytes(4096)).digest()
+        capacity = (15_403_518 - 7_023_103 + 1) * 4096
+        prefix = struct.pack('<8sIIQQQQQQII32s32s', b'DALIBOOT', 1, 168,
+                             root_bytes, boot_offset, len(boot), capacity,
+                             7_023_103, 15_403_518, 2, 4096,
+                             root_manifest_hash, boot_hash)
+        descriptor = prefix + __import__('hashlib').sha256(prefix).digest()
+        self.assertEqual(len(descriptor), BOOT_STAGE_DESCRIPTOR.size)
+        parsed = validate_boot_stage_descriptor(descriptor)
+        descriptor_path = root / 'boot-stage.desc'
+        descriptor_path.write_bytes(descriptor)
+        boot_path = root / 'boot-fat.img'
+        boot_path.write_bytes(boot)
+        kernel_hash, adt_hash, initrd_hash, trust_hash = ('11' * 32, '22' * 32, '33' * 32, '44' * 32)
+        names = ('EFI/UniXNU/unixnu.toml', 'EFI/UniXNU/dali-boot.conf',
+                 'EFI/UniXNU/Payloads/kernel.macho', 'EFI/UniXNU/Payloads/kernel.macho.adt',
+                 'EFI/UniXNU/Payloads/root.img', 'EFI/UniXNU/Payloads/kernel.macho.trustcache')
+        hashes = ('55' * 32, '66' * 32, kernel_hash, adt_hash, initrd_hash, trust_hash)
+        files = {name: {'bytes': 64, 'sha256': digest} for name, digest in zip(names, hashes)}
+        boot_report = {'bytes': len(boot), 'sha256': boot_hash.hex(), 'readonly': True,
+                       'physical_storage': False, 'external_boot_stage': True,
+                       'recovery': {'auto_fastboot': False, 'run_token': self.token},
+                       'files': files, 'xnu_kernel_sha256': kernel_hash,
+                       'xnu_adt_sha256': adt_hash, 'xnu_initrd_sha256': initrd_hash,
+                       'xnu_trust_cache_sha256': trust_hash, 'xnu_run_token': self.token}
+        boot_report_path = root / 'boot-fat.json'
+        boot_report_path.write_text(__import__('json').dumps(boot_report))
+        image = bytearray(boot_offset + len(boot))
+        image[boot_offset:] = boot
+        image_path = root / 'unixnu_data.img'
+        image_path.write_bytes(image)
+        image_digest = __import__('hashlib').sha256(image).hexdigest()
+        composite = {'partition_name': 'unixnu_data', 'lun': 2, 'partition_bytes': capacity,
+                     'root_image_bytes': root_bytes, 'root_manifest_sha256': root_manifest_hash.hex(),
+                     'root_windows': ['OS', 'SystemOS'], 'boot_stage_offset_bytes': boot_offset,
+                     'boot_stage_bytes': len(boot), 'boot_stage_sha256': boot_hash.hex(),
+                     'firmware_descriptor_bytes': len(descriptor),
+                     'firmware_descriptor_sha256': __import__('hashlib').sha256(descriptor).hexdigest(),
+                     'partition_image_bytes': len(image), 'partition_image_sha256': image_digest,
+                     'physical_ufs_qualified': False}
+        composite_path = root / 'unixnu_data.json'
+        composite_path.write_text(__import__('json').dumps(composite))
+        payload = {'external_boot_stage': True, 'readonly': True, 'physical_storage': False,
+                   'bytes': len(boot), 'sha256': boot_hash.hex(), 'xnu_run_token': self.token,
+                   'recovery': {'auto_fastboot': False, 'run_token': self.token},
+                   'xnu_kernel_sha256': kernel_hash, 'xnu_adt_sha256': adt_hash,
+                   'xnu_initrd_sha256': initrd_hash, 'xnu_trust_cache_sha256': trust_hash}
+        return parsed, descriptor_path, boot_path, boot_report_path, image_path, composite_path, payload
+
+    def test_descriptor_and_composite_boot_stage_are_cross_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parsed, descriptor, boot, boot_report, image, composite, payload = self.fixture(root)
+            result = validate_boot_stage_artifacts(payload, parsed, self.token, descriptor,
+                                                   boot, boot_report, image, composite)
+            self.assertEqual(result['mode'], 'read-only-ufs-boot-stage')
+            self.assertEqual(result['lun'], 2)
+            self.assertFalse(result['physical_ufs_qualified'])
+
+    def test_descriptor_rejects_corruption_and_boot_stage_requires_all_sidecars(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parsed, descriptor, boot, boot_report, image, composite, payload = self.fixture(root)
+            bad = bytearray(descriptor.read_bytes())
+            bad[40] ^= 1
+            with self.assertRaisesRegex(ValueError, 'invalid Dali geometry|digest'):
+                validate_boot_stage_descriptor(bytes(bad))
+            payload['recovery']['auto_fastboot'] = True
+            with self.assertRaisesRegex(ValueError, 'manual recovery'):
+                validate_boot_stage_artifacts(payload, parsed, self.token, descriptor,
+                                              boot, boot_report, image, composite)
+
     def test_null_mixed_duplicate_or_missing_sha_link_library_cannot_be_packaged(self):
         with tempfile.TemporaryDirectory() as tmp:
-            folder = Path(tmp); fd = self.fixture(folder)
+            folder = Path(tmp); fd = self.physical_fixture(folder)
             path = folder / 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/OUTPUT/static_library_files.lst'
             real = path.read_text()
             null = '/build/CryptoPkg/Library/BaseCryptLibNull/BaseCryptLibNull/OUTPUT/BaseCryptLibNull.lib\n'
@@ -236,16 +325,16 @@ class PhysicalPackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             for name in PHYSICAL_UFS_MODULES:
-                fd = self.fixture(folder)
+                fd = self.physical_fixture(folder)
                 (folder / (name + '.efi')).write_bytes(b'MZstale')
                 with self.assertRaisesRegex(ValueError, 'differs'):
                     ufs_read_only_metadata(folder, self.token, fd=fd)
-            self.fixture(folder)
+            self.physical_fixture(folder)
             path = folder / 'ScsiDisk.efi'; data = bytearray(path.read_bytes()); data[68:70] = b'\x64\x86'; path.write_bytes(data)
             modules = [(guid, (folder / (name + '.efi')).read_bytes()) for name, guid in PHYSICAL_UFS_MODULES.items()]
             with self.assertRaisesRegex(ValueError, 'not ARM64'):
                 ufs_read_only_metadata(folder, self.token, fd=combined_firmware(modules))
-            self.fixture(folder)
+            self.physical_fixture(folder)
             modules = [(guid, (folder / (name + '.efi')).read_bytes()) for name, guid in PHYSICAL_UFS_MODULES.items()]
             for changed in (modules[:-1], modules + [modules[-1]]):
                 with self.assertRaisesRegex(ValueError, 'exactly one'):

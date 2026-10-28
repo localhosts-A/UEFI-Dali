@@ -23,6 +23,8 @@ PHYSICAL_UFS_MODULES = {
     'PartitionDxe': uuid.UUID('1fa1f39e-feff-4aae-bd7b-38a070a3b609').bytes_le,
 }
 XNU_UFS_PAYLOAD_GUID = uuid.UUID('073e16da-8776-4fba-96c4-35bbe06a41df').bytes_le
+BOOT_STAGE_FILE_GUID = uuid.UUID('2a20dc84-3c0b-4750-95f9-431436d6ad82').bytes_le
+BOOT_STAGE_DESCRIPTOR = struct.Struct('<8sIIQQQQQQII32s32s32s')
 
 
 def _probe_record(module, source, token):
@@ -132,6 +134,134 @@ def ufs_read_only_metadata(build, token, *, fd):
     return probe, host
 
 
+def sha256_file(path, *, offset=0, length=None):
+    digest = hashlib.sha256()
+    remaining = None if length is None else length
+    with Path(path).open('rb', buffering=0) as stream:
+        stream.seek(offset)
+        while remaining is None or remaining:
+            amount = 8 * 1024 * 1024 if remaining is None else min(8 * 1024 * 1024, remaining)
+            data = stream.read(amount)
+            if not data:
+                break
+            digest.update(data)
+            if remaining is not None:
+                remaining -= len(data)
+    if remaining not in (None, 0):
+        raise ValueError('short image read while verifying Boot stage')
+    return digest.hexdigest()
+
+
+def validate_boot_stage_descriptor(data):
+    if not isinstance(data, bytes) or len(data) != BOOT_STAGE_DESCRIPTOR.size:
+        raise ValueError('Boot stage descriptor has the wrong fixed size')
+    fields = BOOT_STAGE_DESCRIPTOR.unpack(data)
+    (magic, version, descriptor_bytes, root_bytes, boot_offset, boot_bytes, partition_bytes,
+     first_lba, last_lba, lun, block_size, root_manifest_sha, boot_sha, descriptor_sha) = fields
+    prefix = data[:-32]
+    if (magic != b'DALIBOOT' or version != 1 or descriptor_bytes != BOOT_STAGE_DESCRIPTOR.size or
+            hashlib.sha256(prefix).digest() != descriptor_sha or root_bytes < 1 << 20 or
+            boot_offset < root_bytes or boot_offset % (1 << 20) or boot_bytes == 0 or
+            boot_offset % 4096 or boot_bytes % 4096 or block_size != 4096 or lun != 2 or
+            first_lba != 7_023_103 or last_lba != 15_403_518 or
+            partition_bytes != (last_lba - first_lba + 1) * block_size or
+            boot_offset + boot_bytes > partition_bytes):
+        raise ValueError('Boot stage descriptor has invalid Dali geometry, bounds or digest')
+    return {
+        'root_image_bytes': root_bytes,
+        'boot_stage_offset_bytes': boot_offset,
+        'boot_stage_bytes': boot_bytes,
+        'partition_bytes': partition_bytes,
+        'first_lba': first_lba,
+        'last_lba': last_lba,
+        'lun': lun,
+        'block_size': block_size,
+        'root_manifest_sha256': root_manifest_sha.hex(),
+        'boot_stage_sha256': boot_sha.hex(),
+        'descriptor_sha256': hashlib.sha256(data).hexdigest(),
+    }
+
+
+def ufs_boot_stage_metadata(build, token, *, fd, descriptor_path):
+    probe, host = ufs_read_only_metadata(build, token, fd=fd)
+    descriptor = Path(descriptor_path).read_bytes()
+    parsed = validate_boot_stage_descriptor(descriptor)
+    for label, directory in (
+        ('bds', 'daliPkg/Drivers/DiagnosticBdsDxe/DiagnosticBdsDxe/DEBUG'),
+        ('host', 'MT6991Pkg/Drivers/UfsHostDxe/UfsHostDxe/DEBUG'),
+        ('payload', 'daliPkg/Drivers/PayloadDxe/PayloadDxe/DEBUG'),
+    ):
+        header = (build / directory / 'AutoGen.h').read_text()
+        if not re.search(r'^#define _PCD_VALUE_PcdDaliUfsBootStageEnabled\s+1U\s*$', header, re.M):
+            raise ValueError('compiled ' + label + ' Boot-stage PCD is disabled')
+    actual = extract_module(fd, BOOT_STAGE_FILE_GUID, 'Boot stage descriptor',
+                            section_type=0x19, expected_file_type=0x02)
+    if actual != descriptor:
+        raise ValueError('final FD Boot stage descriptor differs from the composed partition image')
+    host.update(mode='boot-stage', boot_stage_enabled=True,
+                descriptor_sha256=parsed['descriptor_sha256'],
+                descriptor_verified_in_final_fd=True)
+    return probe, host, parsed
+
+
+def validate_boot_stage_artifacts(payload, descriptor_fields, token, descriptor_path, boot_fat,
+                                  boot_fat_report_path, partition_image, partition_report_path):
+    if (not isinstance(payload, dict) or payload.get('external_boot_stage') is not True or \
+            payload.get('readonly') is not True or payload.get('physical_storage') is not False or \
+            payload.get('recovery', {}).get('auto_fastboot') is not False or
+            payload.get('xnu_run_token') != token or payload.get('recovery', {}).get('run_token') != token):
+        raise ValueError('payload does not require manual recovery for an external read-only Boot stage')
+    boot_report = json.loads(Path(boot_fat_report_path).read_text())
+    if (boot_report.get('bytes') != descriptor_fields['boot_stage_bytes'] or
+            boot_report.get('sha256') != descriptor_fields['boot_stage_sha256'] or
+            payload.get('bytes') != boot_report.get('bytes') or payload.get('sha256') != boot_report.get('sha256')):
+        raise ValueError('external Boot FAT hash/size differs from the firmware descriptor')
+    files = boot_report.get('files', {})
+    for name in ('EFI/UniXNU/unixnu.toml', 'EFI/UniXNU/dali-boot.conf',
+                 'EFI/UniXNU/Payloads/kernel.macho', 'EFI/UniXNU/Payloads/kernel.macho.adt',
+                 'EFI/UniXNU/Payloads/root.img', 'EFI/UniXNU/Payloads/kernel.macho.trustcache'):
+        if name not in files:
+            raise ValueError('external Boot FAT lacks required iPadOS boot member: ' + name)
+    if (files['EFI/UniXNU/Payloads/kernel.macho']['sha256'] != payload.get('xnu_kernel_sha256') or
+            files['EFI/UniXNU/Payloads/kernel.macho.adt']['sha256'] != payload.get('xnu_adt_sha256') or
+            files['EFI/UniXNU/Payloads/root.img']['sha256'] != payload.get('xnu_initrd_sha256') or
+            files['EFI/UniXNU/Payloads/kernel.macho.trustcache']['sha256'] != payload.get('xnu_trust_cache_sha256')):
+        raise ValueError('external Boot FAT members differ from payload input hashes')
+    if sha256_file(boot_fat) != descriptor_fields['boot_stage_sha256']:
+        raise ValueError('external Boot FAT file changed after firmware descriptor generation')
+
+    record = json.loads(Path(partition_report_path).read_text())
+    if (record.get('root_windows') != ['OS', 'SystemOS'] or
+            record.get('root_image_bytes') != descriptor_fields['root_image_bytes'] or
+            record.get('root_manifest_sha256') != descriptor_fields['root_manifest_sha256'] or
+            record.get('boot_stage_offset_bytes') != descriptor_fields['boot_stage_offset_bytes'] or
+            record.get('boot_stage_bytes') != descriptor_fields['boot_stage_bytes'] or
+            record.get('boot_stage_sha256') != descriptor_fields['boot_stage_sha256'] or
+            record.get('partition_bytes') != descriptor_fields['partition_bytes'] or
+            record.get('lun') != 2 or record.get('physical_ufs_qualified') is not False):
+        raise ValueError('composite unixnu_data report contradicts the firmware descriptor')
+    descriptor = Path(descriptor_path).read_bytes()
+    if hashlib.sha256(descriptor).hexdigest() != record.get('firmware_descriptor_sha256'):
+        raise ValueError('partition report does not bind the embedded descriptor')
+    image = Path(partition_image)
+    if image.stat().st_size != record.get('partition_image_bytes') or \
+            sha256_file(image) != record.get('partition_image_sha256'):
+        raise ValueError('composite unixnu_data image does not match its report')
+    if sha256_file(image, offset=descriptor_fields['boot_stage_offset_bytes'],
+                   length=descriptor_fields['boot_stage_bytes']) != descriptor_fields['boot_stage_sha256']:
+        raise ValueError('composite unixnu_data Boot region differs from the pinned Boot FAT')
+    return {
+        'enabled': True, 'mode': 'read-only-ufs-boot-stage', 'lun': 2,
+        'descriptor_sha256': descriptor_fields['descriptor_sha256'],
+        'partition_image_bytes': record['partition_image_bytes'],
+        'partition_image_sha256': record['partition_image_sha256'],
+        'boot_stage_offset_bytes': descriptor_fields['boot_stage_offset_bytes'],
+        'boot_stage_bytes': descriptor_fields['boot_stage_bytes'],
+        'boot_stage_sha256': descriptor_fields['boot_stage_sha256'],
+        'physical_ufs_qualified': False, 'media_writes_qualified': False,
+    }
+
+
 def validate_diagnostic_payload(payload):
     if (not isinstance(payload, dict) or not isinstance(payload.get('recovery'), dict) or
             payload.get('xnu_kernel_sha256') is not None or payload.get('xnu_ramdisk_sha256') is not None or
@@ -168,8 +298,14 @@ def main():
     profile = p.add_mutually_exclusive_group()
     profile.add_argument("--ufs-probe-token", help="bind opt-in read-only firmware register snapshot")
     profile.add_argument("--ufs-read-only-token", help="bind the explicit physical read-only BlockIo diagnostic")
+    profile.add_argument("--ufs-boot-stage-token", help="bind external read-only Boot FAT to the final firmware/data images")
     profile.add_argument("--ufs-xnu-read-only-token", help="bind the combined firmware/XNU read-only ownership trial")
     p.add_argument("--ufs-xnu-live-fdt", type=Path, help="live raw FDT used to validate the XNU UFS ADT node")
+    p.add_argument("--boot-stage-descriptor", type=Path)
+    p.add_argument("--boot-fat", type=Path)
+    p.add_argument("--boot-fat-report", type=Path)
+    p.add_argument("--userdata-image", type=Path)
+    p.add_argument("--userdata-report", type=Path)
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
     mu = args.mu.resolve()
@@ -211,8 +347,17 @@ def main():
     if fd.stat().st_size != fd_size:
         raise SystemExit("Unexpected dali FD size")
     loader_measurement = None
+    boot_stage_fields = None
     try:
-        if args.ufs_xnu_read_only_token is not None:
+        if args.ufs_boot_stage_token is not None:
+            required = (args.boot_stage_descriptor, args.boot_fat, args.boot_fat_report,
+                        args.userdata_image, args.userdata_report)
+            if any(path is None or not path.is_file() for path in required):
+                raise ValueError('Boot-stage package requires descriptor, Boot FAT/report and composite userdata image/report')
+            probe, host, boot_stage_fields = ufs_boot_stage_metadata(
+                fd.parent.parent / 'AARCH64', args.ufs_boot_stage_token,
+                fd=fd.read_bytes(), descriptor_path=args.boot_stage_descriptor)
+        elif args.ufs_xnu_read_only_token is not None:
             probe, host = ufs_read_only_metadata(fd.parent.parent / "AARCH64", args.ufs_xnu_read_only_token, fd=fd.read_bytes())
             loader_measurement = loader_measurement_metadata(fd.parent.parent / "AARCH64", unixnu, fd=fd.read_bytes())
         elif args.ufs_read_only_token is not None:
@@ -223,7 +368,16 @@ def main():
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise SystemExit("UFS probe build verification failed: " + str(error)) from None
     payload = json.loads((out / "payload.json").read_text())
-    if args.ufs_xnu_read_only_token is not None:
+    boot_stage_record = None
+    if args.ufs_boot_stage_token is not None:
+        try:
+            boot_stage_record = validate_boot_stage_artifacts(
+                payload, boot_stage_fields, args.ufs_boot_stage_token, args.boot_stage_descriptor, args.boot_fat,
+                args.boot_fat_report, args.userdata_image, args.userdata_report)
+            boot_stage_record['run_token'] = args.ufs_boot_stage_token
+        except (OSError, ValueError, UnicodeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+            raise SystemExit('Boot-stage image verification failed: ' + str(error)) from None
+    elif args.ufs_xnu_read_only_token is not None:
         try:
             validate_xnu_ufs_payload(payload, args.ufs_xnu_read_only_token)
             if args.ufs_xnu_live_fdt is None:
@@ -249,7 +403,7 @@ def main():
             raise SystemExit('XNU UFS payload verification failed: ' + str(error)) from None
     elif args.ufs_xnu_live_fdt is not None:
         raise SystemExit('--ufs-xnu-live-fdt requires --ufs-xnu-read-only-token')
-    if probe['enabled'] or host['enabled']:
+    if (probe['enabled'] or host['enabled']) and args.ufs_boot_stage_token is None:
         try:
             if args.ufs_xnu_read_only_token is None:
                 validate_diagnostic_payload(payload)
@@ -293,6 +447,7 @@ def main():
               "uefi_commit": uefi_commit,
               "mu_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=mu, text=True).strip(),
               "payload": payload, "ufs_probe": probe, "ufs_host": host,
+              "boot_stage": boot_stage_record,
               "loader_measurement": loader_measurement,
               "ufs_xnu": ({"enabled": True, "run_token": args.ufs_xnu_read_only_token,
                            "live_fdt_sha256": payload['xnu_ufs_read_only']['live_fdt_sha256'],

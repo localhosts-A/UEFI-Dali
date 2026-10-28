@@ -12,9 +12,11 @@
   UfsShutdown.c
   UfsScratch.c
   UfsIdentity.c
+  UfsBootStage.c
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
+  daliPkg/dali.dec
   ArmPkg/ArmPkg.dec
   CryptoPkg/CryptoPkg.dec
   MT6991Pkg/MT6991Pkg.dec
@@ -33,13 +35,18 @@
   Mt6991UfsDmaLib
   BaseCryptLib
   DevicePathLib
+  DxeServicesLib
   MemoryAllocationLib
 [FixedPcd]
   gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled
+  gDaliTokenSpaceGuid.PcdDaliUfsBootStageEnabled
   gDaliTokenSpaceGuid.PcdDaliUfsStorageToken
   gDaliTokenSpaceGuid.PcdDaliUfsProbeEnabled
+[Guids]
+  gDaliBootStageFileGuid
 [Protocols]
   gEfiBlockIoProtocolGuid ## CONSUMES
+  gEfiPartitionInfoProtocolGuid ## CONSUMES
   gEfiScsiIoProtocolGuid ## SOMETIMES_CONSUMES
   gEfiExtScsiPassThruProtocolGuid ## SOMETIMES_CONSUMES
   gEfiCpuArchProtocolGuid ## CONSUMES

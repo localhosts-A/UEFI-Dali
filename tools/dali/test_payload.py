@@ -6,7 +6,9 @@ import struct
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
-from make_payload import config_with_run_token, config_with_xnu_argument, payload_volume_size_mib, validate_ram_root, qualification_config
+from make_payload import (config_with_run_token, config_with_xnu_argument, external_boot_stage_size_mib,
+                           payload_volume_size_mib, validate_packed_data_initrd, validate_ram_root,
+                           qualification_config)
 
 
 class PayloadVolumeSizingTests(unittest.TestCase):
@@ -23,6 +25,28 @@ class PayloadVolumeSizingTests(unittest.TestCase):
         self.assertEqual(payload_volume_size_mib(48, False), 48)
         with self.assertRaisesRegex(ValueError, "64 MiB Dali firmware volume"):
             payload_volume_size_mib(49, False)
+
+    def test_external_stage_scales_for_the_full_kernel_and_keeps_fat_headroom(self):
+        self.assertGreaterEqual(external_boot_stage_size_mib(None, 126 * 1024 * 1024), 152)
+        self.assertEqual(external_boot_stage_size_mib(160, 126 * 1024 * 1024), 160)
+        with self.assertRaisesRegex(ValueError, "headroom"):
+            external_boot_stage_size_mib(100, 99 * 1024 * 1024)
+        with self.assertRaisesRegex(ValueError, "1..512 MiB"):
+            external_boot_stage_size_mib(513, 1)
+
+
+class PackedDataInitrdTests(unittest.TestCase):
+    def test_dbrdisk1_header_and_extent_validation(self):
+        valid = struct.pack("<8sIIQQ", b"DBRDISK1", 1, 4096, 4096, 0)
+        self.assertEqual(validate_packed_data_initrd(valid), 4096)
+        extent = struct.pack("<8sIIQQ", b"DBRDISK1", 1, 4096, 8192, 1)
+        extent += struct.pack("<QQ", 0, 4096) + b"D" * 4096
+        self.assertEqual(validate_packed_data_initrd(extent), 8192)
+        for malformed in (valid[:-1], valid.replace(b"DBRDISK1", b"BADSEED!"),
+                          struct.pack("<8sIIQQ", b"DBRDISK1", 1, 4096, 4096, 1) +
+                          struct.pack("<QQ", 0, 8192) + b"D" * 8192):
+            with self.subTest(length=len(malformed)), self.assertRaises(ValueError):
+                validate_packed_data_initrd(malformed)
 
 
 class RamRootTests(unittest.TestCase):

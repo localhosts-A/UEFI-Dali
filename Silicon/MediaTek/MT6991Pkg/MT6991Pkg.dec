@@ -17,3 +17,4 @@
   gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|"none"|VOID*|0x00000002
   gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled|FALSE|BOOLEAN|0x00000003
   gDaliTokenSpaceGuid.PcdDaliUfsStorageToken|"none"|VOID*|0x00000004
+  gDaliTokenSpaceGuid.PcdDaliUfsBootStageEnabled|FALSE|BOOLEAN|0x00000005

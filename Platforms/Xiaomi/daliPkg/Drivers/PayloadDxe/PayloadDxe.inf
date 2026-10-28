@@ -10,6 +10,7 @@
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   daliPkg/dali.dec
+  MT6991Pkg/MT6991Pkg.dec
 [LibraryClasses]
   BaseLib
   BaseMemoryLib
@@ -20,6 +21,8 @@
   UefiBootServicesTableLib
 [Guids]
   gDaliPayloadFileGuid
+[FixedPcd]
+  gDaliTokenSpaceGuid.PcdDaliUfsBootStageEnabled
 [Protocols]
   gEfiBlockIoProtocolGuid
   gEfiDevicePathProtocolGuid

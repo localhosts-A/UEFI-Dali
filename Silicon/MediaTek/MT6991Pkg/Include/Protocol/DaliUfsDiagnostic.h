@@ -6,5 +6,6 @@ extern EFI_GUID gDaliUfsDiagnosticProtocolGuid;
 // RAM payload preparation. This diagnostic always stops before launching RAM XNU.
 typedef struct {
   EFI_STATUS (EFIAPI *Initialize)(CONST VOID *Fdt, EFI_HANDLE *Controller);
+  EFI_STATUS (EFIAPI *PublishBootStage)(VOID);
   EFI_STATUS (EFIAPI *Quiesce)(VOID);
 } DALI_UFS_DIAGNOSTIC_PROTOCOL;

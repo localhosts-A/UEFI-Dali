@@ -26,7 +26,7 @@ from edk2toollib.utility_functions import RunCmd
 # ####################################################################################### #
 class CommonPlatform ():
     PackagesSupported = ("daliPkg",)
-    ArchSupported = ("AARCH64")
+    ArchSupported = ("AARCH64",)
     TargetsSupported = ("DEBUG", "RELEASE")
     Scopes = ('dali', 'gcc_aarch64_linux', 'edk2-build')
     WorkspaceRoot = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -183,6 +183,22 @@ class PlatformBuilder (UefiBuilder, BuildSettingsManager):
             raise ValueError("UFS host diagnostic requires its own token and no competing probe/reset mode")
         self.env.SetValue ("BLD_*_DALI_UFS_READ_ONLY", "TRUE" if ufs_read_only == "true" else "FALSE", "Opt-in physical UFS diagnostic")
         self.env.SetValue ("BLD_*_DALI_UFS_STORAGE_TOKEN", '"' + storage_token + '"', "Bound physical UFS diagnostic token")
+
+        ufs_profile = os.environ.get("DALI_UFS_PROFILE", "off")
+        if ufs_profile not in ("off", "read-only-blockio", "boot-stage"):
+            raise ValueError("DALI_UFS_PROFILE must be off, read-only-blockio or boot-stage")
+        boot_descriptor = os.path.realpath(os.environ.get("DALI_BOOT_DESCRIPTOR", "")) if ufs_profile == "boot-stage" else ""
+        if ufs_profile == "boot-stage" and (ufs_read_only != "true" or ufs_probe != "false" or
+                not re.fullmatch(r"[0-9a-f]{32}", storage_token) or
+                os.environ.get("DALI_AUTO_FASTBOOT") != "false" or os.environ.get("DALI_RESET_METHOD") or
+                not boot_descriptor or not os.path.isfile(boot_descriptor)):
+            raise ValueError("boot-stage requires read-only UFS, a fresh token, manual recovery and a generated descriptor")
+        if ufs_profile == "read-only-blockio" and ufs_read_only != "true":
+            raise ValueError("read-only-blockio profile requires DALI_UFS_READ_ONLY=true")
+        if ufs_profile == "off" and ufs_read_only == "true":
+            raise ValueError("physical UFS requires the read-only-blockio or boot-stage profile")
+        self.env.SetValue ("BLD_*_DALI_UFS_BOOT_STAGE", "TRUE" if ufs_profile == "boot-stage" else "FALSE", "External read-only Boot FAT window")
+        self.env.SetValue ("BLD_*_DALI_BOOT_DESCRIPTOR", boot_descriptor, "Firmware-bound Boot FAT descriptor")
 
         return 0
 

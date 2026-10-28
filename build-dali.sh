@@ -16,6 +16,12 @@ PORT_XNU_ADT=
 PORT_PROBE_PACKAGE_ARGS=()
 PORT_XNU_UFS_READ_ONLY=${DALI_XNU_UFS_READ_ONLY:-false}
 PORT_XNU_UFS_FDT=
+PORT_UFS_BOOT_STAGE=false
+PORT_ROOT_IMAGE=
+PORT_ROOT_REPORT=
+PORT_DATA_INITRD=
+PORT_TRUST_CACHE=
+PORT_BOOT_DESCRIPTOR=
 if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
   [[ $# == 5 && "${DALI_UFS_READ_ONLY:-false}" == true &&
      "${DALI_UFS_PROFILE:-off}" == read-only-blockio && "${DALI_UFS_PROBE:-false}" == false &&
@@ -29,14 +35,28 @@ if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
 elif [[ "$PORT_XNU_UFS_READ_ONLY" != false ]]; then
   echo "DALI_XNU_UFS_READ_ONLY must be true or false" >&2; exit 2
 elif [[ "${DALI_UFS_READ_ONLY:-false}" == true ]]; then
-  [[ "${DALI_UFS_PROFILE:-off}" == read-only-blockio && $# == 3 &&
-     "${DALI_UFS_PROBE:-false}" == false && "${DALI_AUTO_FASTBOOT:-true}" == false &&
-     -z "${DALI_RESET_METHOD:-}" && "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]] || {
-    echo "Physical UFS needs explicit DALI_UFS_PROFILE=read-only-blockio, UEFI-only inputs, fresh token, no probe or automatic reset" >&2; exit 2;
-  }
-  PORT_PROBE_PACKAGE_ARGS+=(--ufs-read-only-token "$DALI_RUN_TOKEN")
+  if [[ "${DALI_UFS_PROFILE:-off}" == boot-stage ]]; then
+    [[ $# == 5 && "${DALI_UFS_PROBE:-false}" == false && "${DALI_AUTO_FASTBOOT:-true}" == false &&
+       -z "${DALI_RESET_METHOD:-}" && "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ &&
+       -f "${DALI_ROOT_IMAGE:-}" && -f "${DALI_ROOT_REPORT:-}" &&
+       -f "${DALI_XNU_DATA_INITRD:-}" && -f "${DALI_XNU_TRUST_CACHE:-}" ]] || {
+      echo "Boot-stage UFS requires source-XNU/ADT inputs, verified OS/SystemOS image/report, DBR Data seed, trust cache, fresh token, manual recovery and no reset" >&2; exit 2;
+    }
+    PORT_UFS_BOOT_STAGE=true
+    PORT_ROOT_IMAGE=$(realpath "$DALI_ROOT_IMAGE")
+    PORT_ROOT_REPORT=$(realpath "$DALI_ROOT_REPORT")
+    PORT_DATA_INITRD=$(realpath "$DALI_XNU_DATA_INITRD")
+    PORT_TRUST_CACHE=$(realpath "$DALI_XNU_TRUST_CACHE")
+    PORT_PROBE_PACKAGE_ARGS+=(--ufs-boot-stage-token "$DALI_RUN_TOKEN")
+  elif [[ "${DALI_UFS_PROFILE:-off}" == read-only-blockio && $# == 3 &&
+          "${DALI_UFS_PROBE:-false}" == false && "${DALI_AUTO_FASTBOOT:-true}" == false &&
+          -z "${DALI_RESET_METHOD:-}" && "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]]; then
+    PORT_PROBE_PACKAGE_ARGS+=(--ufs-read-only-token "$DALI_RUN_TOKEN")
+  else
+    echo "Physical UFS requires DALI_UFS_PROFILE=read-only-blockio or boot-stage with manual recovery and a fresh run token" >&2; exit 2;
+  fi
 elif [[ "${DALI_UFS_READ_ONLY:-false}" != false || "${DALI_UFS_PROFILE:-off}" != off ]]; then
-  echo "Invalid UFS mode: host defaults off; read-only-blockio requires DALI_UFS_READ_ONLY=true" >&2; exit 2
+  echo "Invalid UFS mode: boot-stage/read-only-blockio requires DALI_UFS_READ_ONLY=true" >&2; exit 2
 elif [[ "${DALI_UFS_PROBE:-false}" == true ]]; then
   [[ $# == 3 && "${DALI_AUTO_FASTBOOT:-true}" == false && -z "${DALI_RESET_METHOD:-}" &&
      "${DALI_RUN_TOKEN:-}" =~ ^[0-9a-f]{32}$ ]] || {
@@ -112,21 +132,46 @@ PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu-uefi-test.toml"
 PAYLOAD_ARGS=()
 if [[ -n "$PORT_XNU_KERNEL" ]]; then
   PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu.toml"
-  # GetSectionFromAnyFv needs one contiguous copy of this volume. Cycle 1
-  # proved the 48 MiB volume cannot fit after the Dali FVs consume the DXE arena.
-  PAYLOAD_ARGS+=(--xnu-kernel "$PORT_XNU_KERNEL" --xnu-adt "$PORT_XNU_ADT" --size-mib 24)
-  if [[ -n "${DALI_RUN_TOKEN:-}" ]]; then
-    PAYLOAD_ARGS+=(--run-token "$DALI_RUN_TOKEN")
-  fi
-  if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
-    PAYLOAD_ARGS+=(--xnu-ufs-readonly --xnu-ufs-live-fdt "$PORT_XNU_UFS_FDT")
-  fi
-  if [[ $# == 7 ]]; then
-    [[ "${DALI_AUTO_FASTBOOT:-true}" == false ]] || {
-      echo "PID1 requires DALI_AUTO_FASTBOOT=false to disable the short firmware watchdog" >&2; exit 2;
-    }
-    PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu-pid1.toml"
-    PAYLOAD_ARGS+=(--xnu-ramdisk "$(realpath "$6")" --xnu-trust-cache "$(realpath "$7")")
+  if [[ "$PORT_UFS_BOOT_STAGE" == true ]]; then
+    PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu-ipados.toml"
+    PORT_BOOT_DESCRIPTOR="$PORT_ROOT/out/boot-stage.desc"
+    python3 "$PORT_ROOT/tools/make_payload.py" \
+      --config "$PAYLOAD_CONFIG" --efi-dir "$PORT_ROOT/out/package/Build/Out/AARCH64-DEBUG" \
+      --output "$PORT_ROOT/out/boot-fat.img" --external-boot-stage \
+      --xnu-kernel "$PORT_XNU_KERNEL" --xnu-adt "$PORT_XNU_ADT" \
+      --xnu-initrd "$PORT_DATA_INITRD" --xnu-trust-cache "$PORT_TRUST_CACHE" \
+      --run-token "$DALI_RUN_TOKEN" --no-auto-fastboot \
+      --watchdog-timeout-seconds "${DALI_WATCHDOG_TIMEOUT_SECONDS:-31}"
+    python3 "$PORT_DEVICE/scripts/build-dali-boot-stage.py" \
+      --root-image "$PORT_ROOT_IMAGE" --root-report "$PORT_ROOT_REPORT" \
+      --boot-fat "$PORT_ROOT/out/boot-fat.img" --boot-report "$PORT_ROOT/out/boot-fat.json" \
+      --output "$PORT_ROOT/out/unixnu_data.img" --descriptor "$PORT_BOOT_DESCRIPTOR" \
+      --report "$PORT_ROOT/out/unixnu_data.json"
+    # The embedded FAT remains a small, unused fallback volume; PayloadDxe does
+    # not publish it when the firmware-bound external Boot stage is enabled.
+    PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu-uefi-test.toml"
+    PAYLOAD_ARGS+=(--size-mib 1)
+    export DALI_BOOT_DESCRIPTOR="$PORT_BOOT_DESCRIPTOR"
+    PORT_PROBE_PACKAGE_ARGS+=(--boot-stage-descriptor "$PORT_BOOT_DESCRIPTOR"
+      --boot-fat "$PORT_ROOT/out/boot-fat.img" --boot-fat-report "$PORT_ROOT/out/boot-fat.json"
+      --userdata-image "$PORT_ROOT/out/unixnu_data.img" --userdata-report "$PORT_ROOT/out/unixnu_data.json")
+  else
+    # GetSectionFromAnyFv needs one contiguous copy of this volume. Cycle 1
+    # proved the 48 MiB volume cannot fit after the Dali FVs consume the DXE arena.
+    PAYLOAD_ARGS+=(--xnu-kernel "$PORT_XNU_KERNEL" --xnu-adt "$PORT_XNU_ADT" --size-mib 24)
+    if [[ -n "${DALI_RUN_TOKEN:-}" ]]; then
+      PAYLOAD_ARGS+=(--run-token "$DALI_RUN_TOKEN")
+    fi
+    if [[ "$PORT_XNU_UFS_READ_ONLY" == true ]]; then
+      PAYLOAD_ARGS+=(--xnu-ufs-readonly --xnu-ufs-live-fdt "$PORT_XNU_UFS_FDT")
+    fi
+    if [[ $# == 7 ]]; then
+      [[ "${DALI_AUTO_FASTBOOT:-true}" == false ]] || {
+        echo "PID1 requires DALI_AUTO_FASTBOOT=false to disable the short firmware watchdog" >&2; exit 2;
+      }
+      PAYLOAD_CONFIG="$PORT_DEVICE/package/unixnu-pid1.toml"
+      PAYLOAD_ARGS+=(--xnu-ramdisk "$(realpath "$6")" --xnu-trust-cache "$(realpath "$7")")
+    fi
   fi
 fi
 FASTBOOT_ARGS=(--watchdog-timeout-seconds "${DALI_WATCHDOG_TIMEOUT_SECONDS:-31}")

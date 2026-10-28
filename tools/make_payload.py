@@ -14,6 +14,7 @@ import tomllib
 
 MAX_XNU_PAYLOAD_MIB = 24
 MAX_FV_PAYLOAD_MIB = 48
+MAX_EXTERNAL_BOOT_MIB = 512
 RESET_METHODS = ("off", "psci-cold", "psci-warm", "aee")
 XNU_UFS_RESOURCE_WORDS = (0x31534655494c4144, 1, 0x16810000, 0x2A00, 0x168A0000, 0x1000,
                           0x16800000, 0x10000, 0x10000000, 0x800, 0, 0x1000000000,
@@ -175,6 +176,38 @@ def payload_volume_size_mib(requested, has_xnu):
     return size_mib
 
 
+def external_boot_stage_size_mib(requested, staged_bytes):
+    if requested is not None:
+        size_mib = requested
+    else:
+        size_mib = max(64, (staged_bytes * 120 + 100 * 1024 * 1024 - 1) // (100 * 1024 * 1024))
+    if size_mib < 1 or size_mib > MAX_EXTERNAL_BOOT_MIB:
+        raise ValueError("external Boot FAT stage must be 1..512 MiB")
+    if staged_bytes > size_mib * 1024 * 1024 * 9 // 10:
+        raise ValueError("external Boot FAT stage lacks 10 percent filesystem headroom")
+    return size_mib
+
+
+def validate_packed_data_initrd(data):
+    if not isinstance(data, bytes) or len(data) < 32 or len(data) > 256 * 1024 * 1024:
+        raise ValueError("packed Data initrd must be bounded to 256 MiB")
+    magic, version, page_size, logical_size, count = struct.unpack_from("<8sIIQQ", data)
+    if (magic != b"DBRDISK1" or version != 1 or page_size != 4096 or logical_size == 0 or
+            logical_size % 4096 or count > 65536 or count > (len(data) - 32) // 16):
+        raise ValueError("Data initrd has an invalid DBRDISK1 header")
+    cursor, prior_end = 32 + 16 * count, 0
+    for index in range(count):
+        offset, length = struct.unpack_from("<QQ", data, 32 + 16 * index)
+        if (length == 0 or (offset | length) % 4096 or offset < prior_end or
+                offset > logical_size or length > logical_size - offset or length > len(data) - cursor):
+            raise ValueError("Data initrd contains an invalid DBRDISK1 extent")
+        prior_end = offset + length
+        cursor += length
+    if cursor != len(data):
+        raise ValueError("Data initrd has trailing DBRDISK1 bytes")
+    return logical_size
+
+
 def config_with_run_token(config_text, token):
     if not re.fullmatch(r"[0-9a-f]{32}", token):
         raise ValueError("run token must be 32 lowercase hexadecimal characters")
@@ -258,6 +291,9 @@ def main():
     parser.add_argument("--xnu-adt", type=Path)
     parser.add_argument("--xnu-ramdisk", type=Path, help="owned minimal Mach-O RAM root")
     parser.add_argument("--xnu-trust-cache", type=Path, help="explicit own one-entry test bundle")
+    parser.add_argument("--xnu-initrd", type=Path, help="packed Data initrd for an external iPadOS Boot stage")
+    parser.add_argument("--external-boot-stage", action="store_true",
+                        help="create a standalone read-only FAT Boot stage outside the 24 MiB firmware FV")
     parser.add_argument("--run-token", help="unique 32-hex token for one XNU hardware cycle")
     parser.add_argument("--xnu-ufs-readonly", action="store_true",
                         help="bind source XNU physical UFS read-only to the live FDT and fresh run token")
@@ -272,8 +308,14 @@ def main():
     args = parser.parse_args()
     if bool(args.xnu_kernel) != bool(args.xnu_adt):
         parser.error("--xnu-kernel and --xnu-adt must be supplied together")
-    if bool(args.xnu_ramdisk) != bool(args.xnu_trust_cache) or (args.xnu_ramdisk and not args.xnu_kernel):
-        parser.error("RAM root and test trust cache must be supplied together with a kernel and ADT")
+    if ((bool(args.xnu_ramdisk) != bool(args.xnu_trust_cache) and not args.external_boot_stage) or
+            (args.xnu_ramdisk and not args.xnu_kernel) or (args.xnu_trust_cache and not args.xnu_kernel)):
+        parser.error("RAM root/test trust cache must match the PID1 profile, or require a source kernel")
+    if args.xnu_initrd and (not args.external_boot_stage or not args.xnu_kernel or args.xnu_ramdisk):
+        parser.error("--xnu-initrd requires an external Boot stage and cannot be combined with the PID1 RAM root")
+    if args.external_boot_stage and (not args.xnu_kernel or args.auto_fastboot or args.reset_method is not None or
+                                     args.xnu_ufs_readonly or args.xnu_ramdisk or not args.run_token):
+        parser.error("external Boot stage requires source XNU, manual recovery and no diagnostic reset/RAM root")
     if args.xnu_ramdisk and not args.run_token:
         parser.error("a RAM-root hardware image requires a fresh run token")
     if args.run_token and not re.fullmatch(r"[0-9a-f]{32}", args.run_token):
@@ -312,7 +354,7 @@ def main():
         except (ValueError, tomllib.TOMLDecodeError) as error:
             parser.error(str(error))
     try:
-        size_mib = payload_volume_size_mib(args.size_mib, args.xnu_kernel is not None)
+        size_mib = None if args.external_boot_stage else payload_volume_size_mib(args.size_mib, args.xnu_kernel is not None)
     except ValueError as error:
         parser.error(str(error))
     kernel_bytes = None
@@ -321,6 +363,7 @@ def main():
     xnu_ufs_record = None
     ramdisk_bytes = None
     trust_bytes = None
+    initrd_bytes = None
     if args.xnu_kernel:
         kernel_bytes = args.xnu_kernel.read_bytes()
         if len(kernel_bytes) < 32:
@@ -356,7 +399,19 @@ def main():
             validate_ram_root(config, ramdisk_bytes, trust_bytes, adt_bytes, args.auto_fastboot)
         except (ValueError, UnicodeError, struct.error) as error:
             parser.error(str(error))
-    elif any(entry.get("initrd") for entry in config.get("entry", [])):
+    elif args.external_boot_stage and args.xnu_trust_cache:
+        trust_bytes = args.xnu_trust_cache.read_bytes()
+    if args.xnu_initrd:
+        initrd_bytes = args.xnu_initrd.read_bytes()
+        try:
+            validate_packed_data_initrd(initrd_bytes)
+        except (ValueError, struct.error) as error:
+            parser.error(str(error))
+        entries = [entry for entry in config.get("entry", [])
+                   if entry.get("type") == "xnu" and entry.get("path") == "Payloads/kernel.macho"]
+        if len(entries) != 1 or entries[0].get("initrd") != "Payloads/root.img":
+            parser.error("external Data initrd requires the XNU config to name Payloads/root.img")
+    elif not args.xnu_ramdisk and any(entry.get("initrd") for entry in config.get("entry", [])):
         parser.error("the payload config requests an initrd but no RAM root was supplied")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="dali-fat-") as temp:
@@ -380,6 +435,16 @@ def main():
         if ramdisk_bytes is not None:
             (base / "Payloads/root.img").write_bytes(ramdisk_bytes)
             (base / "Payloads/kernel.macho.trustcache").write_bytes(trust_bytes)
+        elif initrd_bytes is not None:
+            (base / "Payloads/root.img").write_bytes(initrd_bytes)
+        if args.external_boot_stage and args.xnu_trust_cache is not None:
+            (base / "Payloads/kernel.macho.trustcache").write_bytes(args.xnu_trust_cache.read_bytes())
+        if args.external_boot_stage:
+            staged_bytes = sum(file.stat().st_size for file in stage.rglob("*") if file.is_file())
+            try:
+                size_mib = external_boot_stage_size_mib(args.size_mib, staged_bytes)
+            except ValueError as error:
+                parser.error(str(error))
         image = args.output.resolve()
         image.write_bytes(bytes(size_mib * 1024 * 1024))
         subprocess.run(["mformat", "-i", str(image), "-v", "DALIUEFI", "-N", "0x44414c49",
@@ -407,9 +472,11 @@ def main():
               "xnu_kernel_sha256": hashlib.sha256(kernel_bytes).hexdigest() if kernel_bytes is not None else None,
               "xnu_adt_sha256": hashlib.sha256(adt_bytes).hexdigest() if adt_bytes is not None else None,
               "xnu_ramdisk_sha256": hashlib.sha256(ramdisk_bytes).hexdigest() if ramdisk_bytes is not None else None,
+              "xnu_initrd_sha256": hashlib.sha256(initrd_bytes).hexdigest() if initrd_bytes is not None else None,
               "xnu_trust_cache_sha256": hashlib.sha256(trust_bytes).hexdigest() if trust_bytes is not None else None,
               "runtime_trust_cache_provider": False,
-              "xnu_run_token": args.run_token}
+              "xnu_run_token": args.run_token,
+              "external_boot_stage": args.external_boot_stage}
     if xnu_ufs_record is not None:
         record["xnu_ufs_read_only"] = {
             "enabled": True, "run_token": args.run_token, "write_authorized": False,

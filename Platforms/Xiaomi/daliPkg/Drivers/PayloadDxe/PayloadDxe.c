@@ -8,6 +8,7 @@
 #include <Library/DebugLib.h>
 #include <Library/DxeServicesLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/PcdLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 
 STATIC UINT8 *mData;
@@ -64,6 +65,10 @@ EFI_STATUS EFIAPI DaliPayloadInitialize (EFI_HANDLE Image, EFI_SYSTEM_TABLE *Sys
   EFI_STATUS Status;
   EFI_HANDLE Handle = NULL;
   UINT32 Sectors;
+  if (FixedPcdGetBool (PcdDaliUfsBootStageEnabled)) {
+    DEBUG ((DEBUG_WARN, "DALI: embedded RAM payload BlockIo disabled for external Boot FAT mode\n"));
+    return EFI_SUCCESS;
+  }
   Status = GetSectionFromAnyFv (&gDaliPayloadFileGuid, EFI_SECTION_RAW, 0, (VOID **)&mData, &mSize);
   if (EFI_ERROR (Status)) { return Status; }
   // Host packaging hashes the entire volume. Recheck the FAT BPB and length

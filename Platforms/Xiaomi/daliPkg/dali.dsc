@@ -22,6 +22,20 @@
 !ifndef DALI_UFS_STORAGE_TOKEN
   DEFINE DALI_UFS_STORAGE_TOKEN = "none"
 !endif
+!ifndef DALI_UFS_BOOT_STAGE
+  DEFINE DALI_UFS_BOOT_STAGE = FALSE
+!endif
+!ifndef DALI_BOOT_DESCRIPTOR
+  DEFINE DALI_BOOT_DESCRIPTOR = ""
+!endif
+!if $(DALI_UFS_BOOT_STAGE) == TRUE
+  !if $(DALI_UFS_READ_ONLY) != TRUE
+    !error "Dali Boot stage requires the read-only UFS profile"
+  !endif
+  !if $(DALI_UFS_PROBE) == TRUE
+    !error "Dali Boot stage cannot share UFS with the probe"
+  !endif
+!endif
 
 !include MT6991Pkg/MT6991Pkg.dsc.inc
 
@@ -38,6 +52,7 @@
   gDaliTokenSpaceGuid.PcdDaliUfsProbeToken|$(DALI_UFS_PROBE_TOKEN)
   gDaliTokenSpaceGuid.PcdDaliUfsReadOnlyEnabled|$(DALI_UFS_READ_ONLY)
   gDaliTokenSpaceGuid.PcdDaliUfsStorageToken|$(DALI_UFS_STORAGE_TOKEN)
+  gDaliTokenSpaceGuid.PcdDaliUfsBootStageEnabled|$(DALI_UFS_BOOT_STAGE)
   gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x2
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
   gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0xC5000000

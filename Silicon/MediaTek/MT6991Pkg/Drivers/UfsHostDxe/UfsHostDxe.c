@@ -78,8 +78,13 @@ STATIC EFI_STATUS EFIAPI Quiesce (VOID) {
     gBS->RestoreTPL (OldTpl); return Status;
   }
   if (OldTpl != TPL_APPLICATION) { gBS->RestoreTPL (OldTpl); return EFI_UNSUPPORTED; }
+  EFI_STATUS Status;
   mQuiescing = TRUE;
-  EFI_STATUS Status = DaliUfsScratchCloseAdmission ();
+  Status = DaliUfsBootStageCloseAdmission ();
+  if (Status != EFI_SUCCESS) {
+    mQuiescing = FALSE; gBS->RestoreTPL (OldTpl); return Status;
+  }
+  Status = DaliUfsScratchCloseAdmission ();
   if (Status != EFI_SUCCESS) {
     // Do not close the lower completion path or disconnect a live ScsiIo call.
     // The child stays closed; a later quiesce may clean up after it returns.
@@ -419,9 +424,11 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   *Controller = mController;
   DEBUG ((DEBUG_WARN, "DALI-UFS-HOST: run=%a connect=%r\n", (CHAR8 *)FixedPcdGetPtr (PcdDaliUfsStorageToken), Status));
   if (Status == EFI_SUCCESS) {
-    Print (L"UFS: read-only BlockIo diagnostics\r\n");
-    Status = DaliUfsReadOnlyDiagnostics (mController, FixedPcdGetPtr (PcdDaliUfsStorageToken), mCompletedSync);
-    Print (L"UFS: BlockIo result=%r\r\n", Status);
+    if (!FixedPcdGetBool (PcdDaliUfsBootStageEnabled)) {
+      Print (L"UFS: read-only BlockIo diagnostics\r\n");
+      Status = DaliUfsReadOnlyDiagnostics (mController, FixedPcdGetPtr (PcdDaliUfsStorageToken), mCompletedSync);
+      Print (L"UFS: BlockIo result=%r\r\n", Status);
+    }
   }
   if (Status == EFI_SUCCESS) {
     Status = DaliUfsScratchPublish (mController, &mScratchGrant, mGeometry, &mClosed, mCompletedSync);
@@ -430,7 +437,11 @@ STATIC EFI_STATUS EFIAPI Initialize (CONST VOID *Fdt, EFI_HANDLE *Controller) {
   if (EFI_ERROR (Status)) { StopController (); }
   return Status;
 }
-STATIC DALI_UFS_DIAGNOSTIC_PROTOCOL mDiagnostic = { Initialize, Quiesce };
+STATIC EFI_STATUS EFIAPI PublishBootStage (VOID) {
+  if (!FixedPcdGetBool (PcdDaliUfsBootStageEnabled) || mClosed || mController == NULL) { return EFI_ACCESS_DENIED; }
+  return DaliUfsBootStagePublish (mController);
+}
+STATIC DALI_UFS_DIAGNOSTIC_PROTOCOL mDiagnostic = { Initialize, PublishBootStage, Quiesce };
 STATIC UNIXNU_STORAGE_QUIESCE_PROTOCOL mStorage = { UNIXNU_STORAGE_QUIESCE_REVISION, StorageQuiesce };
 EFI_STATUS EFIAPI DaliUfsHostEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *SystemTable) {
   (VOID)SystemTable;
