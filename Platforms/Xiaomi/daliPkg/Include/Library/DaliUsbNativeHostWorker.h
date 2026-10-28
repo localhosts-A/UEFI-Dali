@@ -2,6 +2,7 @@
 #pragma once
 #include <Protocol/DaliUsbNativeHostProvider.h>
 #include <Protocol/DaliUsbResourceContext.h>
+#include <Protocol/UniXNUPlatformPoll.h>
 #include <Library/DaliUsbNativeHostLib.h>
 
 extern EFI_GUID gDaliUsbNativeHostWorkerProtocolGuid;
@@ -38,6 +39,7 @@ typedef struct {
  * or unload this context. Start/Stop are BSP TPL_APPLICATION calls. */
 typedef struct {
   DALI_USB_NATIVE_HOST_WORKER_PROTOCOL Protocol;
+  UNIXNU_PLATFORM_POLL_PROTOCOL PlatformPoll;
   DALI_USB_RESOURCE_CONTEXT_PROTOCOL *Resources;
   DALI_USB_NATIVE_HOST_PROVIDER_PROTOCOL *Provider;
   DALI_USB_NATIVE_HOST_LEASE Lease;
@@ -48,4 +50,6 @@ typedef struct {
 
 EFI_STATUS DaliUsbNativeHostWorkerStart(DALI_USB_NATIVE_HOST_WORKER *,
   DALI_USB_RESOURCE_CONTEXT_PROTOCOL *, DALI_USB_NATIVE_HOST_PROVIDER_PROTOCOL *);
+/* Foreground menu poll; retries only a worker waiting for a qualified host role. */
+EFI_STATUS DaliUsbNativeHostWorkerPoll(DALI_USB_NATIVE_HOST_WORKER *);
 EFI_STATUS DaliUsbNativeHostWorkerStop(DALI_USB_NATIVE_HOST_WORKER *);

@@ -25,5 +25,6 @@
   gDaliUsbResourceContextProtocolGuid ## CONSUMES
   gDaliUsbNativeHostProviderProtocolGuid ## CONSUMES
   gDaliUsbNativeHostWorkerProtocolGuid ## PRODUCES
+  gUniXNUPlatformPollProtocolGuid ## PRODUCES
 [Depex]
   gDaliUsbResourceContextProtocolGuid AND gDaliUsbNativeHostProviderProtocolGuid

@@ -17,6 +17,9 @@ EFI_GUID gDaliUsbNativeHostProviderProtocolGuid =
   {0xa5127a9e, 0x691e, 0x4b22, {0xa9, 0x79, 0x11, 0xa4, 0xf8, 0x27, 0x10, 0xd1}};
 EFI_GUID gDaliUsbNativeHostWorkerProtocolGuid =
   {0xe94a1771, 0x7db7, 0x4825, {0xbd, 0x2f, 0xf7, 0x3f, 0xb3, 0x69, 0xdc, 0xe0}};
+EFI_GUID gUniXNUPlatformPollProtocolGuid =
+  {0xa8d51234, 0x51a9, 0x4923, {0xb0, 0xc0, 0x94, 0xe8, 0x16, 0x69, 0xc2, 0xf3}};
+EFI_STATUS EFIAPI DaliUsbNativeHostWorkerInitialize(EFI_HANDLE, EFI_SYSTEM_TABLE *);
 
 static DALI_USB_NATIVE_HOST_WORKER worker;
 static DALI_USB_RESOURCE_CONTEXT_PROTOCOL resources;
@@ -28,6 +31,8 @@ static EFI_STATUS context_status_result, xhci_result, acquire_result, release_re
 static UINT64 qualification_mask;
 static UINT64 lease_base, lease_size;
 static UINT8 port_count, ports[DALI_USB_NATIVE_HOST_MAX_PORTS];
+static DALI_USB_NATIVE_HOST_WORKER_PROTOCOL *installed_worker_protocol;
+static UNIXNU_PLATFORM_POLL_PROTOCOL *installed_platform_poll;
 
 static EFI_STATUS EFIAPI get_status(DALI_USB_RESOURCE_CONTEXT_PROTOCOL *This,
   DALI_USB_RESOURCE_CONTEXT_STATUS *Out) {
@@ -104,15 +109,22 @@ static EFI_STATUS EFIAPI worker_install(EFI_HANDLE *handle, ...) {
 }
 
 static EFI_STATUS EFIAPI worker_uninstall(EFI_HANDLE handle, ...) {
-  assert(handle == &worker.Host);
+  DALI_USB_NATIVE_HOST *host = &worker.Host;
+  EFI_DEVICE_PATH_PROTOCOL *device_path = &worker.Path.VendorNode;
+  if (handle != &worker.Host) {
+    DALI_USB_NATIVE_HOST_WORKER *dxe_worker = (DALI_USB_NATIVE_HOST_WORKER *)installed_worker_protocol;
+    assert(dxe_worker != NULL && handle == &dxe_worker->Host);
+    host = &dxe_worker->Host;
+    device_path = &dxe_worker->Path.VendorNode;
+  }
   va_list args; va_start(args, handle);
   BOOLEAN hc = FALSE, path = FALSE, handoff = FALSE;
   EFI_GUID *guid;
   while ((guid = va_arg(args, EFI_GUID *)) != NULL) {
     VOID *interface = va_arg(args, VOID *);
-    if (guid == &gEfiUsb2HcProtocolGuid) { assert(interface == &worker.Host.Protocol); hc = TRUE; }
-    else if (guid == &gEfiDevicePathProtocolGuid) { assert(interface == &worker.Path.VendorNode); path = TRUE; }
-    else if (guid == &gDaliUsbNativeHostHandoffProtocolGuid) { assert(interface == &worker.Host.HandoffProtocol); handoff = TRUE; }
+    if (guid == &gEfiUsb2HcProtocolGuid) { assert(interface == &host->Protocol); hc = TRUE; }
+    else if (guid == &gEfiDevicePathProtocolGuid) { assert(interface == device_path); path = TRUE; }
+    else if (guid == &gDaliUsbNativeHostHandoffProtocolGuid) { assert(interface == &host->HandoffProtocol); handoff = TRUE; }
     else { assert(FALSE); }
   }
   va_end(args); assert(hc && path && handoff);
@@ -120,8 +132,64 @@ static EFI_STATUS EFIAPI worker_uninstall(EFI_HANDLE handle, ...) {
 }
 
 static EFI_STATUS EFIAPI worker_disconnect(EFI_HANDLE handle, EFI_HANDLE driver, EFI_HANDLE child) {
-  assert(handle == &worker.Host && driver == NULL && child == NULL);
+  assert(driver == NULL && child == NULL);
+  if (handle != &worker.Host) {
+    DALI_USB_NATIVE_HOST_WORKER *dxe_worker = (DALI_USB_NATIVE_HOST_WORKER *)installed_worker_protocol;
+    assert(dxe_worker != NULL && handle == &dxe_worker->Host);
+  }
   return EFI_SUCCESS;
+}
+
+static EFI_STATUS EFIAPI worker_dxe_install(EFI_HANDLE *handle, ...) {
+  assert(handle != NULL);
+  va_list args; va_start(args, handle);
+  BOOLEAN worker_protocol = FALSE, platform_poll = FALSE;
+  BOOLEAN hc = FALSE, path = FALSE, handoff = FALSE;
+  EFI_GUID *guid;
+  while ((guid = va_arg(args, EFI_GUID *)) != NULL) {
+    VOID *interface = va_arg(args, VOID *);
+    if (guid == &gDaliUsbNativeHostWorkerProtocolGuid) {
+      installed_worker_protocol = interface;
+      worker_protocol = TRUE;
+    } else if (guid == &gUniXNUPlatformPollProtocolGuid) {
+      installed_platform_poll = interface;
+      platform_poll = TRUE;
+    } else if (guid == &gEfiUsb2HcProtocolGuid) {
+      DALI_USB_NATIVE_HOST_WORKER *dxe_worker = (DALI_USB_NATIVE_HOST_WORKER *)installed_worker_protocol;
+      assert(dxe_worker != NULL && interface == &dxe_worker->Host.Protocol);
+      hc = TRUE;
+    } else if (guid == &gEfiDevicePathProtocolGuid) {
+      DALI_USB_NATIVE_HOST_WORKER *dxe_worker = (DALI_USB_NATIVE_HOST_WORKER *)installed_worker_protocol;
+      assert(dxe_worker != NULL && interface == &dxe_worker->Path.VendorNode);
+      path = TRUE;
+    } else if (guid == &gDaliUsbNativeHostHandoffProtocolGuid) {
+      DALI_USB_NATIVE_HOST_WORKER *dxe_worker = (DALI_USB_NATIVE_HOST_WORKER *)installed_worker_protocol;
+      assert(dxe_worker != NULL && interface == &dxe_worker->Host.HandoffProtocol);
+      handoff = TRUE;
+    } else { assert(FALSE); }
+  }
+  va_end(args);
+  assert((worker_protocol && platform_poll && !hc && !path && !handoff) ||
+    (!worker_protocol && !platform_poll && hc && path && handoff));
+  if (hc) {
+    DALI_USB_NATIVE_HOST_WORKER *dxe_worker = (DALI_USB_NATIVE_HOST_WORKER *)installed_worker_protocol;
+    *handle = &dxe_worker->Host;
+  }
+  return EFI_SUCCESS;
+}
+
+static EFI_STATUS EFIAPI worker_dxe_locate(EFI_GUID *guid, VOID *registration, VOID **interface) {
+  assert(registration == NULL && interface != NULL);
+  if (guid == &gDaliUsbResourceContextProtocolGuid) {
+    *interface = &resources;
+    return EFI_SUCCESS;
+  }
+  if (guid == &gDaliUsbNativeHostProviderProtocolGuid) {
+    *interface = &provider;
+    return EFI_SUCCESS;
+  }
+  assert(FALSE);
+  return EFI_NOT_FOUND;
 }
 
 static void worker_setup(void) {
@@ -192,6 +260,47 @@ static void unqualified_lease_refusal(void) {
   }
 }
 
+static void foreground_role_retry(void) {
+  worker_setup(); acquire_result = EFI_NOT_READY;
+  assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_NOT_READY);
+  assert(worker.Protocol.State == DaliUsbHostWorkerWaitingForRole && acquire_calls == 1);
+  tpl = TPL_CALLBACK;
+  assert(DaliUsbNativeHostWorkerPoll(&worker) == EFI_UNSUPPORTED && acquire_calls == 1);
+  tpl = TPL_APPLICATION;
+  acquire_result = EFI_SUCCESS;
+  assert(DaliUsbNativeHostWorkerPoll(&worker) == EFI_SUCCESS);
+  assert(worker.Protocol.State == DaliUsbHostWorkerStarted && acquire_calls == 2 && worker.Host.Published);
+  assert(DaliUsbNativeHostWorkerPoll(&worker) == EFI_SUCCESS && acquire_calls == 2);
+  assert(DaliUsbNativeHostWorkerStop(&worker) == EFI_SUCCESS && release_calls == 1);
+
+  worker_setup();
+  assert(DaliUsbNativeHostWorkerPoll(&worker) == EFI_SUCCESS && acquire_calls == 0);
+}
+
+static void initialize_publishes_foreground_poll(void) {
+  worker_setup(); acquire_result = EFI_NOT_READY;
+  installed_worker_protocol = NULL; installed_platform_poll = NULL;
+  services.InstallMultipleProtocolInterfaces = worker_dxe_install;
+  services.LocateProtocol = worker_dxe_locate;
+  EFI_HANDLE image = &worker;
+  assert(DaliUsbNativeHostWorkerInitialize(image, NULL) == EFI_SUCCESS);
+  assert(installed_worker_protocol != NULL &&
+    installed_worker_protocol->Revision == DALI_USB_NATIVE_HOST_WORKER_REVISION &&
+    installed_worker_protocol->State == DaliUsbHostWorkerWaitingForRole && acquire_calls == 1);
+  assert(installed_platform_poll != NULL &&
+    installed_platform_poll->Revision == UNIXNU_PLATFORM_POLL_PROTOCOL_REVISION &&
+    installed_platform_poll->Size == sizeof(*installed_platform_poll) &&
+    installed_platform_poll->Poll != NULL);
+
+  acquire_result = EFI_SUCCESS;
+  tpl = TPL_CALLBACK;
+  assert(installed_platform_poll->Poll(installed_platform_poll) == EFI_UNSUPPORTED && acquire_calls == 1);
+  tpl = TPL_APPLICATION;
+  assert(installed_platform_poll->Poll(installed_platform_poll) == EFI_SUCCESS &&
+    installed_worker_protocol->State == DaliUsbHostWorkerStarted && acquire_calls == 2);
+  assert(installed_worker_protocol->Stop(installed_worker_protocol) == EFI_SUCCESS && release_calls == 1);
+}
+
 static void start_stop_and_retention(void) {
   worker_setup();
   assert(DaliUsbNativeHostWorkerStart(&worker, &resources, &provider) == EFI_SUCCESS);
@@ -230,8 +339,10 @@ static void start_stop_and_retention(void) {
 int main(void) {
   resource_and_role_refusal();
   unqualified_lease_refusal();
+  foreground_role_retry();
+  initialize_publishes_foreground_poll();
   start_stop_and_retention();
   native_reset(); reset();
-  puts("PASS: production native-host worker fail-closed qualification, start/stop ordering and lease retention; modeled provider only");
+  puts("PASS: production native-host worker fail-closed qualification, TPL_APPLICATION foreground retry, start/stop ordering and lease retention; modeled provider only");
   return 0;
 }

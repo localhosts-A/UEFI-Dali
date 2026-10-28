@@ -180,8 +180,22 @@ EFI_STATUS DaliUsbNativeHostWorkerStart(DALI_USB_NATIVE_HOST_WORKER *Worker,
   return EFI_SUCCESS;
 }
 
+EFI_STATUS DaliUsbNativeHostWorkerPoll(DALI_USB_NATIVE_HOST_WORKER *Worker) {
+  if (Worker == NULL) { return EFI_INVALID_PARAMETER; }
+  if (CurrentTpl() != TPL_APPLICATION) { return EFI_UNSUPPORTED; }
+  if (Worker->Protocol.State != DaliUsbHostWorkerWaitingForRole) { return EFI_SUCCESS; }
+  if (Worker->Resources == NULL || Worker->Provider == NULL) { return EFI_NOT_READY; }
+  return DaliUsbNativeHostWorkerStart(Worker, Worker->Resources, Worker->Provider);
+}
+
 STATIC DALI_USB_NATIVE_HOST_WORKER *WorkerFromProtocol(DALI_USB_NATIVE_HOST_WORKER_PROTOCOL *Protocol) {
   return (DALI_USB_NATIVE_HOST_WORKER *)Protocol;
+}
+
+STATIC EFI_STATUS EFIAPI PlatformPoll(UNIXNU_PLATFORM_POLL_PROTOCOL *Protocol) {
+  if (Protocol == NULL) { return EFI_INVALID_PARAMETER; }
+  DALI_USB_NATIVE_HOST_WORKER *Worker = BASE_CR(Protocol, DALI_USB_NATIVE_HOST_WORKER, PlatformPoll);
+  return DaliUsbNativeHostWorkerPoll(Worker);
 }
 
 STATIC EFI_STATUS EFIAPI ProtocolStart(DALI_USB_NATIVE_HOST_WORKER_PROTOCOL *Protocol) {
@@ -203,8 +217,12 @@ EFI_STATUS EFIAPI DaliUsbNativeHostWorkerInitialize(EFI_HANDLE ImageHandle,
   mWorker.Protocol.State = DaliUsbHostWorkerDormant;
   mWorker.Protocol.Start = ProtocolStart;
   mWorker.Protocol.Stop = ProtocolStop;
+  mWorker.PlatformPoll.Revision = UNIXNU_PLATFORM_POLL_PROTOCOL_REVISION;
+  mWorker.PlatformPoll.Size = sizeof(mWorker.PlatformPoll);
+  mWorker.PlatformPoll.Poll = PlatformPoll;
   EFI_STATUS Status = gBS->InstallMultipleProtocolInterfaces(&ImageHandle,
-    &gDaliUsbNativeHostWorkerProtocolGuid, &mWorker.Protocol, NULL);
+    &gDaliUsbNativeHostWorkerProtocolGuid, &mWorker.Protocol,
+    &gUniXNUPlatformPollProtocolGuid, &mWorker.PlatformPoll, NULL);
   if (EFI_ERROR(Status)) { return Status; }
 
   Status = gBS->LocateProtocol(&gDaliUsbResourceContextProtocolGuid, NULL,
